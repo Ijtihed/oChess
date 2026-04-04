@@ -1,13 +1,13 @@
 <div align="center">
 
-<h1>OCHESS</h1>
+<h1>oChess</h1>
 <h3><em>Chess-first gameplay, analysis, and training in one clean loop</em></h3>
 <img src="ochess-app/public/bishoplogo.png" alt="oChess Logo" width="150" />
 
-<p>
-  <a href="https://github.com/Ijtihed/ochess"><img src="https://img.shields.io/badge/Built_with-React-111111?style=for-the-badge&logo=react&logoColor=61DAFB" alt="Built with React"></a>
-  <a href="https://github.com/Ijtihed/ochess"><img src="https://img.shields.io/badge/Engine-Chess.js-111111?style=for-the-badge" alt="Engine Chess.js"></a>
-  <a href="https://github.com/Ijtihed/ochess"><img src="https://img.shields.io/badge/License-Apache_2.0-111111?style=for-the-badge" alt="Apache 2.0"></a>
+<p align="center">
+  <img src="https://img.shields.io/badge/Version-0.1-black?color=black&labelColor=black" alt="Version 0.1">
+  <img src="https://img.shields.io/badge/License-Apache%202.0-black?color=black&labelColor=black" alt="License Apache 2.0">
+  <img src="https://img.shields.io/badge/Platform-Web-black?color=black&labelColor=black" alt="Platform Web">
 </p>
 
 <br />
