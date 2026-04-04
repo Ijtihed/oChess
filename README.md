@@ -1,8 +1,8 @@
-<div align="center">
+<h1 align="center">oChess</h1>
 
-<h1>oChess</h1>
-<h3><em>Chess-first gameplay, analysis, and training in one clean loop</em></h3>
-<img src="ochess-app/public/bishoplogo.png" alt="oChess Logo" width="150" />
+<p align="center">
+  <img src="ochess-app/public/bishoplogo.png" alt="oChess Logo" width="200"/>
+</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Version-0.1-black?color=black&labelColor=black" alt="Version 0.1">
@@ -10,114 +10,170 @@
   <img src="https://img.shields.io/badge/Platform-Web-black?color=black&labelColor=black" alt="Platform Web">
 </p>
 
-<br />
+<p align="center">
+  A modern chess-first platform for play, analysis, puzzles, and long-term improvement.
+</p>
 
-<img src="ochess-app/public/screenshotpuzzle.png" alt="oChess puzzle experience" width="1080" />
-</div>
-
----
-
-> [!NOTE]
-> oChess is designed around one idea: the game does not end at checkmate.
-> Every major surface is built to move you from play to understanding to retention:
-> game -> analysis -> coach feedback -> puzzle/review loop.
-> The puzzle board shown above is one of the core UX anchors for this flow.
+<p align="center">
+  <img src="ochess-app/public/screenshotpuzzle.png" alt="oChess puzzle screenshot" width="1080" />
+</p>
 
 ---
 
-# IMPORTANT NOTICE
+## Wait, Another Chess Platform?
 
-This repository is an original open project for building a modern, premium-feeling chess platform.
+<table>
+<tr>
+<td width="70%">
 
-Key principles:
-- Chess-first UI, minimal noise
-- Fast iteration with practical tooling
-- Improvement loop over vanity metrics
-- Open-source with attribution-preserving licensing
+Yes, and intentionally so.
 
-For license and attribution terms, see `LICENSE` and `NOTICE`.
+**oChess** is built around one core idea: the game should not end when the clock hits zero.  
+Most platforms let your mistakes disappear into history; oChess turns them into a learning loop.
 
-## Why oChess Exists
+From fast play and bots to analysis, review, and coaching, every feature is designed to feel:
+- simple
+- premium
+- fast
+- chess-first
 
-Most chess products stop at move history and basic eval bars.  
-oChess is built to make post-game understanding and long-term improvement first-class.
+</td>
+<td width="30%" align="center">
+  <img src="ochess-app/public/bishoplogo.png" alt="oChess Bishop" width="160"/>
+  <br />
+  <em>Built for actual improvement.</em>
+</td>
+</tr>
+</table>
 
-## Technical Breakdown
+## What Makes oChess Different
 
-### Core Product Surfaces
-- `Play` - quick games with clean UX
-- `Puzzles` - tactical drilling and session tracking
-- `Analysis` - position review and engine context
-- `Study` - structured learning workflows
-- `Bots` - AI opponents by level
-- `Variants` - alternate rulesets
-- `Review` - spaced-repetition style recall
-- `Profile` - progression and personal history
+### The post-game loop is the product
 
-### Current Stack
+After a game, you should be able to move straight into:
+- mistake review
+- plain-language coach feedback
+- puzzle generation from your errors
+- study/review material for spaced repetition (Anki!)
+- plain language game-rule generation
+
+This is the core experience.
+
+### What is special here
+
+- **Anki-style chess memory loop**: important positions become review cards with spaced repetition, so mistakes do not disappear after one game.
+- **LLM game-rule generation**: write rules in plain language, generate playable variants, and test them quickly.
+- **Play those variants with friends**: generated rules are not just text; they are meant to be played in social games and challenges.
+- **Chess-first UX**: no feed clutter, no content bloat, just board, clarity, and progression.
+
+## Feature Overview
+
+<table>
+<tr>
+<td width="50%">
+
+### Play & Competition
+- Fast online play flow
+- Multiple time controls
+- Profile-facing progression
+- The regular package
+- Create game rules with plain language
+- Challenge friends with generated custom rules
+
+</td>
+<td width="50%">
+
+### Training & Improvement
+- Tactical puzzles
+- Analysis board + eval context
+- Anki-style review workflow for memory retention
+- AI coach direction in plain language
+
+</td>
+</tr>
+</table>
+
+## Product Surfaces
+
+Current navigation includes:
+- `Play`
+- `Puzzles`
+- `Analysis`
+- `Study`
+- `Bots`
+- `Variants`
+- `Review`
+- `Profile`
+
+## Tech Stack
+
 - `React`
 - `Vite`
+- `React Router`
 - `Tailwind CSS`
-- `react-router-dom`
 - `chess.js`
 - `react-chessboard`
 
-### Engine Work
-- Browser engine runtime support (Stockfish assets included)
-- Utility wrappers for position evaluation and readable feedback
-- Built to connect naturally into analysis and coaching flows
+## Setup
 
----
+### Requirements
+- Node.js `20+`
+- npm `10+`
 
-## How To Run
+### Run locally
 
-### Setup
 ```bash
 cd ochess-app
 npm install
-```
-
-### Development
-```bash
 npm run dev
 ```
 
-### Production Build
+### Production build
+
 ```bash
+cd ochess-app
 npm run build
 npm run preview
 ```
 
-## Repository Structure
+## Project Structure
 
-- `ochess-app/` - frontend application
-- `docs/` - product context, roadmap, architecture notes
-- `.github/` - CI, issue templates, PR templates, automation
+- `ochess-app/` - frontend app
+- `docs/` - product and architecture notes
+- `.github/` - CI and contribution workflows
+
+## Roadmap Direction
+
+- Stronger game-to-review automation
+- Better player profiling and progression
+- More polished analysis and study flows
+- Collaboration-friendly chess tooling
 
 ## Contributing
 
-Contributions are welcome and appreciated.
+Contributions are welcome.
 
 1. Fork the repository
-2. Create your branch (`git checkout -b feature/amazing-change`)
-3. Commit your updates
-4. Push and open a pull request
+2. Create a branch (`git checkout -b feature/your-feature`)
+3. Commit your changes
+4. Open a PR
 
-See `CONTRIBUTING.md` for full contribution guidelines.
+Read `CONTRIBUTING.md` for full guidelines.
 
 ## Security
 
-If you discover a vulnerability, please follow `SECURITY.md` for responsible reporting.
+Please follow `SECURITY.md` for responsible vulnerability reporting.
 
 ## License
 
-Licensed under `Apache-2.0`.
+Licensed under `Apache-2.0`.  
+See `LICENSE` and `NOTICE`.
 
-Reuse is free (including commercial use) as long as license and attribution notices are preserved.
+Reuse is free, including commercial use, as long as license/attribution notices are preserved.
 
 ---
 
 <div align="center">
-<p>Built by <strong>Ijtihed</strong></p>
-<p><em>Play better. Understand deeper. Remember longer.</em></p>
+  <p>Made with intent by <strong>Ijtihed</strong></p>
+  <p><em>Chess-first. Quietly premium.</em></p>
 </div>
