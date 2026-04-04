@@ -35,15 +35,7 @@ From fast play and bots to analysis, review, and coaching, every feature is desi
 - simple
 - premium
 - fast
-- chess-first
-
-</td>
-<td width="30%" align="center">
-  <img src="ochess-app/public/bishoplogo.png" alt="oChess Bishop" width="160"/>
-  <br />
-  <em>Built for actual improvement.</em>
-</td>
-</tr>
+- user-first
 </table>
 
 ## What Makes oChess Different
@@ -56,54 +48,18 @@ After a game, you should be able to move straight into:
 - puzzle generation from your errors
 - study/review material for spaced repetition (Anki!)
 - plain language game-rule generation
+- anki-style repeatition based on your puzzles/games
 
 This is the core experience.
 
 ### What is special here
 
-- **Anki-style chess memory loop**: important positions become review cards with spaced repetition, so mistakes do not disappear after one game.
+- **Anki-style chess memory loop**: important positions become review cards with spaced repetition so that your mistakes do not disappear after one game.
 - **LLM game-rule generation**: write rules in plain language, generate playable variants, and test them quickly.
 - **Play those variants with friends**: generated rules are not just text; they are meant to be played in social games and challenges.
-- **Chess-first UX**: no feed clutter, no content bloat, just board, clarity, and progression.
-
-## Feature Overview
-
-<table>
-<tr>
-<td width="50%">
-
-### Play & Competition
-- Fast online play flow
-- Multiple time controls
-- Profile-facing progression
-- The regular package
-- Create game rules with plain language
-- Challenge friends with generated custom rules
-
-</td>
-<td width="50%">
-
-### Training & Improvement
-- Tactical puzzles
-- Analysis board + eval context
-- Anki-style review workflow for memory retention
-- AI coach direction in plain language
-
-</td>
-</tr>
-</table>
+- **Chess-first UX**: no feed clutter, no content bloat, just simple board and progression.
 
 ## Product Surfaces
-
-Current navigation includes:
-- `Play`
-- `Puzzles`
-- `Analysis`
-- `Study`
-- `Bots`
-- `Variants`
-- `Review`
-- `Profile`
 
 ## Tech Stack
 
