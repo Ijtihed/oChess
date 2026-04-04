@@ -37,7 +37,7 @@ From fast play and bots to analysis, review, and coaching, every feature is desi
 <td width="30%" align="center">
   <img src="ochess-app/public/bishoplogo.png" alt="oChess Bishop" width="160"/>
   <br />
-  <em>Built for serious improvement.</em>
+  <em>Built for actual improvement.</em>
 </td>
 </tr>
 </table>
@@ -50,9 +50,10 @@ After a game, you should be able to move straight into:
 - mistake review
 - plain-language coach feedback
 - puzzle generation from your errors
-- study/review material for spaced repetition
+- study/review material for spaced repetition (Anki!)
+- plain language game-rule generation
 
-This is the core experience, not a side panel.
+This is the core experience.
 
 ## Feature Overview
 
@@ -63,8 +64,9 @@ This is the core experience, not a side panel.
 ### Play & Competition
 - Fast online play flow
 - Multiple time controls
-- Human and bot gameplay
 - Profile-facing progression
+- The regular package
+- Create game rules with plain language
 
 </td>
 <td width="50%">
