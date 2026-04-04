@@ -20,7 +20,7 @@
 
 ---
 
-## Wait, Another Chess Platform?
+# Wait, Another Chess Platform?
 
 <table>
 <tr>
