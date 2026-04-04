@@ -24,21 +24,20 @@
 
 <table>
 <tr>
-<td width="70%">
-
-Yes, and intentionally so.
-
-**oChess** is built around one core idea: the game should not end when the clock hits zero.  
-Most platforms let your mistakes disappear into history; oChess turns them into a learning loop.
-
-From fast play and bots to analysis, review, and coaching, every feature is designed to feel:
-- simple
-- premium
-- fast
-- user-first
+<td width="68%" valign="top">
+  <p><strong>Yes, and intentionally so.</strong></p>
+  <p><strong>oChess</strong> is built around one core idea: the game should not end when the clock hits zero.<br />
+  Most platforms let your mistakes disappear into history; oChess turns them into a learning loop.</p>
+  <p>From fast play and bots to analysis, review, and coaching, every feature is designed to feel:</p>
+  <ul>
+    <li>simple</li>
+    <li>premium</li>
+    <li>fast</li>
+    <li>user-first</li>
+  </ul>
 </td>
-<td width="30%" align="center">
-  <img src="ochess-app/public/surprisedpiece.png" alt="Surprised chess piece" width="220"/>
+<td width="32%" align="center" valign="middle">
+  <img src="ochess-app/public/surprisedpiece.png" alt="Surprised chess piece" width="240"/>
 </td>
 </tr>
 </table>
