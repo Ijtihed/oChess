@@ -1,0 +1,203 @@
+@import "tailwindcss";
+
+@theme {
+  --color-surface: #0c0c0c;
+  --color-surface-dim: #0c0c0c;
+  --color-surface-bright: #323232;
+  --color-surface-lowest: #060606;
+  --color-surface-low: #121212;
+  --color-surface-container: #171717;
+  --color-surface-high: #222222;
+  --color-surface-highest: #2c2c2c;
+  --color-surface-tint: #c6c6c7;
+
+  --color-primary: #ffffff;
+  --color-on-primary: #2f3131;
+  --color-primary-dim: #c6c6c7;
+
+  --color-secondary: #c7c6c6;
+  --color-on-secondary: #303031;
+
+  --color-on-surface: #e2e2e2;
+  --color-on-surface-variant: #c4c7c8;
+  --color-on-background: #e2e2e2;
+
+  --color-outline: #8e9192;
+  --color-outline-variant: #444748;
+
+  --color-error: #ffb4ab;
+
+  --font-headline: "Manrope", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-label: "Inter", system-ui, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface);
+  color: var(--color-on-surface);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* ── Custom cursor (desktop only) ── */
+#custom-cursor {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: #fff;
+  mix-blend-mode: difference;
+  pointer-events: none;
+  z-index: 99999;
+  transform: translate(-50%, -50%) scale(1);
+  transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  border: 1px solid transparent;
+}
+
+#custom-cursor.cursor--over {
+  transform: translate(-50%, -50%) scale(2.5);
+  background: rgba(255, 255, 255, 0.15);
+  border-color: #fff;
+}
+
+body,
+body * {
+  cursor: none !important;
+}
+
+@media (pointer: coarse) and (hover: none) {
+  #custom-cursor {
+    display: none !important;
+  }
+  body,
+  body * {
+    cursor: default !important;
+  }
+}
+
+/* ── Animations ── */
+
+.page-enter {
+  animation: fade-up 0.25s ease-out both;
+}
+
+.anim-fade-up {
+  animation: fade-up var(--dur, 0.5s) cubic-bezier(0.16, 1, 0.3, 1) var(--delay, 0s) both;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.anim-fade-in {
+  animation: fade-in var(--dur, 0.6s) ease var(--delay, 0s) both;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.anim-scale-in {
+  animation: scale-in var(--dur, 0.5s) cubic-bezier(0.16, 1, 0.3, 1) var(--delay, 0s) both;
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Mobile menu animation */
+.menu-enter {
+  animation: menu-slide 0.2s ease-out both;
+}
+
+@keyframes menu-slide {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Modal animation */
+.modal-backdrop-enter {
+  animation: fade-in 0.2s ease both;
+}
+
+.modal-sheet-enter {
+  animation: sheet-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.board-flash-correct {
+  animation: flash-correct 0.5s ease-out;
+}
+.board-flash-incorrect {
+  animation: flash-incorrect 0.5s ease-out;
+}
+@keyframes flash-correct {
+  0% { box-shadow: inset 0 0 0 3px rgba(76,175,80,0.7); }
+  100% { box-shadow: inset 0 0 0 0 rgba(76,175,80,0); }
+}
+@keyframes flash-incorrect {
+  0% { box-shadow: inset 0 0 0 3px rgba(239,68,68,0.7); }
+  100% { box-shadow: inset 0 0 0 0 rgba(239,68,68,0); }
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-highest);
+}

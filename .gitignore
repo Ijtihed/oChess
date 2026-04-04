@@ -1,0 +1,7 @@
+.cursor/
+**/node_modules/
+**/dist/
+*.log
+.DS_Store
+Thumbs.db
+ochess-app/public/puzzledb/lichess_db_puzzle.csv

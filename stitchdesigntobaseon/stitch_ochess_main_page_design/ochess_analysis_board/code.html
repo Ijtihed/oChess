@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>oChess | Analysis Board</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&amp;family=Inter:wght@300;400;500;600&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-surface": "#e2e2e2",
+                        "inverse-on-surface": "#303030",
+                        "on-tertiary": "#303030",
+                        "tertiary-fixed": "#e4e2e2",
+                        "outline-variant": "#444748",
+                        "on-primary-container": "#636565",
+                        "surface-tint": "#c6c6c7",
+                        "primary": "#ffffff",
+                        "tertiary": "#ffffff",
+                        "surface-bright": "#393939",
+                        "surface-dim": "#131313",
+                        "on-tertiary-container": "#646464",
+                        "on-tertiary-fixed-variant": "#474747",
+                        "tertiary-fixed-dim": "#c8c6c6",
+                        "surface": "#131313",
+                        "on-background": "#e2e2e2",
+                        "on-primary-fixed-variant": "#454747",
+                        "tertiary-container": "#e4e2e2",
+                        "surface-container-highest": "#353535",
+                        "surface-container": "#1f1f1f",
+                        "secondary-fixed-dim": "#c7c6c6",
+                        "primary-fixed": "#e2e2e2",
+                        "surface-variant": "#353535",
+                        "secondary-fixed": "#e3e2e2",
+                        "inverse-surface": "#e2e2e2",
+                        "on-secondary": "#303031",
+                        "on-primary-fixed": "#1a1c1c",
+                        "error": "#ffb4ab",
+                        "on-primary": "#2f3131",
+                        "error-container": "#93000a",
+                        "primary-container": "#e2e2e2",
+                        "outline": "#8e9192",
+                        "surface-container-lowest": "#0e0e0e",
+                        "surface-container-high": "#2a2a2a",
+                        "on-surface-variant": "#c4c7c8",
+                        "background": "#131313",
+                        "on-tertiary-fixed": "#1b1c1c",
+                        "secondary-container": "#464747",
+                        "on-secondary-fixed-variant": "#464747",
+                        "on-secondary-fixed": "#1b1c1c",
+                        "on-error": "#690005",
+                        "on-error-container": "#ffdad6",
+                        "surface-container-low": "#1b1b1b",
+                        "inverse-primary": "#5d5f5f",
+                        "secondary": "#c7c6c6",
+                        "primary-fixed-dim": "#c6c6c7",
+                        "on-secondary-container": "#b5b5b5"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "fontFamily": {
+                        "headline": ["Manrope"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+            font-size: 20px;
+        }
+        .board-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            aspect-ratio: 1 / 1;
+        }
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #131313;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #353535;
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface font-body selection:bg-primary selection:text-on-primary">
+<!-- TopNavBar -->
+<nav class="fixed top-0 w-full z-50 bg-zinc-950/80 backdrop-blur-xl border-b border-zinc-800/50 flex justify-between items-center px-8 h-16 w-full max-w-[1920px] mx-auto">
+<div class="flex items-center gap-8">
+<span class="text-2xl font-bold tracking-tighter text-zinc-50 font-headline">oChess</span>
+<div class="hidden md:flex gap-6">
+<a class="font-headline tracking-tight font-bold uppercase text-xs text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Play</a>
+<a class="font-headline tracking-tight font-bold uppercase text-xs text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Puzzles</a>
+<a class="font-headline tracking-tight font-bold uppercase text-xs text-zinc-50 border-b-2 border-zinc-50 pb-1" href="#">Analysis</a>
+<a class="font-headline tracking-tight font-bold uppercase text-xs text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Profile</a>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="material-symbols-outlined text-zinc-400 hover:text-zinc-50 transition-colors">notifications</button>
+<button class="material-symbols-outlined text-zinc-400 hover:text-zinc-50 transition-colors">settings</button>
+</div>
+</nav>
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-zinc-900 hidden lg:flex flex-col py-6 space-y-4">
+<div class="px-6 pb-6">
+<div class="p-4 bg-zinc-800/30 rounded-lg flex items-center gap-3">
+<img class="w-8 h-8 opacity-80" data-alt="minimalist white chess piece icon mascot with clean lines on a deep black background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBmmzeuVphZ-DMiLURcD2AhRhhdUYRaBdL3xDcaVl1l8k2ly9sGIRmOE4APnSDjsQDCOi5Y5s4KbHUvSq4L28Bu0imDAVUbXWHw1C5D5_6cOnbV9xvM4zmhsPPqzOrTf1RSXc0FhrJQbVK4jc_cZYDqwx9oB6raruu5K0rIq9jPHg-J7bxShh3ddspfGKJEj4eKjPNk-ZfWQvrNh5vSNwHaHd2p_Ag2jfHUo9SImB13Y8FvMPYwRXBzZv-VggP5Yd4s1nOczsf7ETab"/>
+<div>
+<p class="font-headline font-bold text-xs tracking-widest uppercase opacity-50">Grandmaster</p>
+<p class="font-headline font-medium text-sm">Elo 2450</p>
+</div>
+</div>
+</div>
+<div class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-6 py-3 text-zinc-500 hover:bg-zinc-800 transition-all font-headline font-medium text-sm" href="#">
+<span class="material-symbols-outlined">leaderboard</span> Leaderboards
+            </a>
+<a class="flex items-center gap-3 px-6 py-3 text-zinc-500 hover:bg-zinc-800 transition-all font-headline font-medium text-sm" href="#">
+<span class="material-symbols-outlined">emoji_events</span> Tournaments
+            </a>
+<a class="flex items-center gap-3 px-6 py-3 text-zinc-50 font-bold border-l-4 border-zinc-50 bg-zinc-800/50 font-headline text-sm" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">menu_book</span> Library
+            </a>
+<a class="flex items-center gap-3 px-6 py-3 text-zinc-500 hover:bg-zinc-800 transition-all font-headline font-medium text-sm" href="#">
+<span class="material-symbols-outlined">help_outline</span> Support
+            </a>
+</div>
+<div class="px-6 pt-6 border-t border-zinc-800/50 space-y-1">
+<button class="w-full bg-primary text-on-primary py-3 font-headline font-bold text-xs uppercase tracking-widest mb-4 hover:opacity-90 active:scale-[0.98] transition-all">New Game</button>
+<a class="flex items-center gap-3 py-2 text-zinc-500 hover:text-zinc-300 transition-colors font-headline font-medium text-sm" href="#">
+<span class="material-symbols-outlined">settings</span> Settings
+            </a>
+<a class="flex items-center gap-3 py-2 text-zinc-500 hover:text-zinc-300 transition-colors font-headline font-medium text-sm" href="#">
+<span class="material-symbols-outlined">logout</span> Log Out
+            </a>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="ml-0 lg:ml-64 mt-16 p-8 min-h-[calc(100vh-64px)] grid grid-cols-12 gap-8 bg-surface overflow-x-hidden">
+<!-- Chess Board Column -->
+<div class="col-span-12 xl:col-span-8 flex flex-col items-center xl:items-start">
+<div class="w-full flex justify-between items-end mb-6">
+<div>
+<h1 class="text-4xl font-headline font-extrabold tracking-tighter text-primary">ANALYSIS</h1>
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-widest mt-1">Deep Engine Review: Magnus v. Caruana (2018)</p>
+</div>
+<div class="flex gap-2">
+<button class="px-4 py-2 bg-surface-container-high border border-outline-variant/15 text-xs font-headline font-bold uppercase tracking-wider hover:bg-surface-container-highest transition-colors">Flip Board</button>
+<button class="px-4 py-2 bg-primary text-on-primary text-xs font-headline font-bold uppercase tracking-wider hover:opacity-90 transition-opacity">Share</button>
+</div>
+</div>
+<!-- The Board -->
+<div class="relative w-full max-w-[800px] bg-surface-container-low p-1 shadow-2xl">
+<div class="board-grid">
+<!-- Simple representation of a board layout using the design system colors -->
+<!-- Pattern: Row 1-8, Col a-h -->
+<script>
+                        const board = document.currentScript.parentElement;
+                        for (let r = 0; r < 8; r++) {
+                            for (let c = 0; c < 8; c++) {
+                                const sq = document.createElement('div');
+                                sq.className = (r + c) % 2 === 0 ? 'bg-secondary' : 'bg-surface-container-highest';
+                                sq.className += ' relative flex items-center justify-center';
+                                
+                                // Adding some piece placeholders visually for the "analysis" feel
+                                if(r === 6 && c === 4) {
+                                    sq.innerHTML = '<span class="text-surface-container-lowest text-6xl opacity-90">♙</span>';
+                                    sq.classList.add('ring-2', 'ring-inset', 'ring-primary/20');
+                                }
+                                if(r === 1 && c === 4) sq.innerHTML = '<span class="text-surface-container-lowest text-6xl opacity-90">♟</span>';
+                                if(r === 7 && c === 6) sq.innerHTML = '<span class="text-surface-container-lowest text-6xl opacity-90">♘</span>';
+                                if(r === 0 && c === 6) sq.innerHTML = '<span class="text-surface-container-lowest text-6xl opacity-90">♞</span>';
+                                
+                                board.appendChild(sq);
+                            }
+                        }
+                    </script>
+</div>
+<!-- Board Labels -->
+<div class="absolute -left-6 top-0 bottom-0 flex flex-col justify-around text-[10px] font-bold text-zinc-600 font-headline">
+<span>8</span><span>7</span><span>6</span><span>5</span><span>4</span><span>3</span><span>2</span><span>1</span>
+</div>
+<div class="absolute -bottom-6 left-0 right-0 flex justify-around text-[10px] font-bold text-zinc-600 font-headline">
+<span>A</span><span>B</span><span>C</span><span>D</span><span>E</span><span>F</span><span>G</span><span>H</span>
+</div>
+</div>
+<!-- Navigation Controls -->
+<div class="w-full max-w-[800px] mt-8 flex justify-center gap-1">
+<button class="flex-1 bg-surface-container py-4 hover:bg-surface-container-high transition-colors flex justify-center"><span class="material-symbols-outlined">first_page</span></button>
+<button class="flex-1 bg-surface-container py-4 hover:bg-surface-container-high transition-colors flex justify-center"><span class="material-symbols-outlined">chevron_left</span></button>
+<button class="flex-1 bg-surface-container py-4 hover:bg-surface-container-high transition-colors flex justify-center"><span class="material-symbols-outlined">play_arrow</span></button>
+<button class="flex-1 bg-surface-container py-4 hover:bg-surface-container-high transition-colors flex justify-center"><span class="material-symbols-outlined">chevron_right</span></button>
+<button class="flex-1 bg-surface-container py-4 hover:bg-surface-container-high transition-colors flex justify-center"><span class="material-symbols-outlined">last_page</span></button>
+</div>
+</div>
+<!-- Analysis Sidebar Column -->
+<div class="col-span-12 xl:col-span-4 flex flex-col gap-6">
+<!-- Engine Evaluation -->
+<section class="bg-surface-container-low p-6">
+<div class="flex justify-between items-center mb-6">
+<h2 class="font-headline font-bold text-xs tracking-widest text-on-surface-variant">ENGINE EVALUATION</h2>
+<span class="text-[10px] font-mono bg-surface-container-highest px-2 py-1">STOCKFISH 16.1</span>
+</div>
+<div class="flex items-center gap-6">
+<div class="text-5xl font-headline font-extrabold tracking-tighter text-primary">+0.84</div>
+<div class="flex-1 h-3 bg-surface-container-lowest relative overflow-hidden">
+<div class="absolute left-0 top-0 h-full bg-primary w-[58%] transition-all"></div>
+<div class="absolute left-1/2 top-0 h-full w-px bg-on-surface/20"></div>
+</div>
+</div>
+<p class="text-xs text-on-surface-variant mt-4 font-label leading-relaxed">Depth 24 • White has a slight positional advantage due to superior pawn structure in the center.</p>
+</section>
+<!-- AI Strategic Insight (Bento Card style) -->
+<section class="bg-surface-container p-6 relative overflow-hidden group">
+<div class="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full -mr-16 -mt-16 blur-3xl transition-opacity group-hover:opacity-100 opacity-50"></div>
+<div class="flex items-center gap-2 mb-4">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">psychology</span>
+<h2 class="font-headline font-bold text-xs tracking-widest text-primary">AI STRATEGIC INSIGHT</h2>
+</div>
+<div class="space-y-4">
+<p class="text-sm font-body text-on-surface leading-relaxed">
+                        The current position is a tense "quiet" phase. Black is attempting to provoke a premature kingside attack. 
+                    </p>
+<div class="bg-surface-container-lowest p-4 border-l-2 border-primary">
+<p class="text-xs font-label text-on-surface italic">
+                            "Focus on consolidating your d4 square before initiating the knight maneuver. Patience here is your strongest weapon."
+                        </p>
+</div>
+</div>
+</section>
+<!-- Move Notation -->
+<section class="flex-1 bg-surface-container-low flex flex-col min-h-[400px]">
+<div class="p-6 border-b border-outline-variant/10 flex justify-between items-center">
+<h2 class="font-headline font-bold text-xs tracking-widest text-on-surface-variant">MOVE NOTATION</h2>
+<div class="flex gap-4">
+<span class="material-symbols-outlined text-xs text-zinc-600 hover:text-zinc-200 cursor-pointer">download</span>
+<span class="material-symbols-outlined text-xs text-zinc-600 hover:text-zinc-200 cursor-pointer">content_copy</span>
+</div>
+</div>
+<div class="flex-1 overflow-y-auto font-mono text-sm">
+<!-- Zebra striping from design system -->
+<div class="grid grid-cols-2 p-3 bg-surface-container-lowest">
+<div class="flex items-center gap-4"><span class="text-zinc-600 text-[10px]">1.</span> <span>e4</span></div>
+<div class="flex items-center gap-4"><span>e5</span></div>
+</div>
+<div class="grid grid-cols-2 p-3">
+<div class="flex items-center gap-4"><span class="text-zinc-600 text-[10px]">2.</span> <span>Nf3</span></div>
+<div class="flex items-center gap-4"><span>Nc6</span></div>
+</div>
+<div class="grid grid-cols-2 p-3 bg-surface-container-lowest">
+<div class="flex items-center gap-4"><span class="text-zinc-600 text-[10px]">3.</span> <span>Bb5</span></div>
+<div class="flex items-center gap-4"><span>a6</span></div>
+</div>
+<div class="grid grid-cols-2 p-3 bg-primary/10 border-l-2 border-primary">
+<div class="flex items-center gap-4 font-bold text-primary"><span class="text-zinc-400 text-[10px]">4.</span> <span>Ba4</span></div>
+<div class="flex items-center gap-4 text-zinc-500 italic">... calculating</div>
+</div>
+<!-- Empty space for layout feel -->
+<div class="p-4 flex flex-col items-center justify-center h-full opacity-20 py-20">
+<img class="w-12 h-12 grayscale mb-4" data-alt="minimalist chess knight mascot icon for oChess branding, high contrast white on black" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCEbLg-0uFu747jeve9_5f-egrSKfB7poPW_NznN0vC0z_Llbd7m1fxcHgpOpuNeK1Sf-2tTpBqiopAudirBftl-h5sGCDFsogzLBucWzlmdgvs1mUAz6kus0AOsNdLF-jqXmWyrv8wLGg6ZFIFozKN-tmOlTPI0gvxuYxDDkRzRVrLd_gpFqZ3zbrD3SpCpADdwwIPoBDNq_6qJkUoqGJGpp9FynkVxiC6E3USIuUAyUWOqJFaweFWcif1bOt-xpSZ9Lin47Z95nWh"/>
+<p class="text-[10px] font-headline tracking-[0.3em] uppercase">Session Active</p>
+</div>
+</div>
+</section>
+</div>
+</main>
+<!-- Subtle Footer Info -->
+<footer class="ml-0 lg:ml-64 p-8 bg-surface-container-lowest border-t border-outline-variant/10">
+<div class="flex flex-col md:flex-row justify-between items-center gap-6">
+<div class="flex items-center gap-4">
+<span class="text-xs font-headline font-bold tracking-widest text-zinc-500">OCHESS ANALYTICS v2.4.1</span>
+<span class="w-1 h-1 rounded-full bg-zinc-700"></span>
+<span class="text-xs font-headline font-bold tracking-widest text-zinc-700">LOW LATENCY MODE</span>
+</div>
+<div class="flex gap-8">
+<a class="text-[10px] font-headline font-bold uppercase tracking-widest text-zinc-500 hover:text-primary transition-colors" href="#">Documentation</a>
+<a class="text-[10px] font-headline font-bold uppercase tracking-widest text-zinc-500 hover:text-primary transition-colors" href="#">Keyboard Shortcuts</a>
+<a class="text-[10px] font-headline font-bold uppercase tracking-widest text-zinc-500 hover:text-primary transition-colors" href="#">Privacy</a>
+</div>
+</div>
+</footer>
+</body></html>

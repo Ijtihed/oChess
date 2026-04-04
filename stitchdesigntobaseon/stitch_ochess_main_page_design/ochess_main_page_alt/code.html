@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&amp;family=Inter:wght@400;500;600&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                "on-secondary-fixed-variant": "#464747",
+                "tertiary-fixed": "#e4e2e2",
+                "outline-variant": "#444748",
+                "on-error": "#690005",
+                "error": "#ffb4ab",
+                "on-background": "#e2e2e2",
+                "tertiary-fixed-dim": "#c8c6c6",
+                "surface-variant": "#353535",
+                "primary-fixed": "#e2e2e2",
+                "surface": "#131313",
+                "inverse-on-surface": "#303030",
+                "surface-container-high": "#2a2a2a",
+                "secondary-fixed": "#e3e2e2",
+                "on-surface-variant": "#c4c7c8",
+                "on-surface": "#e2e2e2",
+                "background": "#131313",
+                "surface-dim": "#131313",
+                "surface-container-highest": "#353535",
+                "on-primary": "#2f3131",
+                "secondary": "#c7c6c6",
+                "on-error-container": "#ffdad6",
+                "primary": "#ffffff",
+                "tertiary": "#ffffff",
+                "surface-bright": "#393939",
+                "inverse-surface": "#e2e2e2",
+                "outline": "#8e9192",
+                "on-secondary-fixed": "#1b1c1c",
+                "error-container": "#93000a",
+                "secondary-fixed-dim": "#c7c6c6",
+                "on-tertiary-container": "#646464",
+                "on-secondary-container": "#b5b5b5",
+                "surface-tint": "#c6c6c7",
+                "surface-container-lowest": "#0e0e0e",
+                "on-secondary": "#303031",
+                "on-primary-fixed": "#1a1c1c",
+                "on-tertiary": "#303030",
+                "surface-container": "#1f1f1f",
+                "on-tertiary-fixed": "#1b1c1c",
+                "on-tertiary-fixed-variant": "#474747",
+                "surface-container-low": "#1b1b1b",
+                "on-primary-container": "#636565",
+                "on-primary-fixed-variant": "#454747",
+                "tertiary-container": "#e4e2e2",
+                "inverse-primary": "#5d5f5f",
+                "primary-container": "#e2e2e2",
+                "secondary-container": "#464747",
+                "primary-fixed-dim": "#c6c6c7"
+            },
+            "borderRadius": {
+                "DEFAULT": "0.125rem",
+                "lg": "0.25rem",
+                "xl": "0.5rem",
+                "full": "0.75rem"
+            },
+            "fontFamily": {
+                "headline": ["Manrope"],
+                "body": ["Inter"],
+                "label": ["Inter"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .board-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            aspect-ratio: 1/1;
+        }
+        .chess-square:nth-child(odd) { background-color: #353535; }
+        .chess-square:nth-child(even) { background-color: #c7c6c6; }
+        /* Reverse logic for even rows to create checkerboard */
+        .row-even .chess-square:nth-child(odd) { background-color: #c7c6c6; }
+        .row-even .chess-square:nth-child(even) { background-color: #353535; }
+    </style>
+</head>
+<body class="bg-surface text-on-surface font-body selection:bg-primary selection:text-on-primary">
+<!-- TopNavBar -->
+<nav class="fixed top-0 w-full z-50 bg-neutral-950/80 backdrop-blur-xl flex justify-between items-center px-8 h-16 w-full">
+<div class="text-2xl font-bold tracking-tighter text-neutral-50">oChess</div>
+<div class="hidden md:flex gap-8 items-center h-full">
+<a class="font-manrope tracking-tight font-bold uppercase text-xs text-neutral-50 border-b border-neutral-50 pb-1 hover:text-neutral-200 transition-colors duration-300" href="#">Play</a>
+<a class="font-manrope tracking-tight font-bold uppercase text-xs text-neutral-400 hover:text-neutral-200 transition-colors duration-300" href="#">Puzzles</a>
+<a class="font-manrope tracking-tight font-bold uppercase text-xs text-neutral-400 hover:text-neutral-200 transition-colors duration-300" href="#">Analysis</a>
+<a class="font-manrope tracking-tight font-bold uppercase text-xs text-neutral-400 hover:text-neutral-200 transition-colors duration-300" href="#">Profile</a>
+</div>
+<div class="flex items-center gap-4 text-neutral-50">
+<button class="scale-95 transition-transform duration-200 hover:text-neutral-200">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="scale-95 transition-transform duration-200 hover:text-neutral-200">
+<span class="material-symbols-outlined">account_circle</span>
+</button>
+</div>
+</nav>
+<!-- SideNavBar (Suppressed for landing, but structure kept for reference if needed) -->
+<main class="min-h-screen pt-16 flex flex-col md:flex-row relative overflow-hidden">
+<!-- Left Editorial Section -->
+<section class="w-full md:w-5/12 flex flex-col justify-center px-8 md:px-16 lg:px-24 py-12 z-10">
+<div class="mb-2">
+<span class="font-label text-[10px] uppercase tracking-[0.3em] text-on-surface-variant font-semibold">Volume 01 / Strategic Mastery</span>
+</div>
+<h1 class="font-headline text-7xl md:text-8xl lg:text-9xl font-extrabold tracking-tighter text-primary leading-[0.85] mb-8">
+                oChess
+            </h1>
+<p class="font-body text-lg text-on-surface-variant max-w-md mb-12 leading-relaxed">
+                The game of kings, reimagined through the lens of monochromatic brutalism. Minimalist execution for the maximum mind.
+            </p>
+<!-- Primary Actions -->
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg">
+<button class="group relative flex items-center justify-between p-5 bg-primary text-on-primary font-headline font-bold text-sm tracking-tight transition-all duration-300 hover:brightness-90">
+                    Play Online
+                    <span class="material-symbols-outlined text-xl group-hover:translate-x-1 transition-transform">bolt</span>
+</button>
+<button class="group flex items-center justify-between p-5 bg-surface-container-low border border-white/10 font-headline font-bold text-sm tracking-tight hover:bg-surface-container-high transition-all">
+                    Play Bot
+                    <span class="material-symbols-outlined text-xl group-hover:scale-110 transition-transform">smart_toy</span>
+</button>
+<button class="group flex items-center justify-between p-5 bg-surface-container-low border border-white/10 font-headline font-bold text-sm tracking-tight hover:bg-surface-container-high transition-all">
+                    Puzzles
+                    <span class="material-symbols-outlined text-xl">extension</span>
+</button>
+<button class="group flex items-center justify-between p-5 bg-surface-container-low border border-white/10 font-headline font-bold text-sm tracking-tight hover:bg-surface-container-high transition-all">
+                    Analysis
+                    <span class="material-symbols-outlined text-xl">query_stats</span>
+</button>
+</div>
+</section>
+<!-- Right Board Section (Asymmetrical Offset) -->
+<section class="w-full md:w-7/12 relative flex items-center justify-center p-4 md:p-12 overflow-hidden">
+<!-- Subtle background typography -->
+<div class="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/4 select-none pointer-events-none opacity-[0.03] font-headline text-[30rem] font-black leading-none">
+                G3
+            </div>
+<div class="relative w-full max-w-[700px] aspect-square shadow-2xl shadow-black/50 rotate-[-1deg] md:translate-x-12 lg:translate-x-24">
+<!-- Board Shell -->
+<div class="w-full h-full p-1 bg-white/5 backdrop-blur-md rounded-sm">
+<div class="board-grid w-full h-full bg-surface-container-lowest">
+<!-- Simplified representation of a board setup -->
+<!-- Row 8 (White Squares first) -->
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-400">chess_rook</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-400">chess_knight</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-400">chess_bishop</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-400">chess_queen</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-400">chess_king</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-400">chess_bishop</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-400">chess_knight</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-400">chess_rook</span></div>
+<!-- Row 7 -->
+<div class="row-even flex contents">
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-400">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-400">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-400">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-400">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-400">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-400">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-400">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-400">chess_pawn</span></div>
+</div>
+<!-- Rows 6-3 (Empty for clarity) -->
+<div class="contents">
+<div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div>
+</div>
+<div class="row-even flex contents">
+<div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div>
+</div>
+<div class="contents">
+<div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div>
+</div>
+<div class="row-even flex contents">
+<div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div><div class="chess-square"></div>
+</div>
+<!-- Row 2 -->
+<div class="contents">
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_pawn</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-3xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_pawn</span></div>
+</div>
+<!-- Row 1 -->
+<div class="row-even flex contents">
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_rook</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_knight</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_bishop</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_queen</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_king</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_bishop</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_knight</span></div>
+<div class="chess-square flex items-center justify-center"><span class="material-symbols-outlined text-4xl text-neutral-800" style="font-variation-settings: 'FILL' 1;">chess_rook</span></div>
+</div>
+</div>
+</div>
+<!-- Floating Editorial Meta -->
+<div class="absolute -bottom-10 -left-10 bg-surface-container p-6 border-l-4 border-primary max-w-[240px] hidden lg:block backdrop-blur-xl bg-opacity-90">
+<h3 class="font-headline font-bold text-xs uppercase tracking-widest mb-2">Grandmaster Choice</h3>
+<p class="font-body text-xs text-on-surface-variant italic">"Success on the board starts with the elimination of the unnecessary."</p>
+<div class="mt-4 flex items-center gap-2">
+<div class="w-8 h-[1px] bg-outline-variant"></div>
+<span class="text-[10px] font-label font-bold uppercase">Kasparov</span>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- Secondary Integrated Section -->
+<section class="bg-surface-container-low px-8 md:px-24 py-24">
+<div class="flex flex-col lg:flex-row gap-16">
+<!-- Leaderboard Column -->
+<div class="flex-1">
+<div class="flex justify-between items-end mb-8 border-b border-outline-variant/20 pb-4">
+<h2 class="font-headline text-3xl font-bold tracking-tighter">Leaderboard</h2>
+<span class="font-label text-xs text-on-surface-variant uppercase tracking-widest">Global Ranking</span>
+</div>
+<div class="space-y-1">
+<!-- Leaderboard Item 1 -->
+<div class="flex items-center justify-between p-4 bg-surface hover:bg-surface-container-high transition-colors group cursor-pointer">
+<div class="flex items-center gap-6">
+<span class="font-headline text-xl font-extrabold text-outline-variant group-hover:text-primary transition-colors">01</span>
+<div class="w-10 h-10 bg-neutral-800 overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="professional headshot of a young man with a focused expression in black and white" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCjZEt-karbP4NvtF5gPiSexGxuAd24a2eXng3IwCa2Kiy6Ukj0XfaDce3RWu-P2ouN6p3FTggIOZ5KXH8DnD2laiFNUU-V6qT1tlrHXja--4F4ijoPTRInmVb7TcU66nLWjXIYK6lxI_UG7tYefb_OEfj2QP1vbVXWIls61KXICbZf6J-imdP9UUkCC1D-lMWE6megOmP8P3SzNA9ni_yELiL-odaIRs-O0BetkVV2mAjsVM5olS_anBgIfyOT7b8AarxVcBUrkCyL"/>
+</div>
+<div>
+<p class="font-headline font-bold text-sm tracking-tight">Magnus_Prime</p>
+<p class="text-[10px] text-on-surface-variant font-label uppercase">Rating: 2845</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-primary-fixed-dim opacity-0 group-hover:opacity-100 transition-opacity">trending_up</span>
+</div>
+<!-- Leaderboard Item 2 -->
+<div class="flex items-center justify-between p-4 bg-surface hover:bg-surface-container-high transition-colors group cursor-pointer">
+<div class="flex items-center gap-6">
+<span class="font-headline text-xl font-extrabold text-outline-variant group-hover:text-primary transition-colors">02</span>
+<div class="w-10 h-10 bg-neutral-800 overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="close up profile of a woman with short hair looking thoughtfully in monochrome" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDq4JQzWjo5aPMuxAsHrvuCg2UWbF2JuSoI-dG3qha3IjvR0ikWFRqDLRHZrgLd0-nZ0_A6DD2JomBrF4hsT8eBlFD5SncjTExuaKJSzXO5TefyShwmGo7UXeD2abs_sZzhA89ZM__nID8DvFci5c6j0JIDqW--idkOMBqizmdicKyP-ois5W917u1lyKRcWpm1ozGm87t4vt5jhOj8iIGoZkLzb1Hxy45DRSX3Af5eAXDVNvismwT8FGZVh6Orfcn7FCP1FgMPzJ-N"/>
+</div>
+<div>
+<p class="font-headline font-bold text-sm tracking-tight">The_Queen_Gambit</p>
+<p class="text-[10px] text-on-surface-variant font-label uppercase">Rating: 2790</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-primary-fixed-dim opacity-0 group-hover:opacity-100 transition-opacity">trending_flat</span>
+</div>
+<!-- Leaderboard Item 3 -->
+<div class="flex items-center justify-between p-4 bg-surface hover:bg-surface-container-high transition-colors group cursor-pointer">
+<div class="flex items-center gap-6">
+<span class="font-headline text-xl font-extrabold text-outline-variant group-hover:text-primary transition-colors">03</span>
+<div class="w-10 h-10 bg-neutral-800 overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="serious older man with a grey beard in a dark studio setting, high contrast portrait" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDpHtYoiw88_p3HzjWJF-WlyWN73LxXPEYpv1N0dGNZaPx5db2K-mQtbInZrVzapykg1VUYbdgfUFUPLnnjpJV5HT3Y5Q-UGUc0r7vlsVhWpkpZgMd2rQTiS_05uAZ2Aybl8FT7vK3_t_-xiGo-UULSsMOdrRszRy4AmMy_Q2zoaNqcLhtVa7iVQ7aLs71fXgC-ooe3yTWqgYMZGkIQE0XlEQn5tv_eqnMD8XHoCVoONRJMWvk-PmUz5inttAReOOX-eyNfDWLXvvP3"/>
+</div>
+<div>
+<p class="font-headline font-bold text-sm tracking-tight">Grandmaster_X</p>
+<p class="text-[10px] text-on-surface-variant font-label uppercase">Rating: 2755</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-primary-fixed-dim opacity-0 group-hover:opacity-100 transition-opacity">trending_down</span>
+</div>
+</div>
+</div>
+<!-- Insights Column -->
+<div class="flex-1 lg:max-w-md">
+<div class="flex justify-between items-end mb-8 border-b border-outline-variant/20 pb-4">
+<h2 class="font-headline text-3xl font-bold tracking-tighter">Insights</h2>
+<span class="font-label text-xs text-on-surface-variant uppercase tracking-widest">Editorial</span>
+</div>
+<div class="relative group cursor-pointer overflow-hidden mb-6">
+<div class="h-48 bg-neutral-900 overflow-hidden">
+<img class="w-full h-full object-cover grayscale brightness-50 group-hover:scale-105 transition-transform duration-500" data-alt="dramatic macro shot of a black chess king on a dark textured surface with sharp lighting highlights" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBBjtHWj7WAo25-RZG27-W1FZepTiwLrBr4suKY--v-_NxTlzfMlzXV6d4B9xVWqxeMbKB40NvM0PiOATnkOMTapNoljlt1IphNwtbRQZ6nof1C1F-2q2kp0-air5GJ1We_mdvyj80EqfeYNeyVWNn1AOhTDylkGgbUKL90LOi-34Iuv_xsZbZVTOiUkqOikT97C5CKVJyKth8qbT_OhzQ2pyDjVe3D29ww6yuhc2Z683GAWsBDorQY-q478p9mJBPMKAp0Xz0dmgmg"/>
+</div>
+<div class="absolute inset-0 p-6 flex flex-col justify-end bg-gradient-to-t from-surface to-transparent">
+<p class="font-label text-[10px] uppercase text-on-surface-variant tracking-widest mb-2">Analysis / Deep Dive</p>
+<h3 class="font-headline font-bold text-xl leading-tight">The Sicilian Defense: Why It Still Dominates in 2024</h3>
+</div>
+</div>
+<div class="space-y-6">
+<div class="flex gap-4 items-start group cursor-pointer">
+<div class="w-16 h-16 bg-neutral-900 flex-shrink-0">
+<img class="w-full h-full object-cover grayscale brightness-75" data-alt="minimalist overhead shot of two chess pieces facing each other on a dark grey background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDAbBLGTJGxZHfXLn-niEkUcmzLlfNMkrMBIXahXsUmy-zYVPWWpYTeGFu9nRJYTITA97FklTU4HcEpu9zIShi0kWMAyELHauOOC2CqkVOiofEzNkrZwHOWO4cd476fB25v0KHERKGYQH3DBzPMxx_jjmdp7Y1y3Uv_rqVuJJCeZ1lTyh1W5YGKGCsz-FKxo8LedEkR4fn7Ka2oTu-czAOmutMPQ9PRTnPtCs8E4aBZd3CFb9zf-Ez459hiD08gbgHNL4v-3mL_Jfy-"/>
+</div>
+<div>
+<h4 class="font-headline font-bold text-sm mb-1 group-hover:underline">Endgame Principles: The Rule of the Square</h4>
+<p class="text-xs text-on-surface-variant font-body line-clamp-2">Mastering the simplest endgames is what separates the masters from the amateurs.</p>
+</div>
+</div>
+<div class="flex gap-4 items-start group cursor-pointer">
+<div class="w-16 h-16 bg-neutral-900 flex-shrink-0">
+<img class="w-full h-full object-cover grayscale brightness-75" data-alt="abstract architectural lines in black and white mimicking the geometric tension of a chess board" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCHDZ8Zb5AtgoAC10xX-tY_Bt79LNfOArE_sP7KUJK8vKy4oWWn8uHhlyqURQJWRuPb3O_t2zrCWxgVMHBP7jwu4GtuaYpKbCt90-fpVF3OaBnYmLTefDfiEJqlkfSHjd0jO1v_UpskU0tXwTWfpJbs9LneqAHJ9ojrm4XFxvsmelRsUmcsKa9R6CTjuTmdgh_WUGz70uBfoQ3iSyKxvCSqGJXooa08URVcdnPOieI2XgXEOjj2nCD9k8RtYIOg5qCOL7e1RBbieQ05"/>
+</div>
+<div>
+<h4 class="font-headline font-bold text-sm mb-1 group-hover:underline">The Psychological War: Handling Time Pressure</h4>
+<p class="text-xs text-on-surface-variant font-body line-clamp-2">When the clock is ticking, your worst enemy isn't your opponent—it's your pulse.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Footer -->
+<footer class="bg-surface py-12 px-8 md:px-24 border-t border-outline-variant/10">
+<div class="flex flex-col md:flex-row justify-between items-center gap-8">
+<div class="flex flex-col gap-2">
+<span class="text-xl font-bold tracking-tighter text-primary">oChess</span>
+<span class="text-[10px] font-label text-on-surface-variant uppercase tracking-[0.2em]">Crafted for the Strategic Mind</span>
+</div>
+<div class="flex gap-12">
+<div class="flex flex-col gap-3">
+<p class="text-[10px] font-label font-bold uppercase tracking-widest text-primary">Platform</p>
+<a class="text-xs text-on-surface-variant hover:text-primary transition-colors" href="#">Privacy</a>
+<a class="text-xs text-on-surface-variant hover:text-primary transition-colors" href="#">Terms</a>
+<a class="text-xs text-on-surface-variant hover:text-primary transition-colors" href="#">Support</a>
+</div>
+<div class="flex flex-col gap-3">
+<p class="text-[10px] font-label font-bold uppercase tracking-widest text-primary">Social</p>
+<a class="text-xs text-on-surface-variant hover:text-primary transition-colors" href="#">Twitter</a>
+<a class="text-xs text-on-surface-variant hover:text-primary transition-colors" href="#">Twitch</a>
+<a class="text-xs text-on-surface-variant hover:text-primary transition-colors" href="#">Discord</a>
+</div>
+</div>
+<div class="text-[10px] font-label text-on-secondary-fixed-variant uppercase tracking-widest">
+                © 2024 oChess Editorial. All rights reserved.
+            </div>
+</div>
+</footer>
+</body></html>

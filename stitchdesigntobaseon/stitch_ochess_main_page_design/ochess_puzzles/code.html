@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@200;400;600;700;800&amp;family=Inter:wght@300;400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-surface": "#e2e2e2",
+                        "inverse-on-surface": "#303030",
+                        "on-tertiary": "#303030",
+                        "tertiary-fixed": "#e4e2e2",
+                        "outline-variant": "#444748",
+                        "on-primary-container": "#636565",
+                        "surface-tint": "#c6c6c7",
+                        "primary": "#ffffff",
+                        "tertiary": "#ffffff",
+                        "surface-bright": "#393939",
+                        "surface-dim": "#131313",
+                        "on-tertiary-container": "#646464",
+                        "on-tertiary-fixed-variant": "#474747",
+                        "tertiary-fixed-dim": "#c8c6c6",
+                        "surface": "#131313",
+                        "on-background": "#e2e2e2",
+                        "on-primary-fixed-variant": "#454747",
+                        "tertiary-container": "#e4e2e2",
+                        "surface-container-highest": "#353535",
+                        "surface-container": "#1f1f1f",
+                        "secondary-fixed-dim": "#c7c6c6",
+                        "primary-fixed": "#e2e2e2",
+                        "surface-variant": "#353535",
+                        "secondary-fixed": "#e3e2e2",
+                        "inverse-surface": "#e2e2e2",
+                        "on-secondary": "#303031",
+                        "on-primary-fixed": "#1a1c1c",
+                        "error": "#ffb4ab",
+                        "on-primary": "#2f3131",
+                        "error-container": "#93000a",
+                        "primary-container": "#e2e2e2",
+                        "outline": "#8e9192",
+                        "surface-container-lowest": "#0e0e0e",
+                        "surface-container-high": "#2a2a2a",
+                        "on-surface-variant": "#c4c7c8",
+                        "background": "#131313",
+                        "on-tertiary-fixed": "#1b1c1c",
+                        "secondary-container": "#464747",
+                        "on-secondary-fixed-variant": "#464747",
+                        "on-secondary-fixed": "#1b1c1c",
+                        "on-error": "#690005",
+                        "on-error-container": "#ffdad6",
+                        "surface-container-low": "#1b1b1b",
+                        "inverse-primary": "#5d5f5f",
+                        "secondary": "#c7c6c6",
+                        "primary-fixed-dim": "#c6c6c7",
+                        "on-secondary-container": "#b5b5b5"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "fontFamily": {
+                        "headline": ["Manrope"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .board-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            grid-template-rows: repeat(8, 1fr);
+            aspect-ratio: 1 / 1;
+        }
+        .chess-piece {
+            font-size: clamp(1.5rem, 4vw, 3rem);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .editorial-shadow {
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface font-body selection:bg-primary selection:text-on-primary">
+<!-- TopNavBar -->
+<nav class="fixed top-0 w-full z-50 bg-zinc-950/80 backdrop-blur-xl border-b border-zinc-800/50">
+<div class="flex justify-between items-center px-8 h-16 w-full max-w-[1920px] mx-auto">
+<div class="text-2xl font-bold tracking-tighter text-zinc-50 font-headline">oChess</div>
+<div class="hidden md:flex items-center space-x-8 h-full">
+<a class="font-headline tracking-tight font-bold uppercase text-xs text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Play</a>
+<a class="font-headline tracking-tight font-bold uppercase text-xs text-zinc-50 border-b-2 border-zinc-50 pb-1" href="#">Puzzles</a>
+<a class="font-headline tracking-tight font-bold uppercase text-xs text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Analysis</a>
+<a class="font-headline tracking-tight font-bold uppercase text-xs text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Profile</a>
+</div>
+<div class="flex items-center space-x-4">
+<button class="p-2 text-zinc-400 hover:bg-zinc-900/50 transition-all duration-300 rounded-full">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 text-zinc-400 hover:bg-zinc-900/50 transition-all duration-300 rounded-full">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</div>
+</div>
+</nav>
+<div class="flex pt-16 min-h-screen">
+<!-- SideNavBar (Desktop) -->
+<aside class="hidden md:flex fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-zinc-900 flex-col py-6 space-y-4">
+<div class="px-6 mb-6">
+<div class="flex items-center space-x-3 p-3 bg-zinc-800/30 rounded-lg">
+<img alt="User profile avatar" class="w-10 h-10 rounded-full grayscale border border-outline-variant/20" data-alt="dramatic black and white portrait of a focused man in high contrast lighting, editorial fashion style" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAnExi7aqx4o0dvZGsBOhIvZMqRdGn4hVnKD4_cvKjLttFZREf13fTF5sXqlQpCsuO3DzwI53Er7KUYiCEHBrNizd-XXkUqihT6i00NwjDMT-aCwwGhf_8WUDUxB-mmKMGodtBDZpch6ucji8S4fwc6ujBNOL2F04SMuHOaSi5nQ3xvs_OxDk2r4Txe2opLy66R4spi69DOXTBHtuuV2FySHxkiGX_uVvwRJJcdPbOLnVNbgpWS7Uq3hc35KhcxIXB7rNmganRpmA75"/>
+<div>
+<p class="text-zinc-100 font-headline font-medium text-sm">The Grandmaster</p>
+<p class="text-zinc-500 text-xs">Rating: 2450</p>
+</div>
+</div>
+</div>
+<div class="flex flex-col space-y-1">
+<a class="flex items-center px-6 py-3 space-x-3 text-zinc-500 hover:bg-zinc-800 transition-all group" href="#">
+<span class="material-symbols-outlined">leaderboard</span>
+<span class="font-headline font-medium text-sm">Leaderboards</span>
+</a>
+<a class="flex items-center px-6 py-3 space-x-3 text-zinc-500 hover:bg-zinc-800 transition-all group" href="#">
+<span class="material-symbols-outlined">emoji_events</span>
+<span class="font-headline font-medium text-sm">Tournaments</span>
+</a>
+<a class="flex items-center px-6 py-3 space-x-3 text-zinc-50 font-bold border-l-4 border-zinc-50 bg-zinc-800/50" href="#">
+<span class="material-symbols-outlined">menu_book</span>
+<span class="font-headline font-medium text-sm">Library</span>
+</a>
+<a class="flex items-center px-6 py-3 space-x-3 text-zinc-500 hover:bg-zinc-800 transition-all group" href="#">
+<span class="material-symbols-outlined">help_outline</span>
+<span class="font-headline font-medium text-sm">Support</span>
+</a>
+</div>
+<div class="mt-auto px-6 space-y-4">
+<button class="w-full bg-primary text-on-primary py-3 px-4 font-headline font-bold text-xs uppercase tracking-widest hover:brightness-90 transition-all">
+                    New Game
+                </button>
+<div class="flex flex-col space-y-1 pb-4">
+<a class="flex items-center py-2 space-x-3 text-zinc-500 hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined text-sm">settings</span>
+<span class="text-xs uppercase tracking-tighter">Settings</span>
+</a>
+<a class="flex items-center py-2 space-x-3 text-zinc-500 hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined text-sm">logout</span>
+<span class="text-xs uppercase tracking-tighter">Log Out</span>
+</a>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="flex-1 md:ml-64 p-8 md:p-12 lg:p-16 flex flex-col lg:flex-row gap-12">
+<!-- Central Puzzle Area -->
+<section class="flex-1 flex flex-col items-start space-y-8">
+<div class="max-w-2xl w-full">
+<h1 class="font-headline text-5xl md:text-7xl font-extrabold tracking-tighter uppercase mb-2 leading-[0.9]">
+                        Find The<br/>Winning Sequence
+                    </h1>
+<p class="text-on-surface-variant font-light text-lg tracking-tight max-w-md">
+                        Black to move. Precise tactical calculation required.
+                    </p>
+</div>
+<!-- Chessboard Container -->
+<div class="w-full max-w-[700px] aspect-square surface-container-low p-2 editorial-shadow relative">
+<div class="board-grid">
+<!-- Simplified Chessboard Logic -->
+<div class="bg-secondary flex items-center justify-center relative"><span class="chess-piece">♜</span><span class="absolute top-1 left-1 text-[10px] opacity-30">8</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece">♝</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece">♚</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece">♜</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center relative"><span class="absolute top-1 left-1 text-[10px] opacity-30">7</span></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece">♟</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece">♟</span></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece">♟</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece">♟</span></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece">♟</span></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece">♟</span></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece">♞</span></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece">♙</span></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece">♗</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece">♘</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece text-on-surface-variant">♙</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece text-on-surface-variant">♙</span></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece text-on-surface-variant">♙</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"></div>
+<div class="bg-secondary flex items-center justify-center"></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece text-on-surface-variant">♙</span></div>
+<div class="bg-secondary flex items-center justify-center"><span class="chess-piece text-on-surface-variant">♙</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center"><span class="chess-piece text-on-surface-variant">♙</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center relative"><span class="chess-piece text-on-surface-variant">♖</span><span class="absolute bottom-1 left-1 text-[10px] opacity-30">1</span><span class="absolute bottom-1 right-1 text-[10px] opacity-30">A</span></div>
+<div class="bg-secondary flex items-center justify-center relative"><span class="absolute bottom-1 right-1 text-[10px] opacity-30">B</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center relative"><span class="absolute bottom-1 right-1 text-[10px] opacity-30">C</span></div>
+<div class="bg-secondary flex items-center justify-center relative"><span class="chess-piece text-on-surface-variant">♕</span><span class="absolute bottom-1 right-1 text-[10px] opacity-30">D</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center relative"><span class="absolute bottom-1 right-1 text-[10px] opacity-30">E</span></div>
+<div class="bg-secondary flex items-center justify-center relative"><span class="chess-piece text-on-surface-variant">♖</span><span class="absolute bottom-1 right-1 text-[10px] opacity-30">F</span></div>
+<div class="bg-surface-container-highest flex items-center justify-center relative"><span class="chess-piece text-on-surface-variant">♔</span><span class="absolute bottom-1 right-1 text-[10px] opacity-30">G</span></div>
+<div class="bg-secondary flex items-center justify-center relative"><span class="absolute bottom-1 right-1 text-[10px] opacity-30">H</span></div>
+</div>
+</div>
+<div class="w-full max-w-[700px] flex justify-between items-center">
+<div class="flex space-x-4">
+<button class="bg-zinc-800 hover:bg-zinc-700 text-on-surface p-4 flex items-center justify-center transition-colors">
+<span class="material-symbols-outlined">keyboard_double_arrow_left</span>
+</button>
+<button class="bg-zinc-800 hover:bg-zinc-700 text-on-surface p-4 flex items-center justify-center transition-colors">
+<span class="material-symbols-outlined">lightbulb</span>
+</button>
+</div>
+<button class="bg-primary text-on-primary font-headline font-extrabold tracking-[0.2em] px-12 py-5 uppercase text-sm hover:brightness-90 transition-all">
+                        YOUR MOVE
+                    </button>
+</div>
+</section>
+<!-- Sidebar Info Panels -->
+<aside class="w-full lg:w-[320px] space-y-12">
+<!-- Daily Progress -->
+<div class="space-y-4">
+<h3 class="font-headline font-bold text-xs uppercase tracking-widest text-zinc-500">Daily Progress</h3>
+<div class="space-y-2">
+<div class="flex justify-between items-end">
+<span class="text-4xl font-headline font-extrabold italic">8<span class="text-sm not-italic opacity-30 ml-1">/10</span></span>
+<span class="text-[10px] uppercase font-bold text-zinc-500 mb-1 tracking-tighter">+12 Rating today</span>
+</div>
+<div class="h-[2px] w-full bg-zinc-800">
+<div class="h-full bg-primary w-[80%]"></div>
+</div>
+</div>
+</div>
+<!-- Tactical Themes -->
+<div class="space-y-4">
+<h3 class="font-headline font-bold text-xs uppercase tracking-widest text-zinc-500">Tactical Themes</h3>
+<div class="flex flex-wrap gap-2">
+<span class="px-3 py-1.5 surface-container text-xs font-medium border border-outline-variant/10 cursor-pointer hover:bg-surface-container-high transition-colors">Pins</span>
+<span class="px-3 py-1.5 surface-container text-xs font-medium border border-outline-variant/10 cursor-pointer hover:bg-surface-container-high transition-colors">Forks</span>
+<span class="px-3 py-1.5 surface-container text-xs font-medium border border-outline-variant/10 cursor-pointer hover:bg-surface-container-high transition-colors">Endgame</span>
+<span class="px-3 py-1.5 surface-container text-xs font-medium border border-outline-variant/10 cursor-pointer hover:bg-surface-container-high transition-colors">Skewer</span>
+<span class="px-3 py-1.5 surface-container text-xs font-medium border border-outline-variant/10 cursor-pointer hover:bg-surface-container-high transition-colors">Discovered Attack</span>
+</div>
+</div>
+<!-- Recent Puzzles -->
+<div class="space-y-4">
+<div class="flex justify-between items-center">
+<h3 class="font-headline font-bold text-xs uppercase tracking-widest text-zinc-500">Recent Puzzles</h3>
+<a class="text-[10px] uppercase text-primary underline underline-offset-4 decoration-primary/30" href="#">View All</a>
+</div>
+<div class="space-y-3">
+<!-- Puzzle Item -->
+<div class="flex items-center space-x-4 p-3 hover:bg-surface-container-low transition-colors cursor-pointer group">
+<div class="w-12 h-12 bg-zinc-800 overflow-hidden grayscale group-hover:grayscale-0 transition-all">
+<img alt="Chess board closeup" class="w-full h-full object-cover opacity-60" data-alt="dramatic low angle macro shot of a black knight chess piece on a dark monochromatic board with sharp focus and deep shadows" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDuLFL-ptVClmNPn-DBDeDTg5zj9PQmo_m2mvGk6LQr8hBekLgyCDAwL9Z3UPkCPrDAoCY6IUlxzO6b4BCNzibQryHV2PdDDFwMVyvbCmcsCPcD3gp6WWqZbGRmijM5wBSbgmCVuQTDKfbrqoVEv2Zx2ipGkzL_DsreBYKlwD-vPkyzwzY0dopdsDm9lqERrc3I1AYFiaXFpvwV-J7Awg-n7lBip1RUoWxyVZXly_1iWx8CbpqTxmQ_330J34I3MYeexk2pZQkMSwLv"/>
+</div>
+<div class="flex-1">
+<p class="text-xs font-bold uppercase tracking-tighter">Puzzle #8429</p>
+<p class="text-[10px] text-zinc-500 uppercase">Success • +8 Rating</p>
+</div>
+<span class="material-symbols-outlined text-green-500 text-sm">check_circle</span>
+</div>
+<!-- Puzzle Item -->
+<div class="flex items-center space-x-4 p-3 hover:bg-surface-container-low transition-colors cursor-pointer group">
+<div class="w-12 h-12 bg-zinc-800 overflow-hidden grayscale group-hover:grayscale-0 transition-all">
+<img alt="Chess board closeup" class="w-full h-full object-cover opacity-60" data-alt="abstract top down shot of chess pieces casting long shadows on a minimalist dark grey surface, high fashion editorial lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA5meSGotyGSSYb0Ujiqm2zXAu1HzxcCLZsxWyge3DLjUl0A4kgzJjW8vn_Sf1oq8iOGG4mMI6B5S4Z6g5IANCpwBT7Lcy-Rz1fp0H3R2brUCqkbzRJa7BcAMVb7ONmhNxIPiXExi8qkbLZSo6K4rbnnLztdbRtF1ZuZ_E5BMu59EIOTWr5SiV4fxqGks9nSog8c0yu9hmZGdKOVKp0vNBeY3F_fqK_P9d4q3pzTgFS3ivREsIb2WcyYV6jnIeLRyQmWg-Vj1g5dyeA"/>
+</div>
+<div class="flex-1">
+<p class="text-xs font-bold uppercase tracking-tighter">Puzzle #8428</p>
+<p class="text-[10px] text-zinc-500 uppercase">Failed • -10 Rating</p>
+</div>
+<span class="material-symbols-outlined text-error text-sm">cancel</span>
+</div>
+</div>
+</div>
+<!-- Brand Accent -->
+<div class="pt-8 opacity-20 filter grayscale">
+<img alt="Brand accent image" class="w-32 h-32 object-cover rounded-sm" data-alt="extreme close up of an eye looking with intense focus, black and white fine art photography, grainy texture" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCDxKQ54F3xA3rvDRLhLtuOwZKGDmsJ4RIEwCxqaPRvoGDZZI1VYKlEwr19hVesN_X4snobasMuqIwK44i4K7yZRI4TZlguSqmt8fAF0bOy5E-nDrL3kiNeSmcCExZT9_8qKKKzxfTxGiphL-y0wGtO1hxLgg_yavDrAQuzpAnXVYR-e_lh-YW2CztwpCDOWvSyB6a7ceKKo5hFmxX5Yky2av1DjMKjUupDujfpW_pNkDTWLE1Dtv3uH7ZKNjlXAQJfqhgs2kzuTNPX"/>
+</div>
+</aside>
+</main>
+</div>
+<!-- Mobile Navigation -->
+<div class="md:hidden fixed bottom-0 left-0 w-full bg-zinc-950/90 backdrop-blur-xl border-t border-zinc-800/50 h-16 flex items-center justify-around z-50">
+<a class="flex flex-col items-center space-y-1 text-zinc-500" href="#">
+<span class="material-symbols-outlined">play_arrow</span>
+<span class="text-[8px] uppercase tracking-widest">Play</span>
+</a>
+<a class="flex flex-col items-center space-y-1 text-zinc-50" href="#">
+<span class="material-symbols-outlined">extension</span>
+<span class="text-[8px] uppercase tracking-widest font-bold">Puzzles</span>
+</a>
+<a class="flex flex-col items-center space-y-1 text-zinc-500" href="#">
+<span class="material-symbols-outlined">analytics</span>
+<span class="text-[8px] uppercase tracking-widest">Analysis</span>
+</a>
+<a class="flex flex-col items-center space-y-1 text-zinc-500" href="#">
+<span class="material-symbols-outlined">person</span>
+<span class="text-[8px] uppercase tracking-widest">Profile</span>
+</a>
+</div>
+</body></html>
