@@ -36,6 +36,11 @@ From fast play and bots to analysis, review, and coaching, every feature is desi
 - premium
 - fast
 - user-first
+</td>
+<td width="30%" align="center">
+  <img src="ochess-app/public/surprisedpiece.png" alt="Surprised chess piece" width="220"/>
+</td>
+</tr>
 </table>
 
 ## What Makes oChess Different
