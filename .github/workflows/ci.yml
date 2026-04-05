@@ -5,10 +5,18 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  lint-build-test:
-    name: Build & Test
+  build-test:
+    name: Build & test
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,23 +40,8 @@ jobs:
       - name: Run tests
         run: npm test
 
-  type-check:
-    name: Type Check (future TS)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ochess-app
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: ochess-app/package-lock.json
-      - run: npm ci
-      - name: Check for tsconfig
-        id: ts
-        run: test -f tsconfig.json && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
-      - name: Run tsc
-        if: steps.ts.outputs.exists == 'true'
-        run: npx tsc --noEmit
+      - name: Type check (when tsconfig exists)
+        run: |
+          if [ -f tsconfig.json ]; then
+            npx tsc --noEmit
+          fi

@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/oChess/oChess/actions"><img src="https://img.shields.io/github/actions/workflow/status/oChess/oChess/ci.yml?branch=main&style=flat&label=CI&logo=githubactions&logoColor=white&labelColor=0d0d0d&color=1a1a1a" alt="CI"></a>
+  <a href="https://github.com/Ijtihed/oChess/actions"><img src="https://img.shields.io/github/actions/workflow/status/Ijtihed/oChess/ci.yml?branch=main&style=flat&label=CI&logo=githubactions&logoColor=white&labelColor=0d0d0d&color=1a1a1a" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-1a1a1a?style=flat&labelColor=0d0d0d" alt="License"></a>
   <img src="https://img.shields.io/badge/Version-0.1.0-1a1a1a?style=flat&labelColor=0d0d0d" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Web-1a1a1a?style=flat&labelColor=0d0d0d" alt="Platform">
