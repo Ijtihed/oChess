@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
+import SocialPanel from "./SocialPanel";
 import { playVictory, playError } from "../lib/sounds";
 
 const SAMPLE_CARDS = [
@@ -105,7 +106,8 @@ export default function ReviewPage() {
   const playerColor = card.fen.includes(" w ") ? "w" : "b";
 
   return (
-    <div className="max-w-[1440px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+    <div className="flex">
+    <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
       <div className="flex flex-col xl:flex-row gap-6 xl:gap-8">
         {/* Board area */}
         <div className="flex-1 flex flex-col items-center xl:items-start max-w-[700px]">
@@ -209,6 +211,8 @@ export default function ReviewPage() {
           </div>
         </div>
       </div>
+    </div>
+    <SocialPanel />
     </div>
   );
 }

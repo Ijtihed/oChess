@@ -14,8 +14,9 @@ import BotsPage from "./components/BotsPage";
 import VariantsPage from "./components/VariantsPage";
 import ReviewPage from "./components/ReviewPage";
 import Profile from "./components/Profile";
-import GameScreen from "./components/GameScreen";
+import GameScreen, { getSavedGame, clearSavedGame } from "./components/GameScreen";
 import ComingSoon from "./components/ComingSoon";
+import BoardStylePicker from "./components/BoardStylePicker";
 
 export default function App() {
   return (
@@ -60,6 +61,10 @@ function AppShell() {
 
   const activePage = location.pathname === "/" ? "home" : location.pathname.slice(1);
   const isGameScreen = location.pathname === "/game";
+  const hideFooter = isGameScreen || location.pathname === "/analysis";
+  const isLanding = location.pathname === "/" && !user;
+  const [boardPrefsKey, setBoardPrefsKey] = useState(0);
+  const showBoardPicker = !isLanding;
 
   return (
     <div className="min-h-screen min-h-[100dvh] bg-surface text-on-surface overflow-x-hidden">
@@ -110,7 +115,8 @@ function AppShell() {
         </div>
       </main>
 
-      {!isGameScreen && <Footer />}
+      {!hideFooter && <Footer />}
+      {showBoardPicker && <BoardStylePicker onApply={() => setBoardPrefsKey((k) => k + 1)} />}
     </div>
   );
 }
@@ -120,17 +126,35 @@ function GameRoute() {
   const navigate = useNavigate();
   const state = location.state;
 
-  if (!state || !state.opponent) {
-    navigate("/bots", { replace: true });
+  if (state?.resume) {
+    const saved = getSavedGame();
+    if (saved) {
+      return (
+        <GameScreen
+          opponent={saved.opponent}
+          playerColor={saved.playerColor || "w"}
+          timeControl={saved.timeControl || null}
+          resumeData={saved}
+          onBack={() => navigate("/play")}
+        />
+      );
+    }
+    navigate("/play", { replace: true });
     return null;
   }
 
+  if (!state || !state.opponent) {
+    navigate("/play", { replace: true });
+    return null;
+  }
+
+  clearSavedGame();
   return (
     <GameScreen
       opponent={state.opponent}
       playerColor={state.playerColor || "w"}
       timeControl={state.timeControl}
-      onBack={() => navigate("/bots")}
+      onBack={() => navigate("/play")}
     />
   );
 }

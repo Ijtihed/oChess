@@ -1,5 +1,6 @@
 import { useState } from "react";
 import ChessBoard from "./ChessBoard";
+import SocialPanel from "./SocialPanel";
 
 const CHAPTERS = [
   { id: 1, title: "Italian Game: Basics", moves: 24, active: true },
@@ -19,7 +20,8 @@ export default function StudyPage({ onNavigate }) {
   const [activeChapter, setActiveChapter] = useState(1);
 
   return (
-    <div className="max-w-[1440px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+    <div className="flex">
+      <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
       {/* Header */}
       <div className="anim-fade-up flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-6" style={{ "--delay": "0.05s" }}>
         <div>
@@ -99,6 +101,8 @@ export default function StudyPage({ onNavigate }) {
           </div>
         </div>
       </div>
+      </div>
+      <SocialPanel />
     </div>
   );
 }

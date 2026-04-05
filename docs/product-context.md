@@ -16,21 +16,28 @@ Most chess platforms treat the post-game experience as an afterthought. oChess t
 
 The built-in spaced repetition system (Review) is a major differentiator. Mistakes, positions, tactics, openings, endgames, and coach explanations become reviewable memory cards — not one-time analysis you forget.
 
+## Current state
+
+oChess is a fully functional client-side chess application. The following core loops work end-to-end:
+
+1. **Play bots** — 8 difficulty levels with proper engines (js-chess-engine for weak, Stockfish WASM for strong), clock management, premoves, draw/abort/takeback, saved games, post-game eval
+2. **Puzzles** — Adaptive Glicko-1 rated puzzles from Lichess DB, timed, streaks, AI explanations, direct links
+3. **Analysis** — Full analysis board with Stockfish eval, board editor, piece placement, save/load boards, opening wiki, PGN/FEN import/export
+4. **Review** — SM-2 scheduling engine implemented, UI shell exists, integration points on analysis board
+
 ## Main differentiators
 
 1. **Chess-first design** — The board and play loop matter most. Bigger board presence, cleaner controls, less clutter.
 
-2. **Better post-game improvement loop** — Games flow naturally into: simple mistake explanations → recreated positions → generated puzzles → training paths → opening prep from your own play.
+2. **Better post-game improvement loop** — Games flow naturally into: engine evaluation → move-by-move analysis → opening identification → position saving → review deck integration.
 
-3. **Built-in spaced repetition (Review)** — An Anki-style memory system for chess learning. Turn blunders, tactics, opening lines, endgame positions, and coach explanations into reviewable cards with proper scheduling. This is a first-class feature, not a bolt-on.
+3. **Built-in spaced repetition (Review)** — An Anki-style memory system for chess learning. Turn blunders, tactics, opening lines, endgame positions, and coach explanations into reviewable cards with proper SM-2 scheduling. This is a first-class feature, not a bolt-on.
 
-4. **AI coach in the core loop** — Explains blunders in simple language. Feels like a calm human coach. Customizable with prompt presets. Designed to support local models (Ollama) later.
+4. **AI coach in the core loop** — Explains blunders in simple language. Feels like a calm human coach. Designed behind an interface so it can support local models (Ollama) later.
 
-5. **Collaborative analysis** — Shared analysis boards with real-time presence and chat.
+5. **No-cheating-by-default** — Engine evaluation is locked during live play, only available post-game and in analysis.
 
-6. **Variants** — Preset variants first, user-defined custom variants later. The system is architected so custom rule sets are possible.
-
-7. **Duel challenges with AI credits** — Exists but never dominates the UI. Does not feel like gambling or crypto.
+6. **Robust error handling** — Engine failures show explicit error codes and debug info, never silent fallback to random behavior.
 
 ## Target users
 

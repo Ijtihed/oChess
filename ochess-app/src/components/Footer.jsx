@@ -44,8 +44,8 @@ export default function Footer() {
                   </svg>
                   GitHub
                 </a>
-                <span className="text-[11px] text-on-surface-variant/25 py-0.5">Discord — coming soon</span>
-                <span className="text-[11px] text-on-surface-variant/25 py-0.5">Twitter — coming soon</span>
+                <span className="text-[11px] text-on-surface-variant/25 py-0.5">Discord</span>
+                <span className="text-[11px] text-on-surface-variant/25 py-0.5">Twitter</span>
               </div>
               <div className="flex flex-col gap-2">
                 <span className="text-[9px] font-label font-bold uppercase tracking-widest text-on-surface-variant/30">Legal</span>

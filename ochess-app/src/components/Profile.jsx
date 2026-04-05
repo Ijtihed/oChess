@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { loadPuzzleRating } from "../lib/puzzles";
+import SocialPanel from "./SocialPanel";
 
 const HISTORY_KEY = "ochess_puzzle_history";
 const STREAK_KEY = "ochess_puzzle_streak";
@@ -26,7 +27,8 @@ export default function Profile({ user, onNavigate, onLogout }) {
   const streak = useMemo(() => getStreak(), []);
 
   return (
-    <div className="max-w-3xl mx-auto px-5 sm:px-6 md:px-10 py-6 sm:py-10">
+    <div className="flex">
+      <div className="flex-1 min-w-0 max-w-3xl mx-auto px-5 sm:px-6 md:px-10 py-6 sm:py-10">
       {/* Header */}
       <div className="anim-fade-up flex items-center gap-4 sm:gap-5 mb-8 sm:mb-12" style={{ "--delay": "0.05s" }}>
         <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-surface-high flex items-center justify-center shrink-0">
@@ -105,6 +107,8 @@ export default function Profile({ user, onNavigate, onLogout }) {
           {user.guest ? "Sign Out" : "Log Out"}
         </button>
       </div>
+      </div>
+      <SocialPanel />
     </div>
   );
 }

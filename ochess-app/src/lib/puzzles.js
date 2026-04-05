@@ -101,16 +101,25 @@ async function searchPuzzleById(id) {
  * Range: playerRating ± spread, biased slightly upward to challenge.
  * If no puzzles in range, widens until something is found.
  */
+const recentIds = new Set();
+const MAX_RECENT = 50;
+
 function getAdaptivePuzzle(puzzles, playerRating) {
   const bias = 50;
   const target = playerRating + bias;
   for (let spread = 150; spread <= 1000; spread += 100) {
-    const candidates = puzzles.filter((p) => p.rating >= target - spread && p.rating <= target + spread);
+    const candidates = puzzles.filter((p) => p.rating >= target - spread && p.rating <= target + spread && !recentIds.has(p.id));
     if (candidates.length >= 5) {
-      return candidates[Math.floor(Math.random() * candidates.length)];
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      recentIds.add(pick.id);
+      if (recentIds.size > MAX_RECENT) { const first = recentIds.values().next().value; recentIds.delete(first); }
+      return pick;
     }
   }
-  return puzzles[Math.floor(Math.random() * puzzles.length)];
+  const pick = puzzles[Math.floor(Math.random() * puzzles.length)];
+  recentIds.add(pick.id);
+  if (recentIds.size > MAX_RECENT) { const first = recentIds.values().next().value; recentIds.delete(first); }
+  return pick;
 }
 
 function getRandomPuzzle(puzzles, minRating = 0, maxRating = 9999) {

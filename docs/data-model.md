@@ -1,12 +1,74 @@
 # oChess — Data Model
 
-All models are defined here for reference. Not all are implemented in MVP — those marked (MVP) are scaffolded first.
+All models are defined here for reference. Models marked **(IMPLEMENTED)** are currently working in the client-side app (localStorage or in-memory). Models marked **(PLANNED)** are designed for the backend.
 
 ---
 
-## User & Identity
+## Client-Side Data (Currently Implemented)
 
-### User (MVP)
+### Active Game State (localStorage: `ochess_active_game`)
+| Field | Type | Notes |
+|-------|------|-------|
+| pgn | string | Full PGN of current game |
+| opponent | object | { name, level, desc, rating } |
+| playerColor | "w" \| "b" | |
+| botChat | array | Last 10 chat messages |
+| clockState | object | { white: ms, black: ms }, nullable |
+| timeControl | object | { initial: ms, increment: ms }, nullable |
+| savedAt | number | Timestamp |
+
+### Puzzle Rating (localStorage: `ochess_puzzle_rating`) — IMPLEMENTED
+| Field | Type | Notes |
+|-------|------|-------|
+| rating | number | Glicko-1 rating (default 1500) |
+| rd | number | Rating deviation (default 350, floor 50) |
+| games | number | Total puzzles attempted |
+
+### Puzzle Settings (localStorage: `ochess_puzzle_settings`) — IMPLEMENTED
+| Field | Type | Notes |
+|-------|------|-------|
+| timerSec | number | 0 (off), 15, 30, 60, -1 (infinite) |
+| autoAdvance | boolean | |
+
+### Puzzle Streak (localStorage: `ochess_puzzle_streak`) — IMPLEMENTED
+| Field | Type | Notes |
+|-------|------|-------|
+| current | number | Current streak |
+| best | number | All-time best streak |
+
+### Board Preferences (localStorage: `ochess_board_prefs`) — IMPLEMENTED
+| Field | Type | Notes |
+|-------|------|-------|
+| boardTheme | string | Theme ID (e.g. "default", "blue", "wood") |
+| pieceSet | string | Piece set directory name (e.g. "staunty", "merida") |
+
+### Saved Analysis Boards (localStorage: `ochess_saved_analysis`) — IMPLEMENTED
+| Field | Type | Notes |
+|-------|------|-------|
+| id | number | Timestamp-based unique ID |
+| label | string | Opening name or "Position" or "Custom" |
+| fen | string | Current FEN |
+| pgn | string | Full PGN |
+| ply | number | Current ply position |
+| savedAt | number | Timestamp |
+
+Max 5 saved boards.
+
+### Review Schedule State (in-memory, localStorage planned) — IMPLEMENTED
+| Field | Type | Notes |
+|-------|------|-------|
+| dueAt | Date | When card is next due |
+| easeFactor | number | Default 2.5, floor 1.3 |
+| intervalDays | number | Default 0 |
+| repetitions | number | Default 0 |
+| lapseCount | number | Default 0 |
+| lastReviewedAt | Date | Nullable |
+
+---
+
+## Planned Backend Models
+
+### User
 | Field | Type | Notes |
 |-------|------|-------|
 | id | uuid | PK |
@@ -20,7 +82,7 @@ All models are defined here for reference. Not all are implemented in MVP — th
 | is_titled | boolean | default false |
 | title | string | GM, IM, FM, etc. nullable |
 
-### GuestSession (MVP)
+### GuestSession
 | Field | Type | Notes |
 |-------|------|-------|
 | id | uuid | PK, stored client-side |
@@ -28,7 +90,7 @@ All models are defined here for reference. Not all are implemented in MVP — th
 | last_active_at | timestamp | |
 | display_name | string | auto-generated |
 
-### Profile (MVP)
+### Profile
 | Field | Type | Notes |
 |-------|------|-------|
 | user_id | uuid | FK → User, PK |
@@ -48,9 +110,7 @@ All models are defined here for reference. Not all are implemented in MVP — th
 
 ---
 
-## Games
-
-### Game (MVP)
+### Game
 | Field | Type | Notes |
 |-------|------|-------|
 | id | uuid | PK |
@@ -60,17 +120,13 @@ All models are defined here for reference. Not all are implemented in MVP — th
 | status | enum | waiting, active, completed, aborted |
 | result | enum | white_wins, black_wins, draw, aborted, null |
 | result_reason | string | checkmate, resignation, timeout, stalemate, etc. |
-| pgn | text | **primary move storage** — full PGN written once when game ends (~2–5 KB) |
-| initial_fen | string | starting position (for variants/custom), nullable |
-| clock_data | jsonb | per-move clock snapshots, nullable — `[{ply, wtime, btime}]` |
+| pgn | text | Full PGN (~2–5 KB) |
+| initial_fen | string | nullable |
+| clock_data | jsonb | nullable |
 | created_at | timestamp | |
 | completed_at | timestamp | nullable |
 
-**Storage strategy:** PGN is the single source of truth for moves. One text field, one DB write, ~2–5 KB per game. During a live game, moves exist only in server memory + WebSocket broadcast. The DB is updated once when the game ends. chess.js can parse PGN back into any position or move list on demand — no need to store moves row-by-row.
-
-At 5 KB per game, 1 million games = ~5 GB. Postgres handles this trivially.
-
-### GameParticipant (MVP)
+### GameParticipant
 | Field | Type | Notes |
 |-------|------|-------|
 | id | uuid | PK |
@@ -81,51 +137,27 @@ At 5 KB per game, 1 million games = ~5 GB. Postgres handles this trivially.
 | rating_before | integer | nullable |
 | rating_after | integer | nullable |
 
-### GameAnalysis (derived, async — not MVP)
-
-Populated **after** game completion by an async worker. Not primary storage.
-Used only for search/indexing (e.g. "show me games where I played the Sicilian").
-
+### GameAnalysis (async, post-game)
 | Field | Type | Notes |
 |-------|------|-------|
 | game_id | uuid | FK → Game, PK |
-| opening_eco | string | ECO code, e.g. "B90" |
+| opening_eco | string | ECO code |
 | opening_name | string | e.g. "Sicilian Najdorf" |
-| evals | jsonb | per-ply engine evals `[{ply, cp, mate}]` |
-| annotations | jsonb | mistake/blunder markers `[{ply, type, explanation}]` |
+| evals | jsonb | per-ply engine evals |
+| annotations | jsonb | mistake/blunder markers |
 | analyzed_at | timestamp | |
-
-This replaces a per-move `Move` table. The PGN on the Game record is all you need to reconstruct any position — chess.js does this in microseconds. The analysis table is an optional async index for features like opening classification and mistake detection.
-
-### Lobby
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid | PK |
-| creator_id | uuid | FK → User or GuestSession |
-| variant_id | string | |
-| time_control | string | |
-| rated | boolean | |
-| is_private | boolean | |
-| invite_code | string | nullable, for private lobbies |
-| credit_stake | integer | AI credits, default 0 |
-| status | enum | open, matched, cancelled, expired |
-| created_at | timestamp | |
 
 ---
 
-## Ratings
-
-### Rating (MVP)
+### Rating
 | Field | Type | Notes |
 |-------|------|-------|
 | user_id | uuid | FK → User |
 | variant_id | string | |
 | time_category | enum | bullet, blitz, rapid, classical |
-| rating | integer | current Elo |
+| rating | integer | current |
 | rd | float | rating deviation (Glicko) |
 | games_count | integer | |
-
-Composite PK: (user_id, variant_id, time_category)
 
 ### RatingHistory
 | Field | Type | Notes |
@@ -140,121 +172,44 @@ Composite PK: (user_id, variant_id, time_category)
 
 ---
 
-## Bots
-
 ### BotProfile
 | Field | Type | Notes |
 |-------|------|-------|
-| id | string | PK, e.g. "rookie", "stockfish" |
+| id | string | PK |
 | name | string | display name |
 | description | string | |
 | rating | integer | approximate strength |
 | level | integer | 0–7 |
-| engine_config | jsonb | depth, skill level, etc. |
+| engine_config | jsonb | engine type, elo, jce level |
+
+Currently implemented as `BOT_CONFIG` array in `lib/bot-engine.js`:
+- Level 0: Random (no rating)
+- Level 1: Rookie (~400, jce level 0)
+- Level 2: Patzer (~800, jce level 1)
+- Level 3: Club (~1200, jce level 3)
+- Level 4: Expert (~1600, sf elo 1700)
+- Level 5: Master (~2000, sf elo 2100)
+- Level 6: Grandmaster (~2400, sf elo 2600)
+- Level 7: Stockfish (~3200, sf unlimited)
 
 ---
-
-## Puzzles
 
 ### Puzzle
 | Field | Type | Notes |
 |-------|------|-------|
 | id | string | PK, from Lichess DB |
 | fen | string | starting position |
-| moves | string | solution moves (UCI) |
+| moves | string[] | solution moves (UCI) |
 | rating | integer | puzzle difficulty |
 | themes | string[] | tactical themes |
 | game_url | string | source game, nullable |
 | popularity | integer | |
 
----
-
-## Study & Analysis
-
-### Study
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid | PK |
-| owner_id | uuid | FK → User |
-| title | string | |
-| description | string | nullable |
-| is_public | boolean | |
-| created_at | timestamp | |
-| updated_at | timestamp | |
-
-### AnalysisRoom
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid | PK |
-| owner_id | uuid | FK → User |
-| title | string | |
-| initial_fen | string | |
-| pgn | text | current state |
-| is_public | boolean | |
-| participants | uuid[] | active user IDs |
-| created_at | timestamp | |
+Currently loaded from Lichess CSV at runtime.
 
 ---
 
-## Chat
-
-### ChatMessage
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid | PK |
-| context_type | enum | game, analysis_room, direct |
-| context_id | uuid | game or room ID |
-| sender_id | uuid | FK → User |
-| content | string | |
-| created_at | timestamp | |
-
----
-
-## Variants
-
-### VariantDefinition
-| Field | Type | Notes |
-|-------|------|-------|
-| id | string | PK, e.g. "standard", "chess960" |
-| name | string | display name |
-| description | string | |
-| is_builtin | boolean | true for preset variants |
-| creator_id | uuid | FK → User, nullable (null for builtins) |
-| rules | jsonb | serialized rule config |
-| initial_fen | string | nullable (generator for 960) |
-
----
-
-## AI Coach
-
-### CoachPreset
-| Field | Type | Notes |
-|-------|------|-------|
-| id | string | PK |
-| name | string | e.g. "Beginner friendly", "Brutal honesty" |
-| system_prompt | text | prompt template |
-| is_default | boolean | |
-| creator_id | uuid | nullable (null for system presets) |
-
----
-
-## Credits
-
-### CreditLedger
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid | PK |
-| user_id | uuid | FK → User |
-| amount | integer | positive = credit, negative = debit |
-| reason | enum | duel_stake, duel_win, purchase, bonus |
-| reference_id | uuid | game_id or transaction_id |
-| created_at | timestamp | |
-
----
-
-## Review (Spaced Repetition)
-
-### ReviewDeck (MVP)
+### ReviewDeck
 | Field | Type | Notes |
 |-------|------|-------|
 | id | uuid | PK |
@@ -264,49 +219,60 @@ Composite PK: (user_id, variant_id, time_category)
 | is_system_generated | boolean | |
 | created_at | timestamp | |
 
-### ReviewCard (MVP)
+### ReviewCard
 | Field | Type | Notes |
 |-------|------|-------|
 | id | uuid | PK |
 | deck_id | uuid | FK → ReviewDeck |
 | card_type | enum | position_recall, move_prediction, concept, opening_line, tactic, endgame_technique |
-| prompt | text | question or instruction |
-| answer | text | expected answer or explanation |
+| prompt | text | |
+| answer | text | |
 | fen | string | nullable |
-| move_sequence | string | nullable, UCI moves |
-| explanation | text | nullable, coach explanation |
+| move_sequence | string | nullable, UCI |
+| explanation | text | nullable |
 | tags | string[] | |
 | is_active | boolean | default true |
 | created_at | timestamp | |
 
-### ReviewCardSource (MVP)
+### ReviewCardSource
 | Field | Type | Notes |
 |-------|------|-------|
 | id | uuid | PK |
 | card_id | uuid | FK → ReviewCard |
 | source_type | enum | game, puzzle, study, analysis, coach, manual |
-| source_id | uuid | nullable, FK to source entity |
-| source_meta | jsonb | additional context |
+| source_id | uuid | nullable |
+| source_meta | jsonb | |
 
-### ReviewReviewLog (MVP)
+### ReviewReviewLog
 | Field | Type | Notes |
 |-------|------|-------|
 | id | uuid | PK |
 | card_id | uuid | FK → ReviewCard |
-| rating | integer | 1=Again, 2=Hard, 3=Good, 4=Easy |
+| rating | integer | 1–4 |
 | reviewed_at | timestamp | |
 | previous_interval | integer | days |
 | new_interval | integer | days |
 | previous_ease | float | |
 | new_ease | float | |
 
-### ReviewScheduleState (MVP)
+### ReviewScheduleState
 | Field | Type | Notes |
 |-------|------|-------|
 | card_id | uuid | FK → ReviewCard, PK |
-| due_at | timestamp | when card is next due |
+| due_at | timestamp | |
 | ease_factor | float | default 2.5 |
 | interval_days | integer | default 0 |
 | repetitions | integer | default 0 |
 | lapse_count | integer | default 0 |
 | last_reviewed_at | timestamp | nullable |
+
+---
+
+### Other planned models (unchanged from original design)
+
+- **Lobby** — Game creation, private lobbies, invite codes
+- **Study / AnalysisRoom** — Collaborative study and analysis
+- **ChatMessage** — In-game, analysis room, and direct chat
+- **VariantDefinition** — Preset and user-created variants
+- **CoachPreset** — System prompt templates for AI coach
+- **CreditLedger** — AI credit transactions for duels

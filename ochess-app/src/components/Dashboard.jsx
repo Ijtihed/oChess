@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import ChessBoard from "./ChessBoard";
 import LivePulse from "./LivePulse";
+import SocialPanel from "./SocialPanel";
 import { loadPuzzleRating } from "../lib/puzzles";
 
 const HISTORY_KEY = "ochess_puzzle_history";
@@ -36,7 +37,8 @@ export default function Dashboard({ user, onNavigate }) {
   const streak = useMemo(() => getStreak(), []);
 
   return (
-    <div className="max-w-[1440px] mx-auto px-5 sm:px-6 md:px-10 py-6 sm:py-10">
+    <div className="flex">
+      <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-5 sm:px-6 md:px-10 py-6 sm:py-10">
       {/* Greeting */}
       <div className="anim-fade-up mb-6 sm:mb-10" style={{ "--delay": "0.05s" }}>
         <h1 className="font-headline text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tighter text-primary mb-1">
@@ -160,6 +162,8 @@ export default function Dashboard({ user, onNavigate }) {
           </div>
         </div>
       </div>
+      </div>
+      <SocialPanel />
     </div>
   );
 }

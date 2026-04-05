@@ -1,17 +1,26 @@
-<h1 align="center">oChess</h1>
-
-<p align="center">
-  <img src="ochess-app/public/bishoplogo.png" alt="oChess Logo" width="200"/>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Version-0.1-black?color=black&labelColor=black" alt="Version 0.1">
-  <img src="https://img.shields.io/badge/License-Apache%202.0-black?color=black&labelColor=black" alt="License Apache 2.0">
-  <img src="https://img.shields.io/badge/Platform-Web-black?color=black&labelColor=black" alt="Platform Web">
-</p>
+<h1 align="center">
+  <img src="ochess-app/public/bishoplogo.png" alt="oChess Logo" width="120"/><br/>
+  oChess
+</h1>
 
 <p align="center">
   A modern chess-first platform for play, analysis, puzzles, and long-term improvement.
+</p>
+
+<p align="center">
+  <a href="https://github.com/oChess/oChess/actions"><img src="https://img.shields.io/github/actions/workflow/status/oChess/oChess/ci.yml?branch=main&style=flat&label=CI&logo=githubactions&logoColor=white&labelColor=0d0d0d&color=1a1a1a" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-1a1a1a?style=flat&labelColor=0d0d0d" alt="License"></a>
+  <img src="https://img.shields.io/badge/Version-0.1.0-1a1a1a?style=flat&labelColor=0d0d0d" alt="Version">
+  <img src="https://img.shields.io/badge/Platform-Web-1a1a1a?style=flat&labelColor=0d0d0d" alt="Platform">
+  <img src="https://img.shields.io/badge/Node-20+-1a1a1a?style=flat&logo=nodedotjs&logoColor=white&labelColor=0d0d0d" alt="Node 20+">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/React-19-1a1a1a?style=flat&logo=react&logoColor=61dafb&labelColor=0d0d0d" alt="React 19">
+  <img src="https://img.shields.io/badge/Vite-8-1a1a1a?style=flat&logo=vite&logoColor=646cff&labelColor=0d0d0d" alt="Vite 8">
+  <img src="https://img.shields.io/badge/Tailwind-4-1a1a1a?style=flat&logo=tailwindcss&logoColor=38bdf8&labelColor=0d0d0d" alt="Tailwind 4">
+  <img src="https://img.shields.io/badge/Stockfish-18-1a1a1a?style=flat&labelColor=0d0d0d" alt="Stockfish 18">
+  <img src="https://img.shields.io/badge/Tests-61%20passing-1a1a1a?style=flat&logo=vitest&logoColor=6da13f&labelColor=0d0d0d" alt="Tests">
 </p>
 
 <p align="center">
@@ -67,12 +76,18 @@ This is the core experience.
 
 ## Tech Stack
 
-- `React`
-- `Vite`
-- `React Router`
-- `Tailwind CSS`
-- `chess.js`
-- `react-chessboard`
+| Layer | Tech |
+|-------|------|
+| Framework | React 19, Vite 8 |
+| Styling | Tailwind CSS v4 |
+| Routing | React Router v7 |
+| Chess logic | chess.js |
+| Board UI | react-chessboard |
+| Weak bots | js-chess-engine (Web Worker) |
+| Strong bots + analysis | Stockfish 18 WASM |
+| Spaced repetition | SM-2 engine (custom) |
+| Testing | Vitest, @testing-library/react |
+| CI/CD | GitHub Actions |
 
 ## Setup
 

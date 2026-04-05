@@ -1,3 +1,5 @@
+import SocialPanel from "./SocialPanel";
+
 const VARIANTS = [
   { name: "Standard",         desc: "Classic chess with all the standard rules.",                     players: "12,847" },
   { name: "Chess960",         desc: "Randomized back-rank starting position. Fischer Random.",       players: "3,210" },
@@ -13,7 +15,8 @@ const VARIANTS = [
 
 export default function VariantsPage({ onNavigate }) {
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+    <div className="flex">
+      <div className="flex-1 min-w-0 max-w-5xl mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
       <div className="anim-fade-up mb-6 sm:mb-8" style={{ "--delay": "0.05s" }}>
         <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1">
           Variants
@@ -40,6 +43,8 @@ export default function VariantsPage({ onNavigate }) {
           </button>
         ))}
       </div>
+      </div>
+      <SocialPanel />
     </div>
   );
 }

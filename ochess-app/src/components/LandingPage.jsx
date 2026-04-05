@@ -116,7 +116,7 @@ export default function LandingPage({ onNavigate }) {
 const DIFFERENTIATORS = [
   {
     title: "Spaced repetition, built in",
-    desc: "Every blunder, missed tactic, and forgotten opening line becomes a review card — scheduled with real Anki-style spacing. Not a bolt-on. The core of how oChess makes you better over time.",
+    desc: "Every blunder, missed tactic, and forgotten opening line becomes a review card, scheduled with real Anki-style spacing. The core of how oChess makes you better over time.",
     accent: true,
   },
   {
@@ -125,7 +125,7 @@ const DIFFERENTIATORS = [
   },
   {
     title: "AI coach",
-    desc: "Plain-language explanations of your mistakes. Not just engine numbers — an AI that talks like a calm human coach.",
+    desc: "Plain-language explanations of your mistakes. Not just engine numbers.",
   },
   {
     title: "Open source",

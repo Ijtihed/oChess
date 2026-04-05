@@ -8,11 +8,20 @@ let worker = null;
 let ready = false;
 let pendingResolve = null;
 let evalLines = [];
+let evalId = 0;
+let locked = false;
 
 function init() {
-  if (worker) return Promise.resolve();
+  if (worker && ready) return Promise.resolve();
 
   return new Promise((resolve, reject) => {
+    if (worker) {
+      if (ready) { resolve(); return; }
+      const check = setInterval(() => { if (ready) { clearInterval(check); resolve(); } }, 50);
+      setTimeout(() => { clearInterval(check); reject(new Error("Stockfish init timeout")); }, 15000);
+      return;
+    }
+
     try {
       worker = new Worker("/stockfish.js");
     } catch {
@@ -23,9 +32,8 @@ function init() {
     worker.onmessage = (e) => {
       const line = e.data;
 
-      if (line === "readyok") {
-        ready = true;
-        resolve();
+      if (typeof line === "string" && line.includes("readyok")) {
+        if (!ready) { ready = true; resolve(); }
         return;
       }
 
@@ -61,10 +69,10 @@ function parseEvalLines(lines) {
   for (const line of lines) {
     if (line.startsWith("bestmove")) {
       const match = line.match(/bestmove\s+(\S+)/);
-      if (match) bestMove = match[1];
+      if (match && match[1] !== "(none)") bestMove = match[1];
     }
 
-    if (line.includes(" depth ") && line.includes(" pv ")) {
+    if (line.includes(" depth ") && line.includes(" score ")) {
       const depthMatch = line.match(/depth\s+(\d+)/);
       const d = depthMatch ? parseInt(depthMatch[1]) : 0;
       if (d >= depth) {
@@ -83,8 +91,20 @@ function parseEvalLines(lines) {
 }
 
 async function evaluate(fen, depthLimit = 16) {
+  if (locked) return null;
   await init();
   if (!worker) return null;
+
+  if (pendingResolve) {
+    worker.postMessage("stop");
+    const old = pendingResolve;
+    pendingResolve = null;
+    evalLines = [];
+    old(null);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
+  const myId = ++evalId;
 
   return new Promise((resolve) => {
     pendingResolve = resolve;
@@ -92,6 +112,16 @@ async function evaluate(fen, depthLimit = 16) {
     worker.postMessage("ucinewgame");
     worker.postMessage(`position fen ${fen}`);
     worker.postMessage(`go depth ${depthLimit}`);
+
+    setTimeout(() => {
+      if (pendingResolve === resolve && evalId === myId) {
+        pendingResolve = null;
+        worker.postMessage("stop");
+        const partial = evalLines.length > 0 ? parseEvalLines(evalLines) : null;
+        evalLines = [];
+        resolve(partial);
+      }
+    }, 30000);
   });
 }
 
@@ -125,4 +155,7 @@ function destroy() {
   if (worker) { worker.terminate(); worker = null; ready = false; }
 }
 
-export { init, evaluate, formatEval, evalToText, isReady, destroy };
+function unlockEval() { locked = false; }
+function lockEval() { locked = true; }
+
+export { init, evaluate, formatEval, evalToText, isReady, destroy, unlockEval, lockEval };

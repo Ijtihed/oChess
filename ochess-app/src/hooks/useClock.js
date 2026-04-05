@@ -70,7 +70,16 @@ export default function useClock(initialMs, incrementMs = 0) {
     setDisplay({ white: ms, black: ms });
   }, []);
 
-  return { display, timedOut, start, switchSide, stop, reset };
+  const restore = useCallback((wMs, bMs) => {
+    white.current = wMs;
+    black.current = bMs;
+    active.current = null;
+    lastTick.current = null;
+    setTimedOut(null);
+    setDisplay({ white: wMs, black: bMs });
+  }, []);
+
+  return { display, timedOut, start, switchSide, stop, reset, restore };
 }
 
 export function formatTime(ms) {

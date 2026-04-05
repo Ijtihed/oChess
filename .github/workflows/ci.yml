@@ -2,22 +2,22 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: [main, master]
   pull_request:
-    branches: ["main"]
+    branches: [main, master]
 
 jobs:
-  build:
+  lint-build-test:
+    name: Build & Test
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ochess-app
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
@@ -28,3 +28,27 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+  type-check:
+    name: Type Check (future TS)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ochess-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ochess-app/package-lock.json
+      - run: npm ci
+      - name: Check for tsconfig
+        id: ts
+        run: test -f tsconfig.json && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
+      - name: Run tsc
+        if: steps.ts.outputs.exists == 'true'
+        run: npx tsc --noEmit

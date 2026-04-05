@@ -12,7 +12,7 @@ const TIMER_OPTIONS = [
   { label: "15s", sec: 15, bonus: "+30%" },
   { label: "30s", sec: 30, bonus: "+20%" },
   { label: "60s", sec: 60, bonus: "+10%" },
-  { label: "90s", sec: 90, bonus: "+5%" },
+  { label: "∞", sec: -1, bonus: null },
 ];
 
 
@@ -229,6 +229,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     if (timerRunning && status === "playing") {
       timerRef.current = setInterval(() => {
         setTimeLeft((t) => {
+          if (timerSecRef.current === -1) return t + 100;
           if (t <= 100) {
             clearInterval(timerRef.current);
             setTimerRunning(false);
@@ -241,12 +242,6 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     }
   }, [timerRunning, status]);
 
-  useEffect(() => {
-    if (timeLeft === 0 && status === "playing" && timerSecRef.current > 0) {
-      doReveal();
-    }
-  }, [timeLeft, status]);
-
   const startPuzzle = useCallback((pzl) => {
     if (!pzl?.fen || !pzl?.moves || pzl.moves.length < 2) return;
     try { new Chess(pzl.fen); } catch { return; }
@@ -255,7 +250,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     const effectiveTimer = pendingTimer !== null ? pendingTimer : timerSecRef.current;
     if (pendingTimer !== null) { setTimerSec(pendingTimer); setPendingTimer(null); }
     setSolutionSAN(computeSolutionSAN(pzl.fen, pzl.moves));
-    setAttempts(0); setHintLevel(0); setHighlight({}); setAnimating(true); setRatingDelta(null); setBoardFlash(""); setPlayedMoves([]); setCopied(false); setSaved(false);
+    setAttempts(0); setHintLevel(0); setHighlight({}); setAnimating(true); setRatingDelta(null); setBoardFlash(""); setPlayedMoves([]); setCopied(false); setSaved(false); setPosEval(null);
     const g = new Chess(pzl.fen);
     gameRef.current = g; setPuzzle(pzl); setFen(g.fen()); setStatus("setup"); setTimeLeft(-1); setPuzzleCount((c) => c + 1);
     navigate(`/puzzles/${pzl.id}`, { replace: true });
@@ -268,6 +263,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
       setHighlight({ [sm.from]: { backgroundColor: "rgba(255,255,255,0.06)" }, [sm.to]: { backgroundColor: "rgba(255,255,255,0.1)" } });
       setAnimating(false);
       if (effectiveTimer > 0) { setTimeLeft(effectiveTimer * 1000); setTimerRunning(true); }
+      else if (effectiveTimer === -1) { setTimeLeft(0); setTimerRunning(true); }
     }, 600);
   }, [pendingTimer]);
 
@@ -300,6 +296,12 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     setRatingDelta(updated.rating - myRating.rating); setMyRating(updated);
     setBoardFlash("board-flash-incorrect"); setTimeout(() => setBoardFlash(""), 600);
   }, [puzzle, moveIndex]);
+
+  useEffect(() => {
+    if (timeLeft === 0 && status === "playing" && timerSecRef.current > 0) {
+      doReveal();
+    }
+  }, [timeLeft, status, doReveal]);
 
   const handleMove = useCallback((move) => {
     if (status !== "playing" || !puzzle || !gameRef.current || animating) return false;
@@ -360,6 +362,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
   const retryPuzzle = useCallback(() => { if (puzzle) startPuzzle(puzzle); }, [puzzle, startPuzzle]);
 
   const [coachText, setCoachText] = useState("");
+  const [posEval, setPosEval] = useState(null);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -368,16 +371,21 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
   const isDone = status === "solved" || status === "failed";
   const showLoader = !fen || status === "setup" || status === "init";
   const ready = fen && puzzle && (status === "playing" || isDone);
-  const timerDisplay = timerSec > 0 && status === "playing" ? Math.ceil(timeLeft / 1000) : null;
+  const hasTimer = timerSec !== 0;
+  const isInfinite = timerSec === -1;
+  const timerDisplay = hasTimer && status === "playing" ? Math.ceil(timeLeft / 1000) : null;
   const timerPct = timerSec > 0 ? (timeLeft / (timerSec * 1000)) * 100 : 0;
   const currentPlayerMove = Math.max(0, Math.floor((moveIndex - 1) / 2));
   const progressPct = totalPlayerMoves > 0 ? Math.min(100, (currentPlayerMove / totalPlayerMoves) * 100) : 0;
 
   useEffect(() => {
     if (isDone && puzzle && solutionSAN.length > 0) {
-      explainPuzzle(puzzle.fen, solutionSAN, puzzle.themes).then(setCoachText);
+      explainPuzzle(puzzle.fen, solutionSAN, puzzle.themes).then((result) => {
+        if (typeof result === "string") { setCoachText(result); setPosEval(null); }
+        else { setCoachText(result.text); setPosEval(result); }
+      });
     } else {
-      setCoachText("");
+      setCoachText(""); setPosEval(null);
     }
   }, [isDone, puzzle, solutionSAN]);
 
@@ -394,9 +402,16 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     return () => window.removeEventListener("keydown", handler);
   }, [ready, isDone, status, nextPuzzle, retryPuzzle, handleHint, skipPuzzle]);
 
+  const autoAdvRef = useRef(autoAdvance);
+  autoAdvRef.current = autoAdvance;
   useEffect(() => {
-    if (isDone && autoAdvance) { const t = setTimeout(() => nextPuzzle(), status === "solved" ? 1200 : 2500); return () => clearTimeout(t); }
-  }, [isDone, autoAdvance, status, nextPuzzle]);
+    if (!isDone) return;
+    if (!autoAdvRef.current) return;
+    const t = setTimeout(() => {
+      if (autoAdvRef.current) nextPuzzle();
+    }, status === "solved" ? 1200 : 2500);
+    return () => clearTimeout(t);
+  }, [isDone, status, nextPuzzle]);
 
   return (
     <>
@@ -416,7 +431,10 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
                 {status === "solved" ? "Correct!" : status === "failed" ? "Incorrect" : "Find the best move"}
               </h1>
               <p className="text-[11px] text-on-surface-variant/40">
-                {playerColor === "w" ? "White" : "Black"} to move · Rating {puzzle.rating}
+                {playerColor === "w" ? "White" : "Black"} to move · Puzzle {puzzle.rating}
+                {isDone && ratingDelta !== null && (
+                  <span> · You: <span className="text-primary font-bold">{myRating.rating}</span> <span className={ratingDelta >= 0 ? "text-emerald-400" : "text-error"}>({ratingDelta >= 0 ? "+" : ""}{ratingDelta})</span></span>
+                )}
                 {totalPlayerMoves > 1 && status === "playing" && ` · Move ${Math.min(Math.floor((moveIndex - 1) / 2) + 1, totalPlayerMoves)}/${totalPlayerMoves}`}
                 {attempts > 0 && status === "playing" && ` · Attempt ${attempts}/2`}
               </p>
@@ -427,8 +445,8 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
             </div>
           </div>
 
-          {/* Timer bar above board */}
-          {timerSec > 0 && (status === "playing" || isDone) && (
+          {/* Timer bar above board — finite timers only */}
+          {timerSec > 0 && !isInfinite && (status === "playing" || isDone) && (
             <div className="w-full h-[3px] bg-surface-low overflow-hidden mb-0.5">
               <div className={`h-full transition-all duration-100 ${timerPct < 20 ? "bg-error" : timerPct < 50 ? "bg-yellow-500" : "bg-primary"}`} style={{ width: `${timerPct}%` }} />
             </div>
@@ -440,9 +458,21 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
             </div>
           )}
 
-          {/* Board */}
-          <div className={`w-full ${boardFlash}`}>
-            <InteractiveBoard fen={fen} onMove={handleMove} orientation={playerColor === "w" ? "white" : "black"} interactive={status === "playing" && !animating} highlightSquares={highlight} />
+          {/* Board + rating bar */}
+          <div className="w-full flex gap-2">
+            {/* Rating bar (left of board, shows after puzzle) */}
+            {isDone && posEval && (
+              <div className="hidden sm:flex flex-col items-center justify-between w-10 shrink-0 mt-3">
+                <span className="font-headline text-[10px] font-bold text-on-surface-variant/50 mb-1.5">{posEval.evalBefore || "?"}</span>
+                <div className="w-[6px] flex-1 bg-on-surface-variant/10 overflow-hidden rounded-full relative">
+                  <div className="absolute bottom-0 w-full bg-white rounded-full transition-all duration-700" style={{ height: `${posEval.barPct}%` }} />
+                </div>
+                <span className="text-[7px] uppercase tracking-widest text-on-surface-variant/20 mt-1.5">Eval</span>
+              </div>
+            )}
+            <div className={`flex-1 ${boardFlash}`}>
+              <InteractiveBoard fen={fen} onMove={handleMove} orientation={playerColor === "w" ? "white" : "black"} interactive={status === "playing" && !animating} highlightSquares={highlight} />
+            </div>
           </div>
 
           {/* Controls below board */}
@@ -459,18 +489,24 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
             )}
             {isDone && (
               <>
-                {/* Rating change */}
-                {ratingDelta !== null && (
-                  <div className="flex items-center justify-between px-1">
-                    <span className="text-[11px] text-on-surface-variant/30">Puzzle rating</span>
-                    <div className="flex items-center gap-2">
-                      <span className="font-headline text-sm font-bold text-primary">{myRating.rating}</span>
-                      <span className={`text-xs font-bold ${ratingDelta >= 0 ? "text-emerald-400" : "text-error"}`}>
-                        {ratingDelta >= 0 ? "+" : ""}{ratingDelta}
-                      </span>
-                    </div>
-                  </div>
-                )}
+                {/* Time + bonus */}
+                <div className="flex items-center justify-between px-1">
+                  <div />
+                  {hasTimer && (
+                    <span className="text-[11px] text-on-surface-variant/30 tabular-nums font-mono">
+                      {isInfinite
+                        ? `${Math.floor(timeLeft / 1000)}s`
+                        : timerSec > 0
+                          ? `${Math.ceil((timerSec * 1000 - timeLeft) / 1000)}s / ${timerSec}s`
+                          : ""}
+                      {timerSec > 0 && status === "solved" && (
+                        <span className="text-emerald-400/60 ml-1.5">
+                          ({timerSec <= 15 ? "30%" : timerSec <= 30 ? "20%" : timerSec <= 60 ? "10%" : "5%"} bonus)
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </div>
                 <div className="flex gap-2">
                   <button onClick={nextPuzzle} className="flex-1 py-3.5 bg-primary text-on-primary font-headline text-sm font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.97]">Next Puzzle</button>
                   <button onClick={retryPuzzle} className="py-3.5 px-4 bg-surface-low border border-white/[0.04] font-headline text-sm font-bold uppercase tracking-wide text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">Retry</button>
@@ -507,18 +543,15 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
           {/* Session */}
           <div>
             <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Session</h3>
-            <div className="grid grid-cols-4 gap-1.5">
-              {[{ l: "Solved", v: sessionSolved, c: "text-emerald-400" }, { l: "Failed", v: sessionFailed, c: "text-error" }, { l: "Skipped", v: sessionSkipped, c: "text-on-surface-variant/40" }, { l: "Streak", v: streak, c: "text-primary" }].map((s) => (
-                <div key={s.l} className="p-2 bg-surface-low border border-white/[0.03] text-center">
-                  <span className={`font-headline text-lg font-extrabold block ${s.c}`}>{s.v}</span>
-                  <span className="text-[8px] uppercase tracking-widest text-on-surface-variant/25">{s.l}</span>
+            <div className="grid grid-cols-2 gap-1.5">
+              {[{ l: "Solved", v: sessionSolved, c: "text-emerald-400" }, { l: "Failed", v: sessionFailed, c: "text-error" }].map((s) => (
+                <div key={s.l} className="p-2.5 bg-surface-low border border-white/[0.03] text-center">
+                  <span className={`font-headline text-xl font-extrabold block ${s.c}`}>{s.v}</span>
+                  <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25">{s.l}</span>
                 </div>
               ))}
             </div>
-            <div className="flex items-center justify-between mt-1.5 px-0.5">
-              <span className="text-[10px] text-on-surface-variant/20">Best streak: <span className="text-primary/50 font-bold">{bestStreak}</span></span>
-              <span className="text-[10px] text-on-surface-variant/20">Rating: <span className="text-primary font-bold">{myRating.rating}</span></span>
-            </div>
+            <span className="text-[10px] text-on-surface-variant/20 mt-1.5 block px-0.5">Rating: <span className="text-primary font-bold">{myRating.rating}</span></span>
           </div>
 
           {/* Move list */}
@@ -555,18 +588,18 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
           <div className="space-y-2">
             <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30">Settings</h3>
             <Toggle label="Auto-advance" active={autoAdvance} onToggle={() => setAutoAdvance(!autoAdvance)} />
-            <Toggle label="Timer" active={(pendingTimer !== null ? pendingTimer : timerSec) > 0} onToggle={() => {
-              const target = (pendingTimer !== null ? pendingTimer : timerSec) > 0 ? 0 : 30;
+            <Toggle label="Timer" active={(pendingTimer !== null ? pendingTimer : timerSec) !== 0} onToggle={() => {
+              const target = (pendingTimer !== null ? pendingTimer : timerSec) !== 0 ? 0 : 30;
               if (status === "playing") setPendingTimer(target); else setTimerSec(target);
             }} />
-            {((pendingTimer !== null ? pendingTimer : timerSec) > 0) && (
+            {((pendingTimer !== null ? pendingTimer : timerSec) !== 0) && (
               <div className="flex gap-1 pl-1">
-                {[15, 30, 60, 90].map((s) => {
+                {[15, 30, 60, -1].map((s) => {
                   const effective = pendingTimer !== null ? pendingTimer : timerSec;
                   const isActive = effective === s;
                   return (
                     <button key={s} onClick={() => { if (status === "playing") setPendingTimer(s); else setTimerSec(s); }}
-                      className={`flex-1 py-1.5 text-[10px] font-headline font-bold transition-colors active:scale-[0.96] ${isActive ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/40 hover:text-primary"}`}>{s}s</button>
+                      className={`flex-1 py-1.5 text-[10px] font-headline font-bold transition-colors active:scale-[0.96] ${isActive ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/40 hover:text-primary"}`}>{s === -1 ? "∞" : `${s}s`}</button>
                   );
                 })}
               </div>
@@ -588,6 +621,21 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
               {tagsOpen && <div className="flex flex-wrap gap-1.5 mt-2">{puzzle.themes.map((t) => <span key={t} className="px-2.5 py-1 text-[11px] bg-surface-low border border-white/[0.04] text-on-surface-variant/50">{t}</span>)}</div>}
             </div>
           )}
+
+          {/* Streak */}
+          <div>
+            <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-2">Streak</h3>
+            <div className="grid grid-cols-2 gap-1.5">
+              <div className="p-2.5 bg-surface-low border border-white/[0.03] text-center">
+                <span className="font-headline text-xl font-extrabold text-primary block">{streak}</span>
+                <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25">Current</span>
+              </div>
+              <div className="p-2.5 bg-surface-low border border-white/[0.03] text-center">
+                <span className="font-headline text-xl font-extrabold text-on-surface-variant/40 block">{bestStreak}</span>
+                <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25">Best</span>
+              </div>
+            </div>
+          </div>
 
           {/* Solution + Coach */}
           {isDone && solutionPairs.length > 0 && (

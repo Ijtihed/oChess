@@ -4,4 +4,22 @@
 *.log
 .DS_Store
 Thumbs.db
+.docs/
 ochess-app/public/puzzledb/lichess_db_puzzle.csv
+.stitchdesigntobaseon/
+
+# Stitch Design
+.stitch/
+*.stitch
+*.stitch.json
+stitch-exports/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+*.swp
+*.swo
+*~
