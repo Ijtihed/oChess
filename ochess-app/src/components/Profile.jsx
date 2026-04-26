@@ -89,13 +89,16 @@ function CountrySelect({ value, onChange, disabled }) {
 
   return (
     <div>
-      <label className="text-[10px] text-on-surface-variant/30 block mb-1">Country</label>
+      <span id="profile-country-label" className="text-[10px] text-on-surface-variant/55 block mb-1">Country</span>
       <button ref={btnRef} onClick={() => { if (!disabled) { setOpen(!open); setQuery(""); } }} disabled={disabled}
+        aria-labelledby="profile-country-label"
+        aria-expanded={open}
+        aria-haspopup="listbox"
         className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-left flex items-center gap-2 disabled:opacity-50 hover:border-primary/40 transition-colors">
         {selected ? (
           <><span>{selected.flag}</span><span className="text-on-surface">{selected.name}</span></>
         ) : (
-          <span className="text-on-surface-variant/20">Select country...</span>
+          <span className="text-on-surface-variant/40">Select country...</span>
         )}
       </button>
       {open && ReactDOM.createPortal(
@@ -219,12 +222,12 @@ export default function Profile() {
 
   if (!authUser) {
     return (
-      <div className="flex min-h-[calc(100vh-4rem)]">
+      <div className="flex min-h-[calc(100dvh-4rem)]">
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-on-surface-variant/30 mb-3">Not signed in</h1>
-            <p className="text-[13px] text-on-surface-variant/25 mb-4">Sign in to view your profile</p>
-            <a href="/" className="px-5 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors inline-block">Home</a>
+            <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-on-surface-variant/55 mb-3">Not signed in</h1>
+            <p className="text-[13px] text-on-surface-variant/55 mb-4">Sign in to view your profile</p>
+            <a href="/" className="btn btn-primary px-5 py-2 text-xs inline-block">Home</a>
           </div>
         </div>
         <SocialPanel />
@@ -233,7 +236,7 @@ export default function Profile() {
   }
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-6 sm:py-10">
         {/* Header */}
         <div className="anim-fade-up flex items-center gap-4 sm:gap-5 mb-6" style={{ "--delay": "0.05s" }}>
@@ -338,7 +341,7 @@ export default function Profile() {
                 </div>
               ) : (
                 <div className="p-5 bg-surface-low border border-white/[0.04] text-center">
-                  <span className="text-sm text-on-surface-variant/25">Play rated games to see your ratings</span>
+                  <span className="text-sm text-on-surface-variant/55">Play rated games to see your ratings</span>
                   <div className="mt-3">
                     <button onClick={() => navigate("/play")} className="px-4 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors">Play Now</button>
                   </div>
@@ -424,20 +427,23 @@ export default function Profile() {
                   { key: "display_name", label: "Display Name", placeholder: "Your name" },
                   { key: "username", label: "Username", placeholder: "unique_username" },
                   { key: "bio", label: "Bio", placeholder: "A short bio...", textarea: true },
-                ].map(({ key, label, placeholder, textarea }) => (
-                  <div key={key}>
-                    <label className="text-[10px] text-on-surface-variant/30 block mb-1">{label}</label>
-                    {textarea ? (
-                      <textarea value={formData[key] || ""} onChange={(e) => setFormData({ ...formData, [key]: e.target.value })} placeholder={placeholder} rows={2}
-                        disabled={!editing}
-                        className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40 resize-none disabled:opacity-50" />
-                    ) : (
-                      <input value={formData[key] || ""} onChange={(e) => setFormData({ ...formData, [key]: e.target.value })} placeholder={placeholder}
-                        disabled={!editing}
-                        className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40 disabled:opacity-50" />
-                    )}
-                  </div>
-                ))}
+                ].map(({ key, label, placeholder, textarea }) => {
+                  const fieldId = `profile-${key}`;
+                  return (
+                    <div key={key}>
+                      <label htmlFor={fieldId} className="text-[10px] text-on-surface-variant/55 block mb-1">{label}</label>
+                      {textarea ? (
+                        <textarea id={fieldId} value={formData[key] || ""} onChange={(e) => setFormData({ ...formData, [key]: e.target.value })} placeholder={placeholder} rows={2}
+                          disabled={!editing}
+                          className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-on-surface placeholder:text-on-surface-variant/40 outline-none focus:border-primary/40 resize-none disabled:opacity-50" />
+                      ) : (
+                        <input id={fieldId} value={formData[key] || ""} onChange={(e) => setFormData({ ...formData, [key]: e.target.value })} placeholder={placeholder}
+                          disabled={!editing}
+                          className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-on-surface placeholder:text-on-surface-variant/40 outline-none focus:border-primary/40 disabled:opacity-50" />
+                      )}
+                    </div>
+                  );
+                })}
                 <CountrySelect value={formData.country || ""} onChange={(v) => setFormData({ ...formData, country: v })} disabled={!editing} />
               </div>
             </div>
@@ -447,16 +453,16 @@ export default function Profile() {
               <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Linked Accounts</h2>
               <div className="bg-surface-low border border-white/[0.04] p-4 space-y-3">
                 <div>
-                  <label className="text-[10px] text-on-surface-variant/30 block mb-1">Lichess Username</label>
-                  <input value={formData.lichess_username || ""} onChange={(e) => setFormData({ ...formData, lichess_username: e.target.value })} placeholder="your_lichess_name"
-                    disabled={!editing}
-                    className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40 disabled:opacity-50" />
+                  <label htmlFor="profile-lichess" className="text-[10px] text-on-surface-variant/55 block mb-1">Lichess Username</label>
+                  <input id="profile-lichess" value={formData.lichess_username || ""} onChange={(e) => setFormData({ ...formData, lichess_username: e.target.value })} placeholder="your_lichess_name"
+                    disabled={!editing} autoComplete="off"
+                    className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-on-surface placeholder:text-on-surface-variant/40 outline-none focus:border-primary/40 disabled:opacity-50" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-on-surface-variant/30 block mb-1">Chess.com Username</label>
-                  <input value={formData.chesscom_username || ""} onChange={(e) => setFormData({ ...formData, chesscom_username: e.target.value })} placeholder="your_chesscom_name"
-                    disabled={!editing}
-                    className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40 disabled:opacity-50" />
+                  <label htmlFor="profile-chesscom" className="text-[10px] text-on-surface-variant/55 block mb-1">Chess.com Username</label>
+                  <input id="profile-chesscom" value={formData.chesscom_username || ""} onChange={(e) => setFormData({ ...formData, chesscom_username: e.target.value })} placeholder="your_chesscom_name"
+                    disabled={!editing} autoComplete="off"
+                    className="w-full bg-surface-lowest border border-white/[0.06] px-3 py-2 text-[12px] text-on-surface placeholder:text-on-surface-variant/40 outline-none focus:border-primary/40 disabled:opacity-50" />
                 </div>
               </div>
             </div>
@@ -475,7 +481,7 @@ export default function Profile() {
                     <span className="text-[12px] text-on-surface-variant/60">{boardPrefs.boardTheme}</span>
                   </div>
                 </div>
-                <p className="text-[10px] text-on-surface-variant/20 mt-2">Change board appearance from the settings icon in the navbar.</p>
+                <p className="text-[10px] text-on-surface-variant/55 mt-2">Change board appearance from the settings icon in the navbar.</p>
               </div>
             </div>
 

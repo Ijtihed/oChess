@@ -25,10 +25,17 @@ export default function BoardStylePicker() {
     // navbar search) so touch + pen + mouse all behave identically.
     const id = setTimeout(() => document.addEventListener("pointerdown", outside), 0);
     window.addEventListener("keydown", onKey);
+    // On mobile the panel is `inset-4` — almost full-screen — so we
+    // lock body scroll while open. Desktop floats it in the corner
+    // so background scroll is unobtrusive there, but locking is the
+    // safe default.
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     return () => {
       clearTimeout(id);
       document.removeEventListener("pointerdown", outside);
       window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, original]);
@@ -66,6 +73,8 @@ export default function BoardStylePicker() {
         onClick={handleOpen}
         className="fixed bottom-4 left-4 z-[60] w-10 h-10 bg-surface-high/80 backdrop-blur border border-white/[0.06] flex items-center justify-center hover:bg-surface-highest/80 transition-colors active:scale-90"
         title="Board style"
+        aria-label="Open board style picker"
+        aria-expanded={open}
       >
         <div className="w-5 h-5 grid grid-cols-2 gap-px overflow-hidden">
           {theme.type === "image" ? (
@@ -84,7 +93,9 @@ export default function BoardStylePicker() {
   }
 
   return (
-    <div ref={panelRef} className="fixed inset-4 sm:inset-auto sm:bottom-4 sm:left-4 z-[60] bg-surface-container/95 backdrop-blur-xl border border-white/[0.06] shadow-2xl flex flex-col sm:max-h-[75vh]" style={{ width: undefined, maxWidth: "min(92vw, 560px)" }}>
+    <div ref={panelRef}
+      role="dialog" aria-modal="true" aria-label="Board style settings"
+      className="fixed inset-4 sm:inset-auto sm:bottom-4 sm:left-4 z-[60] bg-surface-container/95 backdrop-blur-xl border border-white/[0.06] shadow-2xl flex flex-col sm:max-h-[75vh]" style={{ width: undefined, maxWidth: "min(92vw, 560px)" }}>
       <div className="p-3 border-b border-white/[0.04] flex items-center justify-between shrink-0">
         <h3 className="font-headline text-sm sm:text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">Board Style</h3>
         <button onClick={handleCancel} className="text-xs sm:text-[10px] text-on-surface-variant/30 hover:text-primary transition-colors">Cancel</button>

@@ -100,7 +100,7 @@ export function CreateChallenge() {
   const link = challenge ? `${window.location.origin}/challenge/${challenge.code}` : null;
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-6 sm:py-10">
         <h1 className="font-headline text-3xl font-extrabold tracking-tighter text-primary mb-6">Create Challenge</h1>
 
@@ -227,7 +227,7 @@ export function JoinChallenge() {
 
   if (loading || authLoading) {
     return (
-      <div className="flex min-h-[calc(100vh-4rem)]">
+      <div className="flex min-h-[calc(100dvh-4rem)]">
         <div className="flex-1 flex items-center justify-center">
           <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
         </div>
@@ -237,7 +237,7 @@ export function JoinChallenge() {
 
   if (error && !challenge) {
     return (
-      <div className="flex min-h-[calc(100vh-4rem)]">
+      <div className="flex min-h-[calc(100dvh-4rem)]">
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-on-surface-variant/30 mb-2">{error}</h1>
@@ -251,7 +251,7 @@ export function JoinChallenge() {
   if (!challenge) return null;
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       <div className="flex-1 flex items-center justify-center">
         <div className="max-w-sm w-full p-6 bg-surface-container border border-white/[0.06] text-center">
           <h2 className="font-headline text-xl font-extrabold tracking-tighter text-primary mb-2">Game Challenge</h2>

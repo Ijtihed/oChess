@@ -182,7 +182,7 @@ export default function VariantGameScreen({ variantId, opponent, playerColor = "
   }
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-3 sm:py-4">
         <div className="flex flex-col xl:flex-row gap-4 xl:gap-6">
 

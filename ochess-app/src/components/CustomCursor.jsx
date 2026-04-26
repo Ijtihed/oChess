@@ -1,6 +1,16 @@
 import { useEffect, useRef } from "react";
 
-const INTERACTIVE = "button, a, [role='button'], input, label, select, textarea";
+// What counts as "interactive" for the cursor's expand-and-tint
+// affordance. The first group is real focusable HTML; the second
+// covers Tailwind's `.group` hover-pattern wrappers (e.g. friend
+// rows whose padded `<div>` is the visual hit target with an `<a>`
+// inside) and an opt-in `data-clickable` attribute for any other
+// custom wrapper that wants the same treatment without becoming a
+// real button.
+const INTERACTIVE = [
+  "button", "a", "[role='button']", "input", "label", "select", "textarea", "summary",
+  ".group", "[data-clickable]",
+].join(", ");
 
 export default function CustomCursor() {
   const ref = useRef(null);

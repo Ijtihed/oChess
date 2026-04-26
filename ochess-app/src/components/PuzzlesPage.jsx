@@ -129,7 +129,7 @@ export default function PuzzlesPage() {
 
   if (phase === "error") {
     return (
-      <div className="min-h-[calc(100vh-8rem)] flex items-center justify-center px-6">
+      <div className="min-h-[calc(100dvh-8rem)] flex items-center justify-center px-6">
         <div className="text-center max-w-sm">
           <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-2">Puzzles unavailable</h1>
           <p className="text-[12px] text-on-surface-variant/40 mb-6">{loadError}</p>
@@ -157,7 +157,7 @@ export default function PuzzlesPage() {
           {/* Timer */}
           <div>
             <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-2">Timer</h3>
-            <p className="text-[10px] text-on-surface-variant/25 mb-3">Shorter timers give a bigger rating bonus when you solve fast.</p>
+            <p className="text-[10px] text-on-surface-variant/55 mb-3">Shorter timers give a bigger rating bonus when you solve fast.</p>
             <div className="flex gap-2">
               {TIMER_OPTIONS.map((t) => (
                 <button key={t.label} onClick={() => setTimerSec(t.sec)}
@@ -477,7 +477,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     <>
     {showLoader && <LoadingScreen message="Setting up..." />}
     {!ready ? <div className="min-h-[60vh]" /> :
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       {/* Main content area */}
       <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-5 sm:py-8">
         <div className="flex flex-col xl:flex-row gap-5">

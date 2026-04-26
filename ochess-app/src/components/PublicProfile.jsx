@@ -15,11 +15,13 @@ export default function PublicProfile() {
   const [profile, setProfile] = useState(null);
   const [ratings, setRatings] = useState([]);
   const [games, setGames] = useState([]);
+  const [gamesError, setGamesError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [friendStatus, setFriendStatus] = useState(null);
   const [incomingRequestId, setIncomingRequestId] = useState(null);
   const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
   useEffect(() => {
@@ -43,13 +45,22 @@ export default function PublicProfile() {
         if (authUser && p.id === authUser.id) { navigate("/profile", { replace: true }); return; }
 
         setProfile(p);
-        const [r, g] = await Promise.all([
-          getRatings(p.id).catch(() => []),
-          getRecentGames(p.id, 10).catch(() => []),
+        // Track ratings + games separately so a network failure on
+        // games doesn't render as "no games" — shown as an explicit
+        // error row instead.
+        const [rRes, gRes] = await Promise.allSettled([
+          getRatings(p.id),
+          getRecentGames(p.id, 10),
         ]);
         if (cancelled) return;
-        setRatings(r || []);
-        setGames(g || []);
+        setRatings(rRes.status === "fulfilled" && rRes.value ? rRes.value : []);
+        if (gRes.status === "fulfilled" && Array.isArray(gRes.value)) {
+          setGames(gRes.value);
+          setGamesError(false);
+        } else {
+          setGames([]);
+          setGamesError(true);
+        }
 
         if (authUser) {
           try {
@@ -75,27 +86,35 @@ export default function PublicProfile() {
   const handleAddFriend = useCallback(async () => {
     if (!authUser || !profile) return;
     setAdding(true);
+    setAddError(null);
     try {
       await sendFriendRequest(authUser.id, profile.id);
       setFriendStatus("pending");
-    } catch {}
+    } catch (err) {
+      setAddError(err.message || "Couldn't send the request");
+      setTimeout(() => setAddError(null), 4000);
+    }
     setAdding(false);
   }, [authUser, profile]);
 
   const handleAcceptFriend = useCallback(async () => {
     if (!incomingRequestId) return;
     setAdding(true);
+    setAddError(null);
     try {
       await acceptFriendRequest(incomingRequestId);
       setFriendStatus("friends");
       setIncomingRequestId(null);
-    } catch {}
+    } catch (err) {
+      setAddError(err.message || "Couldn't accept the request");
+      setTimeout(() => setAddError(null), 4000);
+    }
     setAdding(false);
   }, [incomingRequestId]);
 
   if (loading) {
     return (
-      <div className="flex min-h-[calc(100vh-4rem)]">
+      <div className="flex min-h-[calc(100dvh-4rem)]">
         <div className="flex-1 flex items-center justify-center">
           <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
         </div>
@@ -106,12 +125,12 @@ export default function PublicProfile() {
 
   if (notFound) {
     return (
-      <div className="flex min-h-[calc(100vh-4rem)]">
+      <div className="flex min-h-[calc(100dvh-4rem)]">
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            <h1 className="font-headline text-3xl font-extrabold tracking-tighter text-on-surface-variant/30 mb-2">User not found</h1>
-            <p className="text-[13px] text-on-surface-variant/25 mb-4">No player with username "{username}"</p>
-            <button onClick={() => navigate("/")} className="px-5 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors">Home</button>
+            <h1 className="font-headline text-3xl font-extrabold tracking-tighter text-on-surface-variant/55 mb-2">User not found</h1>
+            <p className="text-[13px] text-on-surface-variant/55 mb-4">No player with username "{username}"</p>
+            <button onClick={() => navigate("/")} className="btn btn-primary px-5 py-2 text-xs">Home</button>
           </div>
         </div>
         <SocialPanel />
@@ -125,7 +144,7 @@ export default function PublicProfile() {
   const profileUrl = `${window.location.origin}/u/${profile.username}`;
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-6 sm:py-10">
         {/* Header */}
         <div className="anim-fade-up flex items-start gap-4 sm:gap-5 mb-4" style={{ "--delay": "0.05s" }}>
@@ -176,8 +195,9 @@ export default function PublicProfile() {
               <span className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/20 font-headline text-[11px] font-bold uppercase tracking-wide text-emerald-400">Friends</span>
             )}
             {!authUser && (
-              <span className="text-[11px] text-on-surface-variant/30">Sign in to add friend</span>
+              <span className="text-[11px] text-on-surface-variant/55">Sign in to add friend</span>
             )}
+            {addError && <span className="text-[11px] text-error">{addError}</span>}
           </div>
         </div>
 
@@ -206,10 +226,16 @@ export default function PublicProfile() {
           </div>
         )}
 
-        {/* Recent Games */}
-        {games.length > 0 && (
-          <div className="anim-fade-up" style={{ "--delay": "0.15s" }}>
-            <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Recent Games</h2>
+        {/* Recent Games — always render the section header so the
+            "no games" / load-failure states are visible instead of
+            silently disappearing. */}
+        <div className="anim-fade-up" style={{ "--delay": "0.15s" }}>
+          <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/55 mb-3">Recent Games</h2>
+          {gamesError ? (
+            <div className="p-4 bg-error/10 border border-error/20 text-[12px] text-error">
+              Couldn't load this player's games. Try again later.
+            </div>
+          ) : games.length > 0 ? (
             <div className="space-y-1">
               {games.map((g) => {
                 const isWhite = g.white_id === profile.id;
@@ -219,20 +245,24 @@ export default function PublicProfile() {
                   <button key={g.id} onClick={() => navigate("/analysis", { state: { pgn: g.pgn } })}
                     className="w-full text-left px-4 py-3 bg-surface-low border border-white/[0.03] hover:bg-surface-high/40 transition-colors flex items-center justify-between">
                     <span className="text-[13px] font-mono text-on-surface-variant/70 truncate">
-                      {g.white_name || "?"} <span className="text-on-surface-variant/25">vs</span> {g.black_name || "?"}
+                      {g.white_name || "?"} <span className="text-on-surface-variant/40">vs</span> {g.black_name || "?"}
                     </span>
-                    <span className={`text-[11px] font-mono font-bold ${won ? "text-emerald-400" : lost ? "text-error" : "text-on-surface-variant/40"}`}>{g.result}</span>
+                    <span className={`text-[11px] font-mono font-bold ${won ? "text-emerald-400" : lost ? "text-error" : "text-on-surface-variant/55"}`}>{g.result}</span>
                   </button>
                 );
               })}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="p-6 bg-surface-low border border-white/[0.04] text-center">
+              <span className="text-[12px] text-on-surface-variant/55">No games yet</span>
+            </div>
+          )}
+        </div>
 
-        {ratings.length === 0 && games.length === 0 && (
-          <div className="p-8 bg-surface-low border border-white/[0.04] text-center">
-            <span className="text-sm text-on-surface-variant/25">No games or ratings yet</span>
-          </div>
+        {ratings.length === 0 && games.length === 0 && !gamesError && (
+          <p className="mt-6 text-[11px] text-on-surface-variant/55 text-center">
+            This player hasn't played any rated games yet.
+          </p>
         )}
       </div>
       <SocialPanel />

@@ -213,7 +213,7 @@ export default function VariantsPage() {
   const hovered = hoveredVariant && !selectedVariant ? PLAYABLE.find((v) => v.id === hoveredVariant) : null;
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-6 sm:py-10">
         <div className="anim-fade-up mb-6" style={{ "--delay": "0.05s" }}>
           <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1">Variants</h1>
@@ -272,7 +272,7 @@ export default function VariantsPage() {
                       <span className="text-xs opacity-40">{v.icon}</span>
                       <span className="font-headline text-[11px] font-bold text-on-surface-variant/40">{v.name}</span>
                     </div>
-                    <p className="text-[9px] text-on-surface-variant/20 leading-snug">{v.desc}</p>
+                    <p className="text-[9px] text-on-surface-variant/55 leading-snug">{v.desc}</p>
                   </div>
                 ))}
               </div>

@@ -88,10 +88,10 @@ export default function PlayPage() {
             </span>
           </div>
           <div className="flex gap-2 shrink-0">
-            <button onClick={resumeGame} className="py-2.5 px-5 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.96]">
+            <button onClick={resumeGame} className="btn btn-primary py-2.5 px-5 text-xs">
               Resume
             </button>
-            <button onClick={abandonGame} className="py-2.5 px-5 bg-surface-low border border-white/[0.04] font-headline text-xs font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-error hover:border-error/20 transition-colors active:scale-[0.96]">
+            <button onClick={abandonGame} className="btn btn-secondary py-2.5 px-5 text-xs hover:!text-error hover:!border-error/20">
               Abandon
             </button>
           </div>
@@ -156,7 +156,7 @@ export default function PlayPage() {
 
               {/* Start button */}
               <button onClick={startBotGame}
-                className="w-full py-4 bg-primary text-on-primary font-headline text-sm font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.97]">
+                className="btn btn-primary w-full py-4 text-sm">
                 Play vs {bot.name}
               </button>
 
@@ -185,7 +185,7 @@ export default function PlayPage() {
                       <span className="font-headline text-sm font-bold text-on-surface-variant/60">{PRESETS[botTimeIdx].label === "∞" ? "Unlimited" : `${PRESETS[botTimeIdx].label} ${PRESETS[botTimeIdx].cat}`}</span>
                     </div>
                   </div>
-                  <p className="text-[10px] text-on-surface-variant/20 mt-4 leading-relaxed">{bot.desc}</p>
+                  <p className="text-[10px] text-on-surface-variant/55 mt-4 leading-relaxed">{bot.desc}</p>
                 </div>
               </div>
             </div>
@@ -260,6 +260,8 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
     });
   }, [user?.id, isLoggedIn]);
 
+  const [seeksLoadError, setSeeksLoadError] = useState(null);
+
   // Load open seeks — initial fetch + Realtime subscription for instant updates
   useEffect(() => {
     if (!isLoggedIn || !supabase) return;
@@ -273,11 +275,19 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
         .order("created_at", { ascending: false })
         .limit(20)
         .then(({ data, error }) => {
-          if (error) { console.error("[play] loadSeeks error:", error.message, error.details, error.hint); return; }
+          if (error) {
+            console.error("[play] loadSeeks error:", error.message, error.details, error.hint);
+            setSeeksLoadError("Couldn't load open games — check your connection.");
+            return;
+          }
           plog("loadSeeks:", data?.length || 0, "seeks found", data?.map(s => ({ id: s.id, user: s.username, tc: s.time_control })));
+          setSeeksLoadError(null);
           if (data) setOpenSeeks(data);
         })
-        .catch((e) => console.error("[play] loadSeeks exception:", e));
+        .catch((e) => {
+          console.error("[play] loadSeeks exception:", e);
+          setSeeksLoadError("Couldn't load open games — check your connection.");
+        });
     };
 
     loadSeeks();
@@ -524,10 +534,14 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
       {/* Open seeks */}
       <div className="w-full xl:w-[320px] shrink-0">
         <div className="sticky top-20">
-          <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">
+          <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/55 mb-3">
             Open Games {openSeeks.length > 0 && `(${openSeeks.length})`}
           </h2>
-          {openSeeks.length > 0 ? (
+          {seeksLoadError ? (
+            <div className="p-4 bg-error/10 border border-error/20 text-[12px] text-error">
+              {seeksLoadError}
+            </div>
+          ) : openSeeks.length > 0 ? (
             <div className="space-y-1 max-h-[400px] overflow-y-auto">
               {openSeeks.map((s) => (
                 <button key={s.id} onClick={() => acceptSeek(s)}

@@ -117,6 +117,23 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
   const [evalProgress, setEvalProgress] = useState(0);
   const [pgnCopied, setPgnCopied] = useState(false);
   const [fatalError, setFatalError] = useState(null);
+
+  // When the fatal-error overlay is up, lock body scroll so the user
+  // can't tap "around" it on mobile, and let Escape dismiss back to
+  // the play page (same destination as the existing Back button).
+  useEffect(() => {
+    if (!fatalError) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e) => {
+      if (e.key === "Escape") { clearSavedGame(); navigate("/play"); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [fatalError, navigate]);
   const premoveRef = useRef(null);
   const gameOverRef = useRef(null);
   const moveListRef = useRef(null);
@@ -962,7 +979,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                   ))}
                 </div>
               </div>
-              <p className="text-[9px] text-on-surface-variant/25 mt-1.5 leading-relaxed">
+              <p className="text-[9px] text-on-surface-variant/55 mt-1.5 leading-relaxed">
                 Runs locally in your browser — nothing is sent to a server.
                 {evalDepth >= 18 && " Higher depth is slower on most devices."}
                 {evalDepth >= 22 && " 22+ may take minutes for long games."}

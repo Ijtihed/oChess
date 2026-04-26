@@ -921,18 +921,18 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
               <span className="text-[11px] text-on-surface-variant/40 capitalize block mb-3">{gameOver.reason}</span>
               {dbError && <p className="text-[10px] text-amber-400 mb-2">{dbError}</p>}
               <div className="flex gap-2">
-                <button onClick={() => navigate("/play")} className="flex-1 py-2 bg-primary text-on-primary font-headline text-[10px] font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.96]">
+                <button onClick={() => navigate("/play")} className="btn btn-primary flex-1 py-2 text-[10px]">
                   New Game
                 </button>
                 <button onClick={() => navigate("/analysis", { state: { pgn, orientation: playerColor === "w" ? "white" : "black" } })}
-                  className="flex-1 py-2 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">
+                  className="btn btn-secondary flex-1 py-2 text-[10px]">
                   Analyze
                 </button>
               </div>
               <div className="flex gap-2 mt-2">
                 <button onClick={() => { navigator.clipboard.writeText(pgn); setPgnCopied(true); setTimeout(() => setPgnCopied(false), 2000); }}
-                  className={`flex-1 py-2 font-headline text-[10px] font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
-                    pgnCopied ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/20" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary hover:bg-surface-high"
+                  className={`btn flex-1 py-2 text-[10px] ${
+                    pgnCopied ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/20" : "btn-secondary"
                   }`}>
                   {pgnCopied ? "Copied!" : "Copy PGN"}
                 </button>
@@ -942,7 +942,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
                   const a = document.createElement("a"); a.href = url; a.download = "game.pgn"; a.click();
                   URL.revokeObjectURL(url);
                 }}
-                  className="flex-1 py-2 font-headline text-[10px] font-bold uppercase tracking-wide bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">
+                  className="btn btn-secondary flex-1 py-2 text-[10px]">
                   Download PGN
                 </button>
               </div>

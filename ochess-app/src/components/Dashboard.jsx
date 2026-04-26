@@ -136,7 +136,7 @@ export default function Dashboard({ user, onNavigate }) {
   }, [dailyPuzzle, checkDailySolved]);
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       <div className="flex-1 min-w-0 px-5 sm:px-6 xl:pl-16 xl:pr-6 py-8 sm:py-12">
       {/* Greeting */}
       <div className="anim-fade-up mb-10 sm:mb-14" style={{ "--delay": "0.05s" }}>
@@ -247,7 +247,7 @@ export default function Dashboard({ user, onNavigate }) {
               </>
             ) : (
               <div className="aspect-square bg-surface-low border border-white/[0.04] flex items-center justify-center">
-                <span className="text-on-surface-variant/20 text-sm">Loading puzzle...</span>
+                <span className="text-on-surface-variant/55 text-sm">Loading puzzle...</span>
               </div>
             )}
             <button

@@ -9,7 +9,7 @@ import { getOpeningName, resetOpeningCache, isBookMove } from "../lib/openings";
 import { classifyMove } from "../lib/move-classify";
 import { playMoveSound } from "../lib/sounds";
 import { load as loadPrefs, getTheme } from "../lib/board-prefs";
-import { fetchLichessGames, fetchChesscomGames, parsePgnFile } from "../lib/game-import";
+import { fetchLichessGames, fetchChesscomGames, parsePgnFile, MAX_IMPORT_GAMES } from "../lib/game-import";
 
 const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -104,6 +104,7 @@ export default function AnalysisPage() {
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState(null);
   const [importedGames, setImportedGames] = useState([]);
+  const [importTruncated, setImportTruncated] = useState(false);
   const [importProgress, setImportProgress] = useState("");
   const importAbortRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -373,6 +374,7 @@ export default function AnalysisPage() {
         : await fetchChesscomGames(importUsername.trim(), { signal: ac.signal, onProgress });
       if (games.length === 0) throw new Error("No games found.");
       setImportedGames(games);
+      setImportTruncated(games.truncated === true);
       setImportProgress("");
     } catch (err) {
       if (err.name === "AbortError") {
@@ -689,7 +691,7 @@ export default function AnalysisPage() {
     const editorFen = positionToFen(editorPos, editorTurn);
     const prefs = loadPrefs();
     return (
-      <div className="flex min-h-[calc(100vh-4rem)]">
+      <div className="flex min-h-[calc(100dvh-4rem)]">
         <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-3 sm:py-4">
           <div className="flex flex-col xl:flex-row gap-4 xl:gap-6">
             {/* Board */}
@@ -822,7 +824,7 @@ export default function AnalysisPage() {
   const topPct = topIsBlack ? blackPct : whitePct;
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex min-h-[calc(100dvh-4rem)]">
       <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-3 sm:py-4">
         <div className="flex flex-col xl:flex-row gap-4 xl:gap-6">
           {/* ── Board column ── */}
@@ -1053,7 +1055,7 @@ export default function AnalysisPage() {
                     </div>
                   )}
 
-                  <p className="text-[11px] text-on-surface-variant/20 leading-relaxed">
+                  <p className="text-[11px] text-on-surface-variant/55 leading-relaxed">
                     Local engine — nothing sent to a server.
                     {engineDepth >= 22 && " Higher depth may be slow."}
                   </p>
@@ -1156,11 +1158,17 @@ export default function AnalysisPage() {
                 {importedGames.length > 0 && (
                   <div className="border-t border-white/[0.04] pt-1.5">
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">
+                      <span className="text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/55">
                         {importedGames.length} Games
                       </span>
-                      <button onClick={() => setImportedGames([])} className="text-[10px] text-on-surface-variant/25 hover:text-error transition-colors">Clear</button>
+                      <button onClick={() => { setImportedGames([]); setImportTruncated(false); }}
+                        className="text-[10px] text-on-surface-variant/55 hover:text-error transition-colors">Clear</button>
                     </div>
+                    {importTruncated && (
+                      <p className="mb-1.5 text-[10px] text-amber-400/80 leading-relaxed">
+                        Showing the most recent {MAX_IMPORT_GAMES.toLocaleString()} games. Older games were skipped to keep the tab responsive.
+                      </p>
+                    )}
                     <div className="max-h-[200px] overflow-y-auto space-y-px">
                       {importedGames.map((g, i) => (
                         <button key={g.id || i} onClick={() => { loadGame(g.pgn); setImportedGames([]); }}
@@ -1285,14 +1293,15 @@ export default function AnalysisPage() {
               )}
             </div>
 
-            {/* Saved boards */}
-            {savedBoards.length > 0 && (
-              <div className="bg-surface-container border border-white/[0.04]">
-                <div className="p-2.5 border-b border-white/[0.03] flex items-center justify-between">
-                  <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">
-                    Saved ({savedBoards.length}/{MAX_SAVED})
-                  </span>
-                </div>
+            {/* Saved boards — always render so the empty state is
+                visible (and the user discovers the Save action). */}
+            <div className="bg-surface-container border border-white/[0.04]">
+              <div className="p-2.5 border-b border-white/[0.03] flex items-center justify-between">
+                <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/55">
+                  Saved ({savedBoards.length}/{MAX_SAVED})
+                </span>
+              </div>
+              {savedBoards.length > 0 ? (
                 <div className="max-h-[180px] overflow-y-auto">
                   {savedBoards.map((b) => (
                     <div key={b.id} className="flex items-center gap-2 px-2.5 py-2 border-b border-white/[0.02] last:border-0 hover:bg-surface-low/50 transition-colors group">
@@ -1303,22 +1312,27 @@ export default function AnalysisPage() {
                         <span className="text-[11px] font-headline font-semibold text-on-surface-variant/60 group-hover:text-primary transition-colors block truncate">
                           {b.name}
                         </span>
-                        <span className="text-[9px] text-on-surface-variant/25">
+                        <span className="text-[9px] text-on-surface-variant/55">
                           {new Date(b.savedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                         </span>
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); deleteSavedBoard(b.id); }}
-                        className="shrink-0 p-1 text-on-surface-variant/20 hover:text-error transition-colors opacity-0 group-hover:opacity-100"
-                        title="Delete"
+                        className="shrink-0 p-1 text-on-surface-variant/40 hover:text-error transition-colors opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                        title="Delete saved board"
+                        aria-label={`Delete saved board ${b.name}`}
                       >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
                       </button>
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
+              ) : (
+                <p className="px-2.5 py-3 text-[10px] text-on-surface-variant/55 leading-relaxed">
+                  Save up to {MAX_SAVED} positions here. They survive page refreshes and let you jump back into the same line later.
+                </p>
+              )}
+            </div>
 
           </div>
         </div>
@@ -1327,8 +1341,8 @@ export default function AnalysisPage() {
       {/* Hints — between main content and friends panel */}
       <div className="hidden xl:flex flex-col gap-2 w-48 shrink-0 py-4 pr-2">
         <div className="p-4 bg-surface-container border border-white/[0.04] rounded">
-          <p className="text-[13px] text-on-surface-variant/25 leading-relaxed">
-            <span className="text-on-surface-variant/40 font-bold text-sm">Shortcuts</span><br />
+          <p className="text-[13px] text-on-surface-variant/55 leading-relaxed">
+            <span className="text-on-surface-variant/70 font-bold text-sm">Shortcuts</span><br />
             Arrow keys navigate.<br />
             Home/End jump to start/end.<br />
             F flips the board.<br />

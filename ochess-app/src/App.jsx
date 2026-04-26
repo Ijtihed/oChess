@@ -199,11 +199,11 @@ function OnlineGameRoute() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-surface flex items-center justify-center">
+      <div className="min-h-screen min-h-[100dvh] bg-surface flex items-center justify-center px-4">
         <div className="text-center">
-          <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-on-surface-variant/30 mb-2">{error}</h1>
-          <p className="text-[12px] text-on-surface-variant/25 mb-4">This game may have ended or doesn't exist.</p>
-          <button onClick={() => navigate("/play")} className="px-5 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors inline-block">Play</button>
+          <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-on-surface-variant/55 mb-2">{error}</h1>
+          <p className="text-[12px] text-on-surface-variant/55 mb-4">This game may have ended or doesn't exist.</p>
+          <button onClick={() => navigate("/play")} className="btn btn-primary px-5 py-2 text-xs">Play</button>
         </div>
       </div>
     );
@@ -211,7 +211,7 @@ function OnlineGameRoute() {
 
   if (!gameData || authLoading) {
     return (
-      <div className="min-h-screen bg-surface flex items-center justify-center">
+      <div className="min-h-screen min-h-[100dvh] bg-surface flex items-center justify-center">
         <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
       </div>
     );
@@ -220,21 +220,21 @@ function OnlineGameRoute() {
   const isParticipant = user?.id && (user.id === gameData.white_id || user.id === gameData.black_id);
   if (!isParticipant) {
     return (
-      <div className="min-h-screen bg-surface flex items-center justify-center px-6">
+      <div className="min-h-screen min-h-[100dvh] bg-surface flex items-center justify-center px-6">
         <div className="text-center max-w-md">
           <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-2">Spectator mode</h1>
-          <p className="text-[12px] text-on-surface-variant/40 mb-1">
+          <p className="text-[12px] text-on-surface-variant/55 mb-1">
             {gameData.white_name || "?"} vs {gameData.black_name || "?"} &middot; {gameData.time_control || "Unlimited"}
           </p>
-          <p className="text-[11px] text-on-surface-variant/30 mb-6">
+          <p className="text-[11px] text-on-surface-variant/55 mb-6">
             Live spectating isn't available yet. {user ? "Open this link from one of the players' accounts to play." : "Sign in to play your own games."}
           </p>
           <div className="flex gap-2 justify-center">
-            <button onClick={() => navigate("/play")} className="px-5 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors">
+            <button onClick={() => navigate("/play")} className="btn btn-primary px-5 py-2 text-xs">
               Play
             </button>
             {gameData.status === "completed" && (
-              <button onClick={() => navigate("/analysis", { state: { pgn: gameData.pgn } })} className="px-5 py-2 bg-surface-low border border-white/[0.04] font-headline text-xs font-bold uppercase tracking-wide text-on-surface-variant/60 hover:text-primary transition-colors">
+              <button onClick={() => navigate("/analysis", { state: { pgn: gameData.pgn } })} className="btn btn-secondary px-5 py-2 text-xs">
                 View in analysis
               </button>
             )}
@@ -314,7 +314,7 @@ function LogoutPage() {
     }).catch(() => { clearTimeout(timeout); window.location.href = "/"; });
   }, []);
   return (
-    <div className="min-h-screen bg-surface flex items-center justify-center">
+    <div className="min-h-screen min-h-[100dvh] bg-surface flex items-center justify-center">
       <div className="flex flex-col items-center gap-4">
         <span className="font-headline text-2xl font-extrabold tracking-tighter text-primary">Logging out...</span>
         <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />

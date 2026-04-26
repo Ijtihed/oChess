@@ -1,10 +1,17 @@
 /**
  * Game import connectors for Lichess and Chess.com.
  * All requests go directly to public APIs — no backend needed.
+ *
+ * Imports are hard-capped at MAX_IMPORT_GAMES so a heavy account
+ * (10k+ games) doesn't OOM the browser tab. The cap is exposed on
+ * the result object so the UI can surface a "showing the most
+ * recent N games" notice when it kicks in.
  */
 
-export async function fetchLichessGames(username, { signal, onProgress } = {}) {
-  const url = `https://lichess.org/api/games/user/${encodeURIComponent(username)}?pgnInJson=true&clocks=false&evals=false&opening=true`;
+export const MAX_IMPORT_GAMES = 5000;
+
+export async function fetchLichessGames(username, { signal, onProgress, max = MAX_IMPORT_GAMES } = {}) {
+  const url = `https://lichess.org/api/games/user/${encodeURIComponent(username)}?pgnInJson=true&clocks=false&evals=false&opening=true&max=${Math.max(1, max)}`;
   const res = await fetch(url, {
     headers: { Accept: "application/x-ndjson" },
     signal,
@@ -13,18 +20,21 @@ export async function fetchLichessGames(username, { signal, onProgress } = {}) {
   if (!res.ok) throw new Error(`Lichess returned ${res.status}`);
 
   const games = [];
+  let truncated = false;
   const reader = res.body?.getReader();
   if (!reader) {
     const text = await res.text();
     for (const line of text.split("\n").filter((l) => l.trim())) {
+      if (games.length >= max) { truncated = true; break; }
       try { pushLichessGame(games, JSON.parse(line)); } catch {}
     }
+    games.truncated = truncated;
     return games;
   }
 
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
+  outer: while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -32,15 +42,20 @@ export async function fetchLichessGames(username, { signal, onProgress } = {}) {
     buffer = lines.pop() || "";
     for (const line of lines) {
       if (!line.trim()) continue;
+      if (games.length >= max) { truncated = true; break outer; }
       try {
         pushLichessGame(games, JSON.parse(line));
         onProgress?.(games.length);
       } catch {}
     }
   }
-  if (buffer.trim()) {
+  if (!truncated && buffer.trim() && games.length < max) {
     try { pushLichessGame(games, JSON.parse(buffer)); onProgress?.(games.length); } catch {}
   }
+  // Best-effort cancel of the stream once we've capped, so we don't
+  // keep a fetch open in the background.
+  if (truncated) { try { reader.cancel(); } catch {} }
+  games.truncated = truncated;
   return games;
 }
 
@@ -60,7 +75,7 @@ function pushLichessGame(games, obj) {
   });
 }
 
-export async function fetchChesscomGames(username, { signal, onProgress } = {}) {
+export async function fetchChesscomGames(username, { signal, onProgress, max = MAX_IMPORT_GAMES } = {}) {
   const archivesRes = await fetch(
     `https://api.chess.com/pub/player/${encodeURIComponent(username.toLowerCase())}/games/archives`,
     { signal }
@@ -73,15 +88,18 @@ export async function fetchChesscomGames(username, { signal, onProgress } = {}) 
   if (!archives || archives.length === 0) throw new Error(`No games found for "${username}".`);
 
   const games = [];
+  let truncated = false;
 
   for (let i = archives.length - 1; i >= 0; i--) {
     if (signal?.aborted) break;
+    if (games.length >= max) { truncated = true; break; }
     const res = await fetch(archives[i], { signal });
     if (!res.ok) continue;
     const data = await res.json();
     if (!data.games) continue;
 
     for (let j = data.games.length - 1; j >= 0; j--) {
+      if (games.length >= max) { truncated = true; break; }
       const g = data.games[j];
       if (!g.pgn) continue;
       games.push({
@@ -99,6 +117,7 @@ export async function fetchChesscomGames(username, { signal, onProgress } = {}) 
     }
     onProgress?.(games.length, archives.length - i, archives.length);
   }
+  games.truncated = truncated;
   return games;
 }
 
