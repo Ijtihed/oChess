@@ -28,6 +28,9 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
     setSearchOpen(false);
   };
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const handleSearchInput = useCallback((q) => {
     setSearchQuery(q);
     if (!q.trim() || !isOnline()) { setSearchResults([]); return; }
@@ -35,8 +38,14 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
     searchTimer.current = setTimeout(async () => {
       try {
         const results = await searchUsers(q.trim(), user?.id || "none");
+        // Drop the result if the component unmounted while we
+        // awaited the network round-trip.
+        if (!mountedRef.current) return;
         setSearchResults(results);
-      } catch { setSearchResults([]); }
+      } catch {
+        if (!mountedRef.current) return;
+        setSearchResults([]);
+      }
     }, 350);
   }, [user]);
 

@@ -67,15 +67,20 @@ export default function ReviewPage() {
   );
 
   // If localStorage is mutated by another page (e.g. user adds a card
-  // from the analysis board in another tab), refresh on focus.
+  // from the analysis board in another tab), refresh on focus or
+  // visibilitychange. Both listeners are removed on unmount.
   useEffect(() => {
     const refresh = () => {
       setCards(loadCards());
       setSchedules(loadSchedules());
     };
+    const onVis = () => { if (!document.hidden) refresh(); };
     window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
-    return () => window.removeEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, []);
 
   const resetCard = useCallback(() => {

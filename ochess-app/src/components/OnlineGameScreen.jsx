@@ -134,6 +134,11 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   const MAX_DRAW_OFFERS = 3;
   const [connected, setConnected] = useState(false);
   const [connectionDegraded, setConnectionDegraded] = useState(false);
+  // The 8s degraded-connection timer in the mount effect closes over
+  // the initial `connected` value. We keep a ref alongside so the
+  // delayed check sees the latest value.
+  const connectedRef = useRef(false);
+  connectedRef.current = connected;
   const [opponentOnline, setOpponentOnline] = useState(false);
   const [pgnCopied, setPgnCopied] = useState(false);
   const [dbError, setDbError] = useState(null);
@@ -340,10 +345,12 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         clock.start(activeSide);
       }
 
-      // Sync chat
-      if (row.chat && Array.isArray(row.chat) && row.chat.length > 0) {
+      // Sync chat. The DB row is authoritative — we adopt it as-is so
+      // an admin fix or a legitimate truncation propagates instead of
+      // being silently overridden by a longer local cache.
+      if (row.chat && Array.isArray(row.chat)) {
         const restored = row.chat.map((m) => normalizeChat(m, opponentId, authUserIdRef.current));
-        setChatMessages((prev) => prev.length > restored.length ? prev : restored);
+        setChatMessages(restored);
       }
 
       // Sync draw offers
@@ -372,7 +379,11 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
     // game_over events for a participant uuid. We re-read the row;
     // if the DB really shows status='completed', applyServerRow does
     // the right thing. Otherwise we ignore the forged claim.
-    const verifyTermination = (expectedReason) => {
+    //
+    // Pending retry timers are tracked so we can clear them on
+    // unmount and avoid setState-after-unmount.
+    const verifyTimers = new Set();
+    const verifyTermination = () => {
       if (gameOverRef.current || !supabase) return;
       supabase.from("games").select("*").eq("id", gameData.id).maybeSingle()
         .then(({ data }) => {
@@ -381,14 +392,18 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
           // Soft retry once after 1.5s for the case where the actual
           // resigner's DB write has not landed yet — the row will
           // flip to completed within glicko2_update's transaction.
-          else setTimeout(() => {
-            if (gameOverRef.current) return;
-            supabase.from("games").select("*").eq("id", gameData.id).maybeSingle()
-              .then(({ data: data2 }) => {
-                if (data2?.status === "completed" && !gameOverRef.current) applyServerRow(data2);
-              })
-              .catch(() => {});
-          }, 1500);
+          else {
+            const t = setTimeout(() => {
+              verifyTimers.delete(t);
+              if (gameOverRef.current) return;
+              supabase.from("games").select("*").eq("id", gameData.id).maybeSingle()
+                .then(({ data: data2 }) => {
+                  if (data2?.status === "completed" && !gameOverRef.current) applyServerRow(data2);
+                })
+                .catch(() => {});
+            }, 1500);
+            verifyTimers.add(t);
+          }
         })
         .catch(() => {});
     };
@@ -522,9 +537,11 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
     // If the realtime channel never reaches SUBSCRIBED within 8s,
     // surface a banner so the user knows something is off — moves
     // still go through the DB write path so the game continues, but
-    // they won't see opponent moves until the page reconciles.
+    // they won't see opponent moves until the page reconciles. We
+    // read the live `connected` value via a ref so this delayed
+    // check doesn't act on a stale closure value.
     const degradeTimer = setTimeout(() => {
-      if (!gameOverRef.current) setConnectionDegraded((prev) => prev || !connected);
+      if (!gameOverRef.current && !connectedRef.current) setConnectionDegraded(true);
     }, 8000);
 
     return () => {
@@ -532,6 +549,8 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       dbSub?.unsubscribe();
       if (abortTimer) clearTimeout(abortTimer);
       clearTimeout(degradeTimer);
+      for (const t of verifyTimers) clearTimeout(t);
+      verifyTimers.clear();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

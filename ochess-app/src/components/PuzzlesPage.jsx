@@ -77,16 +77,19 @@ export default function PuzzlesPage() {
   const puzzleRating = useMemo(() => loadPuzzleRating(), [phase]);
   const [autoAdvance, setAutoAdvance] = useState(savedSettings?.autoAdvance ?? false);
   const [timerSec, setTimerSec] = useState(savedSettings?.timerSec ?? 0);
-  const initRef = useRef(false);
-  const initPuzzleId = useRef(urlPuzzleId);
-
   const [loadError, setLoadError] = useState(null);
+  const [retryKey, setRetryKey] = useState(0);
 
+  // Discover puzzles + handle the initial route (direct-link vs setup
+  // vs continue). Re-runs when `urlPuzzleId` changes so a user
+  // sharing /puzzles/:id mid-session navigates to the new puzzle
+  // instead of staying stuck on the previous one. `retryKey` lets the
+  // error-state Retry button trigger the same effect again.
   useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
     preloadAll();
     let cancelled = false;
+    setPhase("loading");
+    setLoadError(null);
     loadPuzzles(3000)
       .then(async (p) => {
         if (cancelled) return;
@@ -97,10 +100,10 @@ export default function PuzzlesPage() {
         }
         setPuzzles(p);
 
-        const pid = initPuzzleId.current;
-        if (pid) {
-          let found = findPuzzleById(p, pid);
-          if (!found) found = await searchPuzzleById(pid);
+        if (urlPuzzleId) {
+          let found = findPuzzleById(p, urlPuzzleId);
+          if (!found) found = await searchPuzzleById(urlPuzzleId);
+          if (cancelled) return;
           if (found) { setDirectPuzzle(found); setPhase("play-direct"); return; }
         }
 
@@ -118,7 +121,7 @@ export default function PuzzlesPage() {
         setPhase("error");
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [urlPuzzleId, retryKey]);
 
   const handleStart = useCallback((continueStreak, skipNext) => {
     saveSettings(0, autoAdvance, timerSec, !!skipNext);
@@ -133,7 +136,7 @@ export default function PuzzlesPage() {
         <div className="text-center max-w-sm">
           <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-2">Puzzles unavailable</h1>
           <p className="text-[12px] text-on-surface-variant/40 mb-6">{loadError}</p>
-          <button onClick={() => { initRef.current = false; setPhase("loading"); setLoadError(null); }}
+          <button onClick={() => { setLoadError(null); setRetryKey((k) => k + 1); }}
             className="px-5 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors">
             Retry
           </button>

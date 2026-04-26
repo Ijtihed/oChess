@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import { isOnline, supabase } from "../lib/supabase";
 import { getFriends, getPendingRequests, searchUsers, sendFriendRequest, acceptFriendRequest, declineFriendRequest, removeFriend } from "../lib/friends";
@@ -192,13 +192,13 @@ export default function SocialPanel() {
                   const status = getUserStatus(u.id);
                   return (
                     <div key={u.id} className="flex items-center justify-between py-1.5 px-2 bg-surface-low/50 border border-white/[0.02] hover:bg-surface-high/30 transition-colors">
-                      <a href={`/u/${u.username}`} className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity">
+                      <Link to={`/u/${u.username}`} className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity">
                         <Avatar url={u.avatar_url} name={u.display_name || u.username} size="w-6 h-6" />
                         <div className="min-w-0">
                           <span className="text-[12px] font-bold text-on-surface-variant/60 block truncate leading-tight">{u.display_name || u.username}</span>
                           <span className="text-[9px] text-on-surface-variant/25">@{u.username}</span>
                         </div>
-                      </a>
+                      </Link>
                       <div className="shrink-0 ml-1">
                         {status === "friends" && (
                           <span className="text-[9px] text-emerald-400 font-bold">Friends</span>
@@ -237,13 +237,13 @@ export default function SocialPanel() {
             <div className="space-y-1">
               {pending.incoming.map((r) => (
                 <div key={r.requestId} className="py-2 px-2.5 bg-primary/5 border border-primary/10">
-                  <a href={`/u/${r.username}`} className="flex items-center gap-2 mb-1.5 hover:opacity-80 transition-opacity">
+                  <Link to={`/u/${r.username}`} className="flex items-center gap-2 mb-1.5 hover:opacity-80 transition-opacity">
                     <Avatar url={r.avatar_url} name={r.display_name || r.username} size="w-7 h-7" />
                     <div className="min-w-0">
                       <span className="text-[12px] font-bold text-on-surface-variant/70 block truncate leading-tight">{r.display_name || r.username}</span>
                       <span className="text-[9px] text-on-surface-variant/30">@{r.username}</span>
                     </div>
-                  </a>
+                  </Link>
                   <div className="flex gap-1.5">
                     <button onClick={() => handleAccept(r.requestId)}
                       className="flex-1 py-1.5 text-[10px] font-bold bg-primary text-on-primary hover:bg-primary-dim transition-colors text-center">
@@ -269,13 +269,13 @@ export default function SocialPanel() {
           <div className="space-y-1">
             {friends.map((f) => (
               <div key={f.friendshipId} className="flex items-center justify-between py-2 px-2.5 bg-surface-low/50 border border-white/[0.02] hover:bg-surface-high/30 transition-colors group">
-                <a href={`/u/${f.username}`} className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity">
+                <Link to={`/u/${f.username}`} className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity">
                   <Avatar url={f.avatar_url} name={f.display_name || f.username} />
                   <div className="min-w-0">
                     <span className="font-headline text-[13px] font-bold text-on-surface-variant/60 block leading-tight truncate">{f.display_name || f.username}</span>
                     {f.username && <span className="text-[10px] text-on-surface-variant/25">@{f.username}</span>}
                   </div>
-                </a>
+                </Link>
                 <div className="flex gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                   <button onClick={() => challengeFriend(f.display_name || f.username)}
                     aria-label={`Play with ${f.display_name || f.username}`}

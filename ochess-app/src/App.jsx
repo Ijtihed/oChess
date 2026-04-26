@@ -206,19 +206,31 @@ function OnlineGameRoute() {
   const [gameData, setGameData] = useState(location.state?.gameData || null);
   const [error, setError] = useState(null);
 
+  // Refetch whenever gameId changes — including in-app navigation
+  // from one online game to a rematch / new game without unmounting.
+  // We accept a fast-path when location.state.gameData matches the
+  // new id, but always re-load otherwise.
   useEffect(() => {
-    if (gameData) return;
     if (!gameId) { setError("No game ID"); return; }
+    if (gameData && gameData.id === gameId) return;
+    setError(null);
+    setGameData(null);
+    let cancelled = false;
     import("./lib/supabase").then(({ supabase: sb }) => {
+      if (cancelled) return;
       if (!sb) { setError("Not connected"); return; }
       sb.from("games").select("*").eq("id", gameId).maybeSingle()
         .then(({ data, error }) => {
+          if (cancelled) return;
           if (error || !data) setError("Game not found");
           else setGameData(data);
         })
-        .catch(() => setError("Failed to load game"));
+        .catch(() => { if (!cancelled) setError("Failed to load game"); });
     });
-  }, [gameId, gameData]);
+    return () => { cancelled = true; };
+  // gameData is intentionally excluded — we only refetch when gameId changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameId]);
 
   if (error) {
     return (

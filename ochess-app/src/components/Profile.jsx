@@ -161,9 +161,28 @@ export default function Profile() {
     }
   }, [authUser, refreshProfile]);
 
-  const puzzleRating = useMemo(() => loadPuzzleRating(), []);
-  const puzzleStats = useMemo(() => getPuzzleStats(), []);
-  const streak = useMemo(() => getStreak(), []);
+  // Puzzle stats/rating/streak all live in localStorage. They were
+  // previously memoized on mount (and so frozen until route remount),
+  // which meant solving puzzles in the same session never updated
+  // the profile. We track a refresh tick that bumps on focus / tab
+  // visibility and re-read on every render to keep the UI honest.
+  const [puzzleRefreshKey, setPuzzleRefreshKey] = useState(0);
+  useEffect(() => {
+    const refresh = () => setPuzzleRefreshKey((k) => k + 1);
+    const onVis = () => { if (!document.hidden) refresh(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const puzzleRating = useMemo(() => loadPuzzleRating(), [puzzleRefreshKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const puzzleStats = useMemo(() => getPuzzleStats(), [puzzleRefreshKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const streak = useMemo(() => getStreak(), [puzzleRefreshKey]);
 
   useEffect(() => {
     if (!authUser || !isOnline()) return;
