@@ -46,10 +46,14 @@ create table if not exists ratings (
 );
 
 -- ── games ──
+-- white_id/black_id use ON DELETE SET NULL so a user deleting their
+-- account doesn't get blocked by historical game rows. The names are
+-- already denormalised into white_name/black_name so the audit trail
+-- survives even when the player rows are gone.
 create table if not exists games (
   id uuid primary key default gen_random_uuid(),
-  white_id uuid references profiles(id),
-  black_id uuid references profiles(id),
+  white_id uuid references profiles(id) on delete set null,
+  black_id uuid references profiles(id) on delete set null,
   white_name text,
   black_name text,
   pgn text not null,
@@ -69,6 +73,21 @@ create table if not exists games (
   is_rated boolean default true,
   status text default 'active'
 );
+-- For projects that already have the table, adjust the FK behavior
+-- in place. Idempotent: drops the constraint if present, adds the
+-- new one with the desired ON DELETE rule.
+do $$ begin
+  if exists (select 1 from pg_constraint where conname = 'games_white_id_fkey') then
+    alter table games drop constraint games_white_id_fkey;
+  end if;
+  if exists (select 1 from pg_constraint where conname = 'games_black_id_fkey') then
+    alter table games drop constraint games_black_id_fkey;
+  end if;
+  alter table games add constraint games_white_id_fkey
+    foreign key (white_id) references profiles(id) on delete set null;
+  alter table games add constraint games_black_id_fkey
+    foreign key (black_id) references profiles(id) on delete set null;
+end $$;
 -- Idempotent column adds for live state, draws, rematch, chat
 alter table games add column if not exists created_at timestamptz default now();
 alter table games add column if not exists white_time_ms int;

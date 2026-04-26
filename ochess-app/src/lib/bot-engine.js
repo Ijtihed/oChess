@@ -184,4 +184,7 @@ function destroyBotEngines() {
   sfResolve = null;
 }
 
-export { getBotMove, getThinkDelay, destroyBotEngines, BOT_CONFIG };
+// jceMoveToVerbose / uciToVerbose are exported so they can be unit-
+// tested directly. They're pure (chess.js only) and don't touch
+// either worker.
+export { getBotMove, getThinkDelay, destroyBotEngines, jceMoveToVerbose, uciToVerbose, BOT_CONFIG };

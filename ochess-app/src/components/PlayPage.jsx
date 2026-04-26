@@ -203,7 +203,7 @@ export default function PlayPage() {
   );
 }
 
-const { log: plog } = makeLogger("play");
+const { log: plog, error: perr } = makeLogger("play");
 
 function OnlineMatchmaking({ navigate, mode, setMode }) {
   const { user, profile } = useAuth();
@@ -276,7 +276,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
         .limit(20)
         .then(({ data, error }) => {
           if (error) {
-            console.error("[play] loadSeeks error:", error.message, error.details, error.hint);
+            perr("loadSeeks error:", error.message, error.details, error.hint);
             setSeeksLoadError("Couldn't load open games — check your connection.");
             return;
           }
@@ -285,7 +285,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
           if (data) setOpenSeeks(data);
         })
         .catch((e) => {
-          console.error("[play] loadSeeks exception:", e);
+          perr("loadSeeks exception:", e);
           setSeeksLoadError("Couldn't load open games — check your connection.");
         });
     };
@@ -398,7 +398,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
         } catch {}
       }, 5000);
     } catch (err) {
-      console.error("[play] startSeeking error:", err);
+      perr("startSeeking error:", err);
       setSeeking(false);
       seekingRef.current = false;
       setSeekError(err.message || "Failed to find match");
@@ -450,7 +450,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
       plog("acceptSeek OK, navigating to game:", game.id);
       navigate(`/game/online/${game.id}`, { state: { gameData: game } });
     } catch (err) {
-      console.error("[play] acceptSeek error:", err);
+      perr("acceptSeek error:", err);
       setClaiming(false);
       setSeekError(err.message || "Game no longer available");
     }

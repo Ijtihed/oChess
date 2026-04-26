@@ -100,13 +100,28 @@ export async function deleteChallenge(challengeId) {
 export function watchChallenge(challengeId, callback) {
   if (!supabase) return { unsubscribe: () => {} };
   log("watchChallenge:", challengeId);
+  let lastStatus = null;
   const channel = supabase
     .channel(`challenge:${challengeId}`)
     .on("postgres_changes", { event: "UPDATE", schema: "public", table: "challenges", filter: `id=eq.${challengeId}` }, (payload) => {
       log("challenge UPDATE received:", payload.new?.status);
       callback(payload.new);
     })
-    .subscribe((status) => { log("watchChallenge subscription:", status); });
+    .subscribe((status) => {
+      log("watchChallenge subscription:", status);
+      // Mirror subscribeToGameRow's reconnect behavior: any time the
+      // channel resubscribes (initial or after a network drop), refetch
+      // the row so missed UPDATEs land. Otherwise a creator who lost
+      // connectivity briefly could miss an `accepted` flip.
+      if (status === "SUBSCRIBED") {
+        const reconnect = lastStatus !== null && lastStatus !== "SUBSCRIBED";
+        if (reconnect) log("watchChallenge reconnected — refetching row");
+        supabase.from("challenges").select("*").eq("id", challengeId).maybeSingle()
+          .then(({ data }) => { if (data) callback(data); })
+          .catch(() => {});
+      }
+      lastStatus = status;
+    });
   return { unsubscribe: () => supabase.removeChannel(channel) };
 }
 

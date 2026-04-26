@@ -99,4 +99,38 @@ describe("puzzle rating (Glicko-1)", () => {
     const fast = updatePuzzleRating(1500, true, { timerSec: 60, timeLeftPct: 0.9 });
     expect(fast.rating).toBeGreaterThanOrEqual(base.rating);
   });
+
+  it("hints reduce rating gain on a successful solve", () => {
+    localStorage.clear();
+    const clean = updatePuzzleRating(1200, true, {});
+    localStorage.clear();
+    const hinted = updatePuzzleRating(1200, true, { usedHints: true });
+    // Both gain rating but the hinted gain should be strictly smaller.
+    expect(hinted.rating).toBeLessThan(clean.rating);
+  });
+
+  it("timer-on fails are penalised less than no-timer fails", () => {
+    localStorage.clear();
+    const noTimerFail = updatePuzzleRating(1500, false, {});
+    localStorage.clear();
+    const timerFail = updatePuzzleRating(1500, false, { timerSec: 30 });
+    // The timer-on path multiplies delta by 0.8, so the rating dropped
+    // *less* — i.e. ended at a higher value.
+    expect(timerFail.rating).toBeGreaterThanOrEqual(noTimerFail.rating);
+  });
+
+  it("rating is clamped at a minimum of 100", () => {
+    localStorage.clear();
+    // Stomp on the stored value directly with a near-floor rating and
+    // simulate a brutal loss vs an extremely strong puzzle.
+    localStorage.setItem("ochess_puzzle_rating", JSON.stringify({ rating: 110, rd: 50, games: 200 }));
+    const r = updatePuzzleRating(2400, false, {});
+    expect(r.rating).toBeGreaterThanOrEqual(100);
+  });
+
+  it("RD shrinks (or stays the same) after a played puzzle", () => {
+    localStorage.clear();
+    const r = updatePuzzleRating(1500, true);
+    expect(r.rd).toBeLessThanOrEqual(350);
+  });
 });

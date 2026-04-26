@@ -3,7 +3,7 @@
  * Falls back to guest mode when Supabase isn't configured.
  */
 
-import { supabase, isOnline } from "./supabase";
+import { supabase } from "./supabase";
 
 export async function signUp(email, password, username) {
   if (!supabase) throw new Error("Online features not configured");

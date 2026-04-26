@@ -365,6 +365,34 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       }
     };
 
+    // Verify a broadcast termination claim against the DB before
+    // ending the game locally. The Realtime broadcast layer uses the
+    // anon key and is *not* sender-authenticated; treating it as
+    // authoritative would let any anon client forge resign / draw /
+    // game_over events for a participant uuid. We re-read the row;
+    // if the DB really shows status='completed', applyServerRow does
+    // the right thing. Otherwise we ignore the forged claim.
+    const verifyTermination = (expectedReason) => {
+      if (gameOverRef.current || !supabase) return;
+      supabase.from("games").select("*").eq("id", gameData.id).maybeSingle()
+        .then(({ data }) => {
+          if (!data || gameOverRef.current) return;
+          if (data.status === "completed") applyServerRow(data);
+          // Soft retry once after 1.5s for the case where the actual
+          // resigner's DB write has not landed yet — the row will
+          // flip to completed within glicko2_update's transaction.
+          else setTimeout(() => {
+            if (gameOverRef.current) return;
+            supabase.from("games").select("*").eq("id", gameData.id).maybeSingle()
+              .then(({ data: data2 }) => {
+                if (data2?.status === "completed" && !gameOverRef.current) applyServerRow(data2);
+              })
+              .catch(() => {});
+          }, 1500);
+        })
+        .catch(() => {});
+    };
+
     // ── Subscribe to the game row in the DB (the authoritative feed) ──
     const dbSub = subscribeToGameRow(gameData.id, applyServerRow);
 
@@ -389,7 +417,10 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       },
       onResign: ({ userId }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
-        endGame(playerColor === "w" ? "1-0" : "0-1", "opponent resigned");
+        // Broadcast is a fast hint, not authority. Verify against the
+        // DB row before terminating — a malicious actor with the
+        // anon key could otherwise forge resign payloads.
+        verifyTermination("resignation");
       },
       onDrawOffer: ({ userId }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
@@ -397,7 +428,8 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       },
       onDrawAccept: ({ userId }) => {
         if (!validPlayers.has(userId)) return;
-        endGame("1/2-1/2", "draw by agreement");
+        // Same: only terminate after the DB confirms status='completed'.
+        verifyTermination("draw by agreement");
       },
       onDrawDecline: ({ userId }) => {
         // Broadcast self:false hides this from the decliner, so we
@@ -415,7 +447,11 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       },
       onGameOver: (data) => {
         if (data?.userId && !validPlayers.has(data.userId)) return;
-        endGame(data.result, data.reason);
+        // Same DB-first guard as the other terminal events. The
+        // sender hasn't necessarily written the games row yet (e.g.
+        // the 30s auto-abort path) — verify on the DB and let
+        // applyServerRow finalize if the status really is completed.
+        verifyTermination(data?.reason || "game ended");
       },
       onChat: ({ userId, text, name }) => {
         if (!validPlayers.has(userId)) return;
