@@ -143,7 +143,7 @@ You're shipping with code under multiple licenses. Add a footer link to a **Lega
 
 ### 15. Bundle size
 
-The current production build emits a ~720 KB main chunk. Acceptable for desktop launch; consider lazy-loading routes (`React.lazy` + `Suspense`) for `AnalysisPage`, `GameScreen`, and `OnlineGameScreen` if you target slow networks.
+The production build now lazy-loads `AnalysisPage`, `PuzzlesPage`, `OnlineGameScreen`, and `VariantGameScreen` via `React.lazy` + `Suspense` (Phase 9). The main chunk is **~404 KB / 114 KB gzipped**, with route chunks loading on demand behind `LoadingScreen`. No further action needed unless you target sub-3G connections.
 
 ### 16. Custom domain + SSL
 
