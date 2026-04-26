@@ -4,13 +4,15 @@ import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import InteractiveBoard from "./InteractiveBoard";
 import SocialPanel from "./SocialPanel";
-import { evaluate, formatEval, init as initEngine } from "../lib/engine";
-import { getOpeningName, resetOpeningCache } from "../lib/openings";
+import { evaluate, init as initEngine } from "../lib/engine";
+import { getOpeningName, resetOpeningCache, isBookMove } from "../lib/openings";
+import { classifyMove } from "../lib/move-classify";
 import { playMoveSound } from "../lib/sounds";
 import { load as loadPrefs, getTheme } from "../lib/board-prefs";
+import { fetchLichessGames, fetchChesscomGames, parsePgnFile } from "../lib/game-import";
 
 const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const EMPTY_FEN = "8/8/8/8/8/8/8/8 w - - 0 1";
+
 const PIECE_VAL = { p: 1, n: 3, b: 3, r: 5, q: 9 };
 const SAVED_KEY = "ochess_saved_analysis";
 const MAX_SAVED = 5;
@@ -89,72 +91,135 @@ export default function AnalysisPage() {
   const location = useLocation();
   const initialPgn = location.state?.pgn || "";
   const initialFen = location.state?.fen || "";
+  const initialOrientation = location.state?.orientation || "white";
 
-  const [mode, setMode] = useState(initialPgn || initialFen ? "analysis" : "analysis");
+  const [mode, setMode] = useState("analysis");
   const [pgnInput, setPgnInput] = useState("");
-  const [fenInput, setFenInput] = useState("");
+  const [urlInput, setUrlInput] = useState("");
+  const [urlLoading, setUrlLoading] = useState(false);
+  const [urlError, setUrlError] = useState(null);
   const [showImport, setShowImport] = useState(false);
+  const [importUsername, setImportUsername] = useState("");
+  const [importPlatform, setImportPlatform] = useState("lichess");
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState(null);
+  const [importedGames, setImportedGames] = useState([]);
+  const [importProgress, setImportProgress] = useState("");
+  const importAbortRef = useRef(null);
+  const fileInputRef = useRef(null);
   const [savedBoards, setSavedBoards] = useState(loadSavedBoards);
   const [history, setHistory] = useState([]);
   const [currentPly, setCurrentPly] = useState(0);
   const [fen, setFen] = useState(START_FEN);
   const [startFen, setStartFen] = useState(START_FEN);
-  const [orientation, setOrientation] = useState("white");
+  const [orientation, setOrientation] = useState(initialOrientation);
 
   const [engineOn, setEngineOn] = useState(true);
   const [engineDepth, setEngineDepth] = useState(18);
+  const [numPV, setNumPV] = useState(2);
   const [posEval, setPosEval] = useState(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [pvSan, setPvSan] = useState([]);
-  const [bestMoveArrow, setBestMoveArrow] = useState(null);
+  const [pvLines, setPvLines] = useState([]);
   const [showBestMove, setShowBestMove] = useState(true);
+  const evalCacheRef = useRef({});
+  const [boardAnnotation, setBoardAnnotation] = useState(null);
 
   const [openingName, setOpeningName] = useState(null);
   const [fenCopied, setFenCopied] = useState(false);
   const [pgnCopied, setPgnCopied] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
 
   const [editorPos, setEditorPos] = useState({});
   const [editorPiece, setEditorPiece] = useState("wQ");
   const [editorTurn, setEditorTurn] = useState("w");
+  const [gameHeaders, setGameHeaders] = useState(null);
 
   const baseRef = useRef(new Chess());
   const moveListRef = useRef(null);
   const evalAbort = useRef(0);
+  const currentPlyRef = useRef(currentPly);
+  const historyRef = useRef(history);
+  currentPlyRef.current = currentPly;
+  historyRef.current = history;
+
+  const uciToSanList = useCallback((uciArr, startFenStr) => {
+    try {
+      const g = new Chess(startFenStr);
+      const sans = [];
+      for (let i = 0; i < Math.min(10, uciArr.length); i++) {
+        const uci = uciArr[i];
+        const m = g.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
+        if (m) sans.push(m.san); else break;
+      }
+      return sans;
+    } catch { return []; }
+  }, []);
 
   useEffect(() => {
-    if (!fen || !engineOn) { setPosEval(null); setEvalLoading(false); setPvSan([]); setBestMoveArrow(null); return; }
+    if (!fen || !engineOn) { setPosEval(null); setEvalLoading(false); setPvSan([]); setPvLines([]); setBoardAnnotation(null); return; }
     const id = ++evalAbort.current;
     setEvalLoading(true);
     setPosEval(null);
     setPvSan([]);
-    setBestMoveArrow(null);
+    setPvLines([]);
     (async () => {
       try {
         await initEngine();
-        const result = await evaluate(fen, engineDepth);
+        const result = await evaluate(fen, engineDepth, numPV);
         if (evalAbort.current !== id) return;
-        setPosEval(result);
-        setEvalLoading(false);
-        if (result?.bestMove) {
-          const from = result.bestMove.slice(0, 2);
-          const to = result.bestMove.slice(2, 4);
-          setBestMoveArrow({ from, to });
+
+        let topResult = null;
+        if (numPV > 1 && Array.isArray(result)) {
+          topResult = result[0] || null;
+          setPosEval(topResult);
+          setEvalLoading(false);
+          if (topResult?.pv) setPvSan(uciToSanList(topResult.pv, fen));
+          const lines = result.map((line) => ({
+            eval_cp: line.eval_cp,
+            eval_mate: line.eval_mate,
+            depth: line.depth,
+            bestMove: line.bestMove,
+            san: uciToSanList(line.pv || [], fen),
+          }));
+          setPvLines(lines);
+        } else {
+          topResult = result;
+          setPosEval(result);
+          setEvalLoading(false);
+          if (result?.pv) setPvSan(uciToSanList(result.pv, fen));
+          setPvLines(result ? [{ eval_cp: result.eval_cp, eval_mate: result.eval_mate, depth: result.depth, bestMove: result.bestMove, san: uciToSanList(result.pv || [], fen) }] : []);
         }
-        if (result?.pv) {
-          try {
-            const g = new Chess(fen);
-            const sans = [];
-            for (let i = 0; i < Math.min(8, result.pv.length); i++) {
-              const uci = result.pv[i];
-              const m = g.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
-              if (m) sans.push(m.san); else break;
-            }
-            if (evalAbort.current === id) setPvSan(sans);
-          } catch {}
+
+        const snapPly = currentPlyRef.current;
+        const snapHist = historyRef.current;
+        if (topResult && snapPly > 0) {
+          const sideToMove = fen.split(" ")[1];
+          const whiteRelCp = topResult.eval_cp !== null ? (sideToMove === "w" ? topResult.eval_cp : -topResult.eval_cp) : null;
+          const whiteRelMate = topResult.eval_mate !== null ? (sideToMove === "w" ? topResult.eval_mate : -topResult.eval_mate) : null;
+          evalCacheRef.current[snapPly] = { cp: whiteRelCp, mate: whiteRelMate, bestMove: topResult.bestMove };
+
+          const move = snapHist[snapPly - 1];
+          const movingColor = snapPly % 2 === 1 ? "w" : "b";
+          const prevEval = evalCacheRef.current[snapPly - 1];
+          const curEval = evalCacheRef.current[snapPly];
+          const book = await isBookMove(snapHist, snapPly);
+          if (evalAbort.current !== id) return;
+          const isBest = prevEval?.bestMove && move && (prevEval.bestMove.slice(0, 2) === move.from && prevEval.bestMove.slice(2, 4) === move.to);
+          const annot = classifyMove(prevEval, curEval, movingColor, { isBook: book, isBestMove: isBest });
+          setBoardAnnotation(move && annot && annot.glyph !== "Book" ? { square: move.to, ...annot } : null);
+        } else {
+          const sideToMove = fen.split(" ")[1];
+          if (topResult) {
+            const whiteRelCp = topResult.eval_cp !== null ? (sideToMove === "w" ? topResult.eval_cp : -topResult.eval_cp) : null;
+            const whiteRelMate = topResult.eval_mate !== null ? (sideToMove === "w" ? topResult.eval_mate : -topResult.eval_mate) : null;
+            evalCacheRef.current[0] = { cp: whiteRelCp, mate: whiteRelMate, bestMove: topResult.bestMove };
+          }
+          setBoardAnnotation(null);
         }
       } catch { if (evalAbort.current === id) setEvalLoading(false); }
     })();
-  }, [fen, engineOn, engineDepth]);
+  }, [fen, engineOn, engineDepth, numPV, uciToSanList]);
 
   useEffect(() => {
     resetOpeningCache();
@@ -174,22 +239,199 @@ export default function AnalysisPage() {
       setStartFen(START_FEN);
     }
     if (pgn && pgn.trim()) {
-      try { g.loadPgn(pgn); } catch { return false; }
+      try {
+        g.loadPgn(pgn);
+      } catch (err) {
+        console.warn("loadPgn failed, trying move-by-move:", err);
+        try {
+          const movesOnly = pgn.replace(/\[.*?\]\s*/g, "").replace(/1-0|0-1|1\/2-1\/2|\*/g, "").trim();
+          for (const tok of movesOnly.split(/\s+/)) {
+            if (/^\d+\./.test(tok) || !tok) continue;
+            g.move(tok);
+          }
+        } catch {
+          return false;
+        }
+      }
     }
     const hist = g.history({ verbose: true });
     baseRef.current = g;
+    evalCacheRef.current = {};
+    analysisIdRef.current = Date.now().toString(36);
     setHistory(hist);
     setCurrentPly(hist.length);
     setFen(g.fen());
     setMode("analysis");
     setShowImport(false);
+
+    try {
+      const hdrs = g.header();
+      if (hdrs && (hdrs.White || hdrs.Black || hdrs.Result || hdrs.Event)) {
+        setGameHeaders(hdrs);
+      } else {
+        setGameHeaders(null);
+      }
+    } catch { setGameHeaders(null); }
+
     return true;
   }, []);
 
+  const importFromUrl = useCallback(async (url) => {
+    setUrlLoading(true);
+    setUrlError(null);
+    try {
+      const u = url.trim();
+      let pgn = null;
+
+      const lichessMatch = u.match(/lichess\.org\/(?:game\/export\/)?([a-zA-Z0-9]{8,12})/);
+      if (lichessMatch) {
+        const id = lichessMatch[1].slice(0, 8);
+        const res = await fetch(`https://lichess.org/game/export/${id}`, {
+          headers: { Accept: "application/x-chess-pgn" },
+        });
+        if (!res.ok) throw new Error(`Lichess returned ${res.status}`);
+        pgn = await res.text();
+      }
+
+      if (!pgn) {
+        const chesscomMatch = u.match(/chess\.com\/(?:game\/)?(?:live|daily|computer)\/(\d+)/);
+        if (chesscomMatch) {
+          const id = chesscomMatch[1];
+          const res = await fetch(`https://api.chess.com/pub/game/${id}`);
+          if (res.ok) {
+            const data = await res.json();
+            pgn = data.pgn;
+          }
+          if (!pgn) {
+            const cbRes = await fetch(`https://www.chess.com/callback/live/game/${id}`);
+            if (cbRes.ok) {
+              const cbData = await cbRes.json();
+              pgn = cbData.pgn || cbData.game?.pgn;
+            }
+          }
+          if (!pgn) throw new Error("Could not fetch game from Chess.com");
+        }
+      }
+
+      if (!pgn) throw new Error("Unrecognized URL. Paste a Lichess or Chess.com game link.");
+      const ok = loadGame(pgn);
+      if (!ok) throw new Error("Failed to parse the PGN from this game.");
+      setUrlInput("");
+    } catch (err) {
+      setUrlError(err.message || "Import failed");
+    } finally {
+      setUrlLoading(false);
+    }
+  }, [loadGame]);
+
+  const cancelImport = useCallback(() => {
+    importAbortRef.current?.abort();
+    importAbortRef.current = null;
+    setImportLoading(false);
+    setImportProgress("");
+  }, []);
+
+  const importByUsername = useCallback(async () => {
+    if (!importUsername.trim()) return;
+    cancelImport();
+    const ac = new AbortController();
+    importAbortRef.current = ac;
+    setImportLoading(true);
+    setImportError(null);
+    setImportedGames([]);
+    setImportProgress("Connecting...");
+    try {
+      const onProgress = importPlatform === "lichess"
+        ? (count) => setImportProgress(`${count} games fetched...`)
+        : (count, done, total) => setImportProgress(`${count} games (archive ${done}/${total})...`);
+      const games = importPlatform === "lichess"
+        ? await fetchLichessGames(importUsername.trim(), { signal: ac.signal, onProgress })
+        : await fetchChesscomGames(importUsername.trim(), { signal: ac.signal, onProgress });
+      if (games.length === 0) throw new Error("No games found.");
+      setImportedGames(games);
+      setImportProgress("");
+    } catch (err) {
+      if (err.name === "AbortError") {
+        setImportProgress("");
+      } else {
+        setImportError(err.message || "Import failed");
+        setImportProgress("");
+      }
+    } finally {
+      setImportLoading(false);
+      importAbortRef.current = null;
+    }
+  }, [importUsername, importPlatform, cancelImport]);
+
+  const handleFileUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result;
+      if (!text) return;
+      const games = parsePgnFile(text);
+      if (games.length === 0) {
+        loadGame(text);
+      } else if (games.length === 1) {
+        loadGame(games[0].pgn);
+      } else {
+        setImportedGames(games);
+        setShowImport(true);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }, [loadGame]);
+
+  const initialLoadRef = useRef(false);
+
   useEffect(() => {
-    if (initialPgn) loadGame(initialPgn);
-    else if (initialFen) loadGame("", initialFen);
-  }, [initialPgn, initialFen, loadGame]);
+    if (!initialLoadRef.current) {
+      initialLoadRef.current = true;
+      const params = new URLSearchParams(window.location.search);
+      const sharedMoves = params.get("moves");
+      const sharedFen = params.get("fen");
+      const sharedPly = params.get("ply");
+
+      if (sharedMoves || sharedFen) {
+        const startF = sharedFen || START_FEN;
+        const g = new Chess(startF);
+        if (sharedMoves) {
+          for (const uci of sharedMoves.split(",")) {
+            try {
+              g.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
+            } catch { break; }
+          }
+        }
+        setStartFen(startF);
+        const hist = g.history({ verbose: true });
+        baseRef.current = g;
+        setHistory(hist);
+        const parsedPly = parseInt(sharedPly);
+        const ply = sharedPly ? Math.max(0, Math.min(Number.isFinite(parsedPly) ? parsedPly : hist.length, hist.length)) : hist.length;
+        setCurrentPly(ply);
+        const temp = new Chess(startF);
+        for (let i = 0; i < ply; i++) temp.move(hist[i].san);
+        setFen(temp.fen());
+        const sharedId = params.get("id");
+        const sharedW = params.get("w");
+        const sharedB = params.get("b");
+        if (sharedId) analysisIdRef.current = sharedId;
+        if (sharedW || sharedB) {
+          setGameHeaders({ White: sharedW || "?", Black: sharedB || "?" });
+        }
+        return;
+      }
+    }
+
+    if (initialPgn) {
+      loadGame(initialPgn);
+      if (initialOrientation) setOrientation(initialOrientation);
+    } else if (initialFen) {
+      loadGame("", initialFen);
+    }
+  }, [initialPgn, initialFen, initialOrientation]);
 
   const goToPly = useCallback((ply) => {
     const clamped = Math.max(0, Math.min(ply, history.length));
@@ -217,6 +459,10 @@ export default function AnalysisPage() {
   const deleteMove = useCallback(() => {
     if (currentPly === 0) return;
     const newHist = history.slice(0, currentPly - 1);
+    const cache = evalCacheRef.current;
+    for (const key of Object.keys(cache)) {
+      if (Number(key) >= currentPly) delete cache[key];
+    }
     setHistory(newHist);
     const temp = new Chess(startFen);
     for (let i = 0; i < newHist.length; i++) temp.move(newHist[i].san);
@@ -240,10 +486,30 @@ export default function AnalysisPage() {
       else if (e.key === "Home") { e.preventDefault(); goToPly(0); }
       else if (e.key === "End") { e.preventDefault(); goToPly(history.length); }
       else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteMove(); }
+      else if (e.key === "f" || e.key === "F") { setOrientation((o) => o === "white" ? "black" : "white"); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [mode, goToPly, currentPly, history.length, deleteMove]);
+
+  const analysisIdRef = useRef(null);
+
+  useEffect(() => {
+    if (mode !== "analysis") return;
+    if (!analysisIdRef.current) analysisIdRef.current = Date.now().toString(36);
+    const params = new URLSearchParams();
+    params.set("id", analysisIdRef.current);
+    if (gameHeaders?.White) params.set("w", gameHeaders.White);
+    if (gameHeaders?.Black) params.set("b", gameHeaders.Black);
+    if (startFen !== START_FEN) params.set("fen", startFen);
+    if (history.length > 0) {
+      params.set("moves", history.map((m) => m.from + m.to + (m.promotion || "")).join(","));
+    }
+    if (currentPly !== history.length) params.set("ply", String(currentPly));
+    const qs = params.toString();
+    const url = `/analysis${qs ? "?" + qs : ""}`;
+    window.history.replaceState(null, "", url);
+  }, [mode, history, currentPly, startFen, gameHeaders]);
 
   const movePairs = useMemo(() => {
     const pairs = [];
@@ -286,12 +552,30 @@ export default function AnalysisPage() {
       sq[m.from] = { backgroundColor: "rgba(59,130,246,0.18)" };
       sq[m.to] = { backgroundColor: "rgba(59,130,246,0.28)" };
     }
-    if (showBestMove && bestMoveArrow && engineOn) {
-      sq[bestMoveArrow.from] = { ...(sq[bestMoveArrow.from] || {}), backgroundColor: "rgba(76,175,80,0.25)", boxShadow: "inset 0 0 0 2px rgba(76,175,80,0.5)" };
-      sq[bestMoveArrow.to] = { ...(sq[bestMoveArrow.to] || {}), backgroundColor: "rgba(76,175,80,0.35)", boxShadow: "inset 0 0 0 2px rgba(76,175,80,0.6)" };
-    }
     return sq;
-  }, [currentPly, history, showBestMove, bestMoveArrow, engineOn]);
+  }, [currentPly, history]);
+
+  const PV_COLORS = useMemo(() => [
+    "rgba(76,175,80,0.75)",
+    "rgba(66,165,245,0.65)",
+    "rgba(255,183,77,0.6)",
+    "rgba(186,104,200,0.55)",
+  ], []);
+
+  const engineArrows = useMemo(() => {
+    if (!showBestMove || !engineOn) return [];
+    const validSq = /^[a-h][1-8]$/;
+    const arrows = [];
+    for (let i = 0; i < pvLines.length; i++) {
+      const line = pvLines[i];
+      if (!line?.bestMove || line.bestMove.length < 4) continue;
+      const from = line.bestMove.slice(0, 2);
+      const to = line.bestMove.slice(2, 4);
+      if (!validSq.test(from) || !validSq.test(to)) continue;
+      arrows.push({ startSquare: from, endSquare: to, color: PV_COLORS[i] || PV_COLORS[PV_COLORS.length - 1] });
+    }
+    return arrows;
+  }, [showBestMove, engineOn, pvLines, PV_COLORS]);
 
   const currentPgn = useMemo(() => {
     if (history.length === 0) return "";
@@ -509,6 +793,9 @@ export default function AnalysisPage() {
             <div className="w-full flex items-center justify-between mb-2">
               <div className="flex items-center gap-3">
                 <h1 className="font-headline text-xl font-extrabold tracking-tighter text-primary">Analysis</h1>
+                {gameHeaders?.White && gameHeaders?.Black && (
+                  <span className="text-[11px] font-mono text-on-surface-variant/40 truncate max-w-[200px]">{gameHeaders.White} vs {gameHeaders.Black}</span>
+                )}
                 {openingName && (
                   <span className="text-[11px] font-headline font-semibold text-on-surface-variant/50 truncate max-w-[260px]">{openingName}</span>
                 )}
@@ -531,6 +818,28 @@ export default function AnalysisPage() {
               </div>
             </div>
 
+            {/* Game info bar (when loaded from PGN with headers) */}
+            {gameHeaders && (
+              <div className="w-full mb-2 flex items-center gap-3 text-[11px] text-on-surface-variant/50">
+                {gameHeaders.White && gameHeaders.Black && (
+                  <span className="font-mono">
+                    <span className="text-on-surface-variant/70">{gameHeaders.White}</span>
+                    <span className="mx-1.5 text-on-surface-variant/25">vs</span>
+                    <span className="text-on-surface-variant/70">{gameHeaders.Black}</span>
+                  </span>
+                )}
+                {gameHeaders.Result && gameHeaders.Result !== "*" && (
+                  <span className="px-1.5 py-0.5 bg-surface-low border border-white/[0.04] text-[10px] font-mono font-bold">{gameHeaders.Result}</span>
+                )}
+                {gameHeaders.Event && gameHeaders.Event !== "?" && (
+                  <span className="text-on-surface-variant/30">{gameHeaders.Event}</span>
+                )}
+                {gameHeaders.Date && gameHeaders.Date !== "????.??.??" && (
+                  <span className="text-on-surface-variant/25">{gameHeaders.Date}</span>
+                )}
+              </div>
+            )}
+
             {/* Material bar (top — opponent) */}
             <MaterialBar pieces={topIsBlack ? mat.bPieces : mat.wPieces} adv={topIsBlack ? (mat.diff < 0 ? Math.abs(mat.diff) : 0) : (mat.diff > 0 ? mat.diff : 0)} color={topIsBlack ? "b" : "w"} />
 
@@ -538,13 +847,13 @@ export default function AnalysisPage() {
             <div className="w-full flex gap-0">
               {/* Eval bar */}
               {engineOn && (
-                <div className="w-7 shrink-0 flex flex-col relative select-none" style={{ minHeight: "100%" }}>
+                <div className="w-9 shrink-0 flex flex-col relative select-none" style={{ minHeight: "100%" }}>
                   <div
                     className="flex items-start justify-center transition-all duration-300 ease-out"
-                    style={{ height: `${topPct}%`, backgroundColor: topIsBlack ? "#1a1a1a" : "#e8e8e8", minHeight: "14px" }}
+                    style={{ height: `${topPct}%`, backgroundColor: topIsBlack ? "#1a1a1a" : "#e8e8e8", minHeight: "16px" }}
                   >
                     {topPct >= 50 && (
-                      <span className="text-[9px] font-mono font-bold leading-none pt-1 tabular-nums"
+                      <span className="text-[11px] font-mono font-bold leading-none pt-1 tabular-nums"
                         style={{ color: topIsBlack ? "#bbb" : "#222" }}>
                         {evalLabel}
                       </span>
@@ -552,10 +861,10 @@ export default function AnalysisPage() {
                   </div>
                   <div
                     className="flex-1 flex items-end justify-center transition-all duration-300 ease-out"
-                    style={{ backgroundColor: topIsBlack ? "#e8e8e8" : "#1a1a1a", minHeight: "14px" }}
+                    style={{ backgroundColor: topIsBlack ? "#e8e8e8" : "#1a1a1a", minHeight: "16px" }}
                   >
                     {topPct < 50 && (
-                      <span className="text-[9px] font-mono font-bold leading-none pb-1 tabular-nums"
+                      <span className="text-[11px] font-mono font-bold leading-none pb-1 tabular-nums"
                         style={{ color: topIsBlack ? "#222" : "#bbb" }}>
                         {evalLabel}
                       </span>
@@ -563,7 +872,7 @@ export default function AnalysisPage() {
                   </div>
                   {evalLoading && !posEval && (
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-2.5 h-2.5 border border-on-surface-variant/20 border-t-on-surface-variant/50 rounded-full animate-spin" />
+                      <div className="w-3 h-3 border border-on-surface-variant/20 border-t-on-surface-variant/50 rounded-full animate-spin" />
                     </div>
                   )}
                 </div>
@@ -577,6 +886,8 @@ export default function AnalysisPage() {
                   interactive={true}
                   highlightSquares={highlightSquares}
                   playerColor={sideToMove}
+                  arrows={engineArrows}
+                  squareAnnotation={boardAnnotation}
                 />
               </div>
             </div>
@@ -618,6 +929,15 @@ export default function AnalysisPage() {
                 }`}>
                 {pgnCopied ? "Copied" : "PGN"}
               </button>
+              <button onClick={() => {
+                  const blob = new Blob([currentPgn], { type: "application/x-chess-pgn" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a"); a.href = url; a.download = "analysis.pgn"; a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="shrink-0 px-2 py-1 text-[9px] font-headline font-bold uppercase tracking-wide border border-white/[0.04] bg-surface-low text-on-surface-variant/30 hover:text-primary transition-colors">
+                DL
+              </button>
             </div>
           </div>
 
@@ -627,16 +947,16 @@ export default function AnalysisPage() {
             <div className="bg-surface-container border border-white/[0.04] p-3 space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">Stockfish</span>
+                  <span className="text-[12px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">Stockfish</span>
                   {engineOn && posEval && (
-                    <span className="text-[11px] font-mono font-bold text-primary tabular-nums">{evalLabel}</span>
+                    <span className="text-[13px] font-mono font-bold text-primary tabular-nums">{evalLabel}</span>
                   )}
                   {engineOn && evalLoading && (
-                    <div className="w-2.5 h-2.5 border border-primary/30 border-t-primary rounded-full animate-spin" />
+                    <div className="w-3 h-3 border border-primary/30 border-t-primary rounded-full animate-spin" />
                   )}
                 </div>
                 <button onClick={() => setEngineOn(!engineOn)}
-                  className={`px-2 py-1 text-[9px] font-headline font-bold uppercase tracking-wide border transition-colors ${
+                  className={`px-2.5 py-1 text-[11px] font-headline font-bold uppercase tracking-wide border transition-colors ${
                     engineOn ? "border-primary/20 bg-primary/10 text-primary" : "border-white/[0.04] bg-surface-low text-on-surface-variant/30"
                   }`}>
                   {engineOn ? "On" : "Off"}
@@ -647,37 +967,55 @@ export default function AnalysisPage() {
                 <>
                   {/* Depth selector */}
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-on-surface-variant/40 shrink-0">Depth</span>
+                    <span className="text-[12px] text-on-surface-variant/40 shrink-0">Depth</span>
                     <div className="flex gap-1 flex-wrap">
                       {[10, 14, 18, 22, 26, 30].map((d) => (
                         <button key={d} onClick={() => setEngineDepth(d)}
-                          className={`px-1.5 py-0.5 text-[10px] font-mono font-bold transition-colors ${
+                          className={`px-2 py-0.5 text-[12px] font-mono font-bold transition-colors ${
                             engineDepth === d ? "bg-primary text-on-primary" : "bg-surface-low text-on-surface-variant/40 hover:text-primary"
                           }`}>{d}</button>
                       ))}
                     </div>
                   </div>
 
-                  {/* Best move toggle */}
+                  {/* Lines + show arrows */}
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-on-surface-variant/40">Show best move</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] text-on-surface-variant/40 shrink-0">Lines</span>
+                      <button onClick={() => setNumPV(Math.max(1, numPV - 1))}
+                        className="w-6 h-6 flex items-center justify-center text-[13px] font-mono font-bold bg-surface-low text-on-surface-variant/40 hover:text-primary transition-colors">−</button>
+                      <span className="text-[13px] font-mono font-bold text-on-surface-variant/70 tabular-nums w-4 text-center">{numPV}</span>
+                      <button onClick={() => setNumPV(Math.min(4, numPV + 1))}
+                        className="w-6 h-6 flex items-center justify-center text-[13px] font-mono font-bold bg-surface-low text-on-surface-variant/40 hover:text-primary transition-colors">+</button>
+                    </div>
                     <button onClick={() => setShowBestMove(!showBestMove)}
-                      className={`px-2 py-0.5 text-[9px] font-mono font-bold transition-colors ${
+                      className={`px-2.5 py-1 text-[11px] font-mono font-bold transition-colors ${
                         showBestMove ? "bg-emerald-500/15 text-emerald-400" : "bg-surface-low text-on-surface-variant/30"
-                      }`}>{showBestMove ? "Yes" : "No"}</button>
+                      }`}>{showBestMove ? "Arrows" : "Off"}</button>
                   </div>
 
-                  {/* PV line */}
-                  {pvSan.length > 0 && (
-                    <div className="bg-surface-lowest/50 p-2">
-                      <span className="text-[9px] text-on-surface-variant/30 block mb-1">Best line{posEval?.depth ? ` (d${posEval.depth})` : ""}</span>
-                      <span className="text-[11px] font-mono text-on-surface-variant/60 leading-relaxed break-words">
-                        {pvSan.join(" ")}
-                      </span>
+                  {/* Multi-PV lines */}
+                  {pvLines.length > 0 && (
+                    <div className="space-y-0.5">
+                      {pvLines.map((line, i) => (
+                        <div key={i} className="bg-surface-lowest/50 px-2.5 py-2 flex gap-2 items-start">
+                          <span className="shrink-0 w-2.5 h-2.5 rounded-full mt-[5px]" style={{ backgroundColor: PV_COLORS[i] || PV_COLORS[PV_COLORS.length - 1] }} />
+                          <span className="text-[13px] font-mono font-bold shrink-0 tabular-nums" style={{ color: PV_COLORS[i] || PV_COLORS[PV_COLORS.length - 1] }}>
+                            {line.eval_mate !== null
+                              ? `M${line.eval_mate}`
+                              : line.eval_cp !== null
+                                ? (line.eval_cp >= 0 ? "+" : "") + (line.eval_cp / 100).toFixed(1)
+                                : "?"}
+                          </span>
+                          <span className="text-[12px] font-mono text-on-surface-variant/55 leading-relaxed break-words">
+                            {line.san.join(" ") || "..."}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   )}
 
-                  <p className="text-[9px] text-on-surface-variant/20 leading-relaxed">
+                  <p className="text-[11px] text-on-surface-variant/20 leading-relaxed">
                     Local engine — nothing sent to a server.
                     {engineDepth >= 22 && " Higher depth may be slow."}
                   </p>
@@ -687,33 +1025,124 @@ export default function AnalysisPage() {
 
             {/* Import panel (collapsible) */}
             {showImport && (
-              <div className="bg-surface-container border border-white/[0.04] p-3 space-y-2.5 anim-fade-up" style={{ "--delay": "0s" }}>
-                <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 block">Import</span>
+              <div className="bg-surface-container border border-white/[0.04] p-3 space-y-2 anim-fade-up" style={{ "--delay": "0s" }}>
+
+                {/* Row 1: Platform toggle + username + fetch */}
                 <div>
-                  <label className="text-[9px] text-on-surface-variant/30 block mb-1">PGN</label>
+                  <div className="flex gap-1 mb-1">
+                    <div className="flex shrink-0">
+                      {["lichess", "chesscom"].map((p) => (
+                        <button key={p} onClick={() => setImportPlatform(p)}
+                          className={`px-2 py-1 text-[10px] font-bold border border-white/[0.06] transition-colors ${importPlatform === p ? "bg-primary/15 text-primary border-primary/20" : "bg-surface-low text-on-surface-variant/40 hover:text-primary"} ${p === "lichess" ? "border-r-0" : ""}`}>
+                          {p === "lichess" ? "Lichess" : "Chess.com"}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      value={importUsername}
+                      onChange={(e) => { setImportUsername(e.target.value); setImportError(null); }}
+                      placeholder="Username..."
+                      className="flex-1 min-w-0 bg-surface-low border border-white/[0.06] px-2 py-1 text-[11px] font-mono text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40"
+                      onKeyDown={(e) => { if (e.key === "Enter") importByUsername(); }}
+                    />
+                    {importLoading ? (
+                      <button onClick={cancelImport}
+                        className="px-2.5 py-1 bg-error/80 text-on-primary font-headline text-[10px] font-bold uppercase hover:bg-error transition-colors shrink-0">
+                        Stop
+                      </button>
+                    ) : (
+                      <button onClick={importByUsername}
+                        className="px-2.5 py-1 bg-primary text-on-primary font-headline text-[10px] font-bold uppercase hover:bg-primary-dim transition-colors shrink-0">
+                        Fetch
+                      </button>
+                    )}
+                  </div>
+                  {importProgress && (
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2.5 h-2.5 border border-primary/30 border-t-primary rounded-full animate-spin shrink-0" />
+                      <span className="text-[10px] text-on-surface-variant/40">{importProgress}</span>
+                    </div>
+                  )}
+                  {importError && <p className="text-[10px] text-error">{importError}</p>}
+                </div>
+
+                {/* Row 2: Game URL */}
+                <div className="flex gap-1">
+                  <input
+                    value={urlInput}
+                    onChange={(e) => { setUrlInput(e.target.value); setUrlError(null); }}
+                    placeholder="Game URL (lichess.org/... or chess.com/...)"
+                    className="flex-1 min-w-0 bg-surface-low border border-white/[0.06] px-2 py-1 text-[11px] font-mono text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40"
+                    onKeyDown={(e) => { if (e.key === "Enter" && urlInput.trim()) importFromUrl(urlInput); }}
+                  />
+                  <button
+                    onClick={() => urlInput.trim() && importFromUrl(urlInput)}
+                    disabled={urlLoading}
+                    className="px-2.5 py-1 bg-primary text-on-primary font-headline text-[10px] font-bold uppercase hover:bg-primary-dim transition-colors disabled:opacity-40 shrink-0"
+                  >
+                    {urlLoading ? "..." : "Go"}
+                  </button>
+                </div>
+                {urlError && <p className="text-[10px] text-error">{urlError}</p>}
+
+                {/* Row 3: File upload + PGN/FEN toggle */}
+                <div className="flex gap-1">
+                  <input type="file" accept=".pgn,.txt" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+                  <button onClick={() => fileInputRef.current?.click()}
+                    className="flex-1 py-1.5 bg-surface-low border border-white/[0.06] font-headline text-[8px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-primary hover:border-primary/20 transition-colors">
+                    Upload .pgn
+                  </button>
                   <textarea
                     value={pgnInput}
                     onChange={(e) => setPgnInput(e.target.value)}
-                    placeholder="Paste PGN..."
-                    rows={4}
-                    className="w-full bg-surface-low border border-white/[0.06] p-2 text-[11px] font-mono text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40 transition-colors resize-none"
+                    placeholder="Paste PGN or FEN..."
+                    rows={1}
+                    className="flex-[2] min-w-0 bg-surface-low border border-white/[0.06] px-2 py-1 text-[11px] font-mono text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40 resize-none"
+                    onFocus={(e) => { e.target.rows = 3; }}
+                    onBlur={(e) => { if (!e.target.value) e.target.rows = 1; }}
                   />
+                  <button
+                    onClick={() => {
+                      const v = pgnInput.trim();
+                      if (!v) return;
+                      if (v.includes("/") && !v.includes("[")) loadGame("", v);
+                      else loadGame(v);
+                    }}
+                    className="px-2.5 py-1 bg-primary text-on-primary font-headline text-[10px] font-bold uppercase hover:bg-primary-dim transition-colors shrink-0"
+                  >
+                    Load
+                  </button>
                 </div>
-                <div>
-                  <label className="text-[9px] text-on-surface-variant/30 block mb-1">FEN</label>
-                  <input
-                    value={fenInput}
-                    onChange={(e) => setFenInput(e.target.value)}
-                    placeholder="Paste FEN..."
-                    className="w-full bg-surface-low border border-white/[0.06] px-2 py-1.5 text-[11px] font-mono text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40 transition-colors"
-                  />
-                </div>
-                <button
-                  onClick={() => { if (fenInput.trim()) loadGame("", fenInput.trim()); else if (pgnInput.trim()) loadGame(pgnInput); }}
-                  className="w-full py-2 bg-primary text-on-primary font-headline text-[10px] font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.96]"
-                >
-                  Load
-                </button>
+
+                {/* Imported games list */}
+                {importedGames.length > 0 && (
+                  <div className="border-t border-white/[0.04] pt-1.5">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">
+                        {importedGames.length} Games
+                      </span>
+                      <button onClick={() => setImportedGames([])} className="text-[10px] text-on-surface-variant/25 hover:text-error transition-colors">Clear</button>
+                    </div>
+                    <div className="max-h-[200px] overflow-y-auto space-y-px">
+                      {importedGames.map((g, i) => (
+                        <button key={g.id || i} onClick={() => { loadGame(g.pgn); setImportedGames([]); }}
+                          className="w-full text-left px-2 py-1.5 bg-surface-low/60 border border-white/[0.03] hover:bg-surface-high/40 hover:border-primary/15 transition-colors">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[11px] font-mono text-on-surface-variant/70 truncate">
+                              {g.white} <span className="text-on-surface-variant/25">vs</span> {g.black}
+                            </span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {g.opening && <span className="text-[9px] text-on-surface-variant/25 truncate max-w-[100px] hidden sm:inline">{g.opening}</span>}
+                              <span className={`text-[10px] font-mono font-bold ${
+                                g.result === "1-0" ? "text-on-surface-variant/60" : g.result === "0-1" ? "text-on-surface-variant/40" : "text-on-surface-variant/30"
+                              }`}>{g.result}</span>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -729,25 +1158,30 @@ export default function AnalysisPage() {
                     Play moves on the board
                   </div>
                 )}
-                {movePairs.map((m, i) => (
-                  <div key={m.num} className={`grid text-[12px] ${i % 2 === 0 ? "bg-surface-lowest/40" : ""}`} style={{ gridTemplateColumns: "1.8rem 1fr 1fr" }}>
-                    <span className="text-[10px] text-on-surface-variant/20 self-center px-1 py-1.5">{m.num}.</span>
-                    <button
-                      onClick={() => goToPly(m.wPly)}
-                      data-active={currentPly === m.wPly ? "" : undefined}
-                      className={`text-left font-mono py-1.5 px-1 transition-colors hover:bg-primary/10 ${
-                        currentPly === m.wPly ? "bg-primary/15 text-primary font-bold" : "text-on-surface-variant/70"
-                      }`}>{m.white?.san}</button>
-                    {m.black ? (
+                {movePairs.map((m, i) => {
+                  const ec = evalCacheRef.current;
+                  const wAnnot = (ec[m.wPly] && ec[m.wPly - 1]) ? classifyMove(ec[m.wPly - 1], ec[m.wPly], "w") : null;
+                  const bAnnot = (m.black && ec[m.bPly] && ec[m.bPly - 1]) ? classifyMove(ec[m.bPly - 1], ec[m.bPly], "b") : null;
+                  return (
+                    <div key={m.num} className={`grid text-[12px] ${i % 2 === 0 ? "bg-surface-lowest/40" : ""}`} style={{ gridTemplateColumns: "1.8rem 1fr 1fr" }}>
+                      <span className="text-[10px] text-on-surface-variant/20 self-center px-1 py-1.5">{m.num}.</span>
                       <button
-                        onClick={() => goToPly(m.bPly)}
-                        data-active={currentPly === m.bPly ? "" : undefined}
+                        onClick={() => goToPly(m.wPly)}
+                        data-active={currentPly === m.wPly ? "" : undefined}
                         className={`text-left font-mono py-1.5 px-1 transition-colors hover:bg-primary/10 ${
-                          currentPly === m.bPly ? "bg-primary/15 text-primary font-bold" : "text-on-surface-variant/50"
-                        }`}>{m.black.san}</button>
-                    ) : <span />}
-                  </div>
-                ))}
+                          currentPly === m.wPly ? "bg-primary/15 text-primary font-bold" : "text-on-surface-variant/70"
+                        }`}>{m.white?.san}{wAnnot && <span className="ml-0.5" style={{ color: wAnnot.bg }} title={wAnnot.label}>{wAnnot.glyph}</span>}</button>
+                      {m.black ? (
+                        <button
+                          onClick={() => goToPly(m.bPly)}
+                          data-active={currentPly === m.bPly ? "" : undefined}
+                          className={`text-left font-mono py-1.5 px-1 transition-colors hover:bg-primary/10 ${
+                            currentPly === m.bPly ? "bg-primary/15 text-primary font-bold" : "text-on-surface-variant/50"
+                          }`}>{m.black.san}{bAnnot && <span className="ml-0.5" style={{ color: bAnnot.bg }} title={bAnnot.label}>{bAnnot.glyph}</span>}</button>
+                      ) : <span />}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -768,10 +1202,27 @@ export default function AnalysisPage() {
             )}
 
             {/* Actions */}
-            <div className="flex gap-1.5">
+            <div className="flex gap-1.5 flex-wrap">
               <button onClick={() => { loadGame(""); }}
                 className="flex-1 py-2.5 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-primary transition-colors active:scale-[0.96]">
                 New
+              </button>
+              <button onClick={() => {
+                  const params = new URLSearchParams();
+                  params.set("id", analysisIdRef.current || Date.now().toString(36));
+                  if (gameHeaders?.White) params.set("w", gameHeaders.White);
+                  if (gameHeaders?.Black) params.set("b", gameHeaders.Black);
+                  if (startFen !== START_FEN) params.set("fen", startFen);
+                  if (history.length > 0) {
+                    const moves = history.map((m) => m.from + m.to + (m.promotion || "")).join(",");
+                    params.set("moves", moves);
+                  }
+                  if (currentPly !== history.length) params.set("ply", String(currentPly));
+                  const shareUrl = `${window.location.origin}/analysis${params.toString() ? "?" + params.toString() : ""}`;
+                  navigator.clipboard.writeText(shareUrl).then(() => { setShareCopied(true); setTimeout(() => setShareCopied(false), 1500); });
+                }}
+                className="flex-1 py-2.5 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-primary transition-colors active:scale-[0.96]">
+                {shareCopied ? "Copied!" : "Share"}
               </button>
               <button onClick={() => {
                   const ok = saveCurrentBoard();
@@ -831,15 +1282,26 @@ export default function AnalysisPage() {
               </div>
             )}
 
-            {/* Info */}
-            <div className="p-3 bg-surface-container border border-white/[0.04]">
-              <p className="text-[10px] text-on-surface-variant/25 leading-relaxed">
-                Arrow keys navigate. Delete/Backspace removes last move. Both sides move freely. Save up to {MAX_SAVED} boards to come back to later.
-              </p>
-            </div>
           </div>
         </div>
       </div>
+
+      {/* Hints — between main content and friends panel */}
+      <div className="hidden xl:flex flex-col gap-2 w-48 shrink-0 py-4 pr-2">
+        <div className="p-4 bg-surface-container border border-white/[0.04] rounded">
+          <p className="text-[13px] text-on-surface-variant/25 leading-relaxed">
+            <span className="text-on-surface-variant/40 font-bold text-sm">Shortcuts</span><br />
+            Arrow keys navigate.<br />
+            Home/End jump to start/end.<br />
+            F flips the board.<br />
+            Delete removes last move.<br />
+            Right-click highlights squares.<br />
+            Right-drag draws arrows.<br />
+            Save up to {MAX_SAVED} boards.
+          </p>
+        </div>
+      </div>
+
       <SocialPanel />
     </div>
   );

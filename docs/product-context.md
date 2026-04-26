@@ -35,9 +35,13 @@ oChess is a fully functional client-side chess application. The following core l
 
 4. **AI coach in the core loop** — Explains blunders in simple language. Feels like a calm human coach. Designed behind an interface so it can support local models (Ollama) later.
 
-5. **No-cheating-by-default** — Engine evaluation is locked during live play, only available post-game and in analysis.
+5. **Planned: prompt-to-deck training automation** — Players can ask for motif-focused training ("I keep missing forks"), and the system will generate legal, level-appropriate Anki-style cards automatically from their weakness profile.
 
-6. **Robust error handling** — Engine failures show explicit error codes and debug info, never silent fallback to random behavior.
+6. **Planned: game library import** — Players can import their full game history from Lichess or Chess.com. Imported games feed directly into the improvement loop — engine analysis, opening study, mistake detection, and automatic Review card generation. The system surfaces personalized insights across hundreds of games, not just one.
+
+7. **No-cheating-by-default** — Engine evaluation is locked during live play, only available post-game and in analysis.
+
+8. **Robust error handling** — Engine failures show explicit error codes and debug info, never silent fallback to random behavior.
 
 ## Target users
 

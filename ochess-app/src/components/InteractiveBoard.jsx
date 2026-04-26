@@ -34,6 +34,12 @@ export default function InteractiveBoard({
   premoveSquares,
   playerColor = "w",
   className = "",
+  arrows: externalArrows = [],
+  rightClickSquares: externalRightClickSquares,
+  onRightClickSquaresChange,
+  allowDrawingArrows = true,
+  onBoardClick,
+  squareAnnotation,
 }) {
   const [prefs, setPrefs] = useState(loadPrefs);
   const pieceSet = pieceSetProp || prefs.pieceSet;
@@ -49,11 +55,36 @@ export default function InteractiveBoard({
   const [legalTargets, setLegalTargets] = useState([]);
   const [illegalFlash, setIllegalFlash] = useState(null);
   const flashTimer = useRef(null);
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
+  const [localRightClickSq, setLocalRightClickSq] = useState({});
+
+  const rightClickSq = externalRightClickSquares ?? localRightClickSq;
+  const setRightClickSq = onRightClickSquaresChange ?? setLocalRightClickSq;
 
   useEffect(() => {
     setSelectedSq(null);
     setLegalTargets([]);
   }, [fen]);
+
+  const RC_COLORS = useMemo(() => ["rgba(235,97,80,0.8)", "rgba(82,176,220,0.8)", "rgba(172,206,89,0.8)", "rgba(218,174,74,0.8)"], []);
+
+  const handleRightClick = useCallback(({ square }) => {
+    setRightClickSq((prev) => {
+      const copy = { ...prev };
+      if (copy[square]) { delete copy[square]; return copy; }
+      const usedColors = new Set(Object.values(copy));
+      const color = RC_COLORS.find((c) => !usedColors.has(c)) || RC_COLORS[0];
+      copy[square] = color;
+      return copy;
+    });
+  }, [setRightClickSq, RC_COLORS]);
+
+  const rightClickSqRef = useRef(rightClickSq);
+  rightClickSqRef.current = rightClickSq;
+
+  const clearAnnotations = useCallback(() => {
+    if (Object.keys(rightClickSqRef.current).length > 0) setRightClickSq({});
+  }, [setRightClickSq]);
 
   const pieces = useMemo(() => buildPieces(pieceSet), [pieceSet]);
 
@@ -100,7 +131,12 @@ export default function InteractiveBoard({
     setLegalTargets([]);
   }, [chess, interactive, flashIllegal, isPlayerTurn, playerColor]);
 
+  const onBoardClickRef = useRef(onBoardClick);
+  onBoardClickRef.current = onBoardClick;
+
   const handleSquareClick = useCallback(({ square }) => {
+    clearAnnotations();
+    if (onBoardClickRef.current) onBoardClickRef.current(square);
     if (!interactive || !onMove) return;
 
     if (selectedSq) {
@@ -144,11 +180,18 @@ export default function InteractiveBoard({
     }
 
     selectSquare(square);
-  }, [interactive, onMove, selectedSq, legalTargets, selectSquare, chess, flashIllegal, soundForMove, isPlayerTurn, playerColor]);
+  }, [interactive, onMove, selectedSq, legalTargets, selectSquare, chess, flashIllegal, soundForMove, isPlayerTurn, playerColor, clearAnnotations]);
 
   const handleDrag = useCallback(({ square }) => {
     selectSquare(square);
   }, [selectSquare]);
+
+  const canDrag = useCallback(({ piece }) => {
+    if (!interactive) return false;
+    const pt = typeof piece === "string" ? piece : (piece?.pieceType || piece?.type || "");
+    const color = pt[0]?.toLowerCase() === "b" ? "b" : "w";
+    return color === playerColor;
+  }, [interactive, playerColor]);
 
   const handleDrop = useCallback(({ sourceSquare, targetSquare, piece }) => {
     if (!interactive || !onMove) return false;
@@ -176,6 +219,10 @@ export default function InteractiveBoard({
   const sqStyles = useMemo(() => {
     const styles = { ...highlightSquares };
 
+    for (const [sq, color] of Object.entries(rightClickSq)) {
+      styles[sq] = { ...(styles[sq] || {}), backgroundColor: color };
+    }
+
     if (premoveSquares) {
       styles[premoveSquares.from] = { ...(styles[premoveSquares.from] || {}), backgroundColor: PREMOVE_SQ };
       styles[premoveSquares.to] = { ...(styles[premoveSquares.to] || {}), backgroundColor: PREMOVE_SQ };
@@ -186,20 +233,22 @@ export default function InteractiveBoard({
       const bg = isSqPremove ? PREMOVE_SQ : "rgba(255,255,255,0.35)";
       styles[selectedSq] = { ...(styles[selectedSq] || {}), backgroundColor: bg };
       for (const m of legalTargets) {
-        styles[m.to] = {
-          ...(styles[m.to] || {}),
-          background: m.captured ? undefined : DOT,
-          backgroundColor: m.captured ? CAPTURE_BG : undefined,
-        };
+        if (m.captured) {
+          styles[m.to] = { ...(styles[m.to] || {}), backgroundColor: CAPTURE_BG };
+        } else {
+          styles[m.to] = { ...(styles[m.to] || {}), backgroundImage: DOT };
+        }
       }
     }
     if (illegalFlash) {
       styles[illegalFlash] = { ...(styles[illegalFlash] || {}), backgroundColor: "rgba(239,68,68,0.45)" };
     }
     return styles;
-  }, [highlightSquares, selectedSq, legalTargets, illegalFlash, premoveSquares, isPlayerTurn]);
+  }, [highlightSquares, selectedSq, legalTargets, illegalFlash, premoveSquares, isPlayerTurn, rightClickSq]);
 
   const notationStyle = { fontSize: "clamp(7px, 1.4vw, 11px)", fontWeight: 600, color: "#666666", opacity: 1 };
+
+  const allArrows = externalArrows;
 
   const isImageBoard = boardTheme.type === "image";
   const boardOptions = useMemo(() => ({
@@ -215,17 +264,60 @@ export default function InteractiveBoard({
     squareStyles: sqStyles,
     animationDurationInMs: 200,
     allowDragging: interactive,
+    canDragPiece: canDrag,
+    allowDrawingArrows,
+    arrows: allArrows,
+    onSquareRightClick: handleRightClick,
+    clearArrowsOnClick: true,
+    clearArrowsOnPositionChange: true,
     showNotation: true,
     alphaNotationStyle: notationStyle,
     numericNotationStyle: notationStyle,
     onPieceDrop: handleDrop,
     onSquareClick: handleSquareClick,
     onPieceDrag: handleDrag,
-  }), [fen, orientation, pieces, sqStyles, interactive, handleDrop, handleSquareClick, handleDrag, boardTheme, isImageBoard]);
+  }), [fen, orientation, pieces, sqStyles, interactive, handleDrop, handleSquareClick, handleDrag, canDrag, boardTheme, isImageBoard, allArrows, handleRightClick, allowDrawingArrows]);
+
+  const badge = useMemo(() => {
+    if (!squareAnnotation) return null;
+    const { square, glyph, bg, text } = squareAnnotation;
+    if (!square || !glyph || !/^[a-h][1-8]$/.test(square)) return null;
+    const file = square.charCodeAt(0) - 97;
+    const rank = parseInt(square[1]) - 1;
+    const col = orientation === "white" ? file : 7 - file;
+    const row = orientation === "white" ? 7 - rank : rank;
+    const left = (col + 1) * 12.5;
+    const top = row * 12.5;
+    return { left: `${left}%`, top: `${top}%`, glyph, bg, text };
+  }, [squareAnnotation, orientation]);
 
   return (
-    <div className={`w-full ${className}`}>
+    <div className={`w-full relative ${className}`}>
       <Chessboard options={boardOptions} />
+      {badge && (
+        <div
+          style={{
+            position: "absolute",
+            left: badge.left,
+            top: badge.top,
+            backgroundColor: badge.bg,
+            color: badge.text,
+            fontSize: "clamp(9px, 1.5vw, 13px)",
+            fontWeight: 800,
+            lineHeight: 1,
+            padding: "2px 4px",
+            borderRadius: "3px",
+            pointerEvents: "none",
+            zIndex: 50,
+            transform: "translate(-50%, -50%)",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.5)",
+            whiteSpace: "nowrap",
+            fontFamily: "monospace",
+          }}
+        >
+          {badge.glyph}
+        </div>
+      )}
     </div>
   );
 }

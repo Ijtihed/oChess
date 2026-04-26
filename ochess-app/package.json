@@ -23,6 +23,7 @@
     "vitest": "^4.1.2"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.101.1",
     "chess.js": "^1.4.0",
     "howler": "^2.2.4",
     "js-chess-engine": "^1.0.2",

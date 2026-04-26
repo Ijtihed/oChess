@@ -13,7 +13,7 @@ async function loadBook() {
   if (loading) return loadPromise;
   loading = true;
   loadPromise = fetch("/openings.json")
-    .then((r) => r.json())
+    .then((r) => { if (!r.ok) throw new Error("fetch failed"); return r.json(); })
     .then((data) => {
       book = data;
       loading = false;
@@ -51,6 +51,14 @@ export async function getOpeningName(history) {
   }
 
   return lastKnown;
+}
+
+export async function isBookMove(history, plyUpTo) {
+  if (!history || !history.length || plyUpTo <= 0) return false;
+  const db = await loadBook();
+  const n = Math.max(0, Math.min(plyUpTo, history.length));
+  const parts = history.slice(0, n).map((m) => m.from + m.to + (m.promotion || ""));
+  return !!db[parts.join(",")];
 }
 
 export function resetOpeningCache() {

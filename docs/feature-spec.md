@@ -106,6 +106,33 @@ Status key: **DONE** = fully implemented, **PARTIAL** = core working but incompl
 - "+ Review" integration on analysis board
 - **Not yet built:** Full card management UI, deck browser, daily review queue, auto-generation from games
 
+## Weakness-to-deck automation (LLM-assisted) — PLANNED
+
+Goal: If a player repeatedly struggles with a motif (for example forks or pins), they can ask for training and get ready-to-review Anki-style cards automatically.
+
+Planned flow:
+1. Detect recurring weakness tags from game analysis and puzzle failures (fork, pin, skewer, back-rank, opening trap, endgame motif)
+2. Surface weakness summary in Review/Analysis (for example: "You missed forks 6 times this week")
+3. Offer one-click quick actions plus free-text prompt input (for example: "Make me 20 fork cards at my level")
+4. Generate card set through coach provider interface (cloud LLM/local model) with strict output schema
+5. Validate generated cards (legal board state, side to move, best move line, explanation quality)
+6. Save cards into deck + schedule immediately via SM-2 engine
+7. Track outcomes (retention, lapse rate, motif improvement) to adapt future generation
+
+Planned card output schema (high level):
+- Card type (position recall, best move, tactical motif, opening memory, endgame technique)
+- FEN / optional PGN context
+- Prompt/front text
+- Expected answer/back text
+- Motif tags and difficulty
+- Source metadata (game id, puzzle id, user prompt, generated timestamp)
+
+Safety and quality constraints:
+- No hallucinated illegal moves; reject and regenerate on failed legality checks
+- Keep explanations plain-language and concise
+- Personalize difficulty to recent puzzle/game rating band
+- Respect user-selected language/tone in coach settings
+
 ## Bot chat — DONE
 
 - Static personality lines per level (0–5), no chat for levels 6+
@@ -161,6 +188,24 @@ Status key: **DONE** = fully implemented, **PARTIAL** = core working but incompl
 
 - Profile page shell exists
 - No backend data yet
+
+## Game library import (Lichess / Chess.com) — PARTIAL
+
+- **DONE:** Import all games from Lichess or Chess.com by username (public API, no auth)
+- **DONE:** Lichess NDJSON streaming with live progress counter
+- **DONE:** Chess.com full archive iteration (all monthly archives)
+- **DONE:** PGN file upload (single-game and multi-game)
+- **DONE:** Single game URL import (Lichess + Chess.com links)
+- **DONE:** Game list browser with player names, result, opening, speed, date
+- **DONE:** Cancel button (AbortController) for mid-stream cancellation
+- **DONE:** Click any imported game to load into analysis board
+- Feed imported games into the post-game improvement loop: engine analysis, opening identification, mistake detection, Review card generation
+- Detect recurring weaknesses across imported game history (missed tactics, opening inaccuracies, endgame patterns)
+- Surface personalized improvement insights: "You blunder in rook endgames 40% more than average"
+- Populate the Review deck automatically from imported game mistakes
+- Batch-analyze imported games and auto-generate Anki-style cards from blunders/mistakes
+- Support incremental sync (only fetch new games since last import)
+- Persist imported game library to localStorage / IndexedDB
 
 ## Collaborative analysis — PLANNED
 

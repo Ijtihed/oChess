@@ -1,54 +1,271 @@
-const FRIENDS = [
-  { name: "KnightRider42", rating: 1580, online: true },
-  { name: "DarkBishop", rating: 1623, online: true },
-  { name: "PawnStorm99", rating: 1545, online: false },
-  { name: "QueenGambit", rating: 1601, online: true },
-  { name: "EndgameWizard", rating: 1890, online: false },
-  { name: "TacticsFanatic", rating: 1340, online: true },
-];
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "./AuthProvider";
+import { isOnline } from "../lib/supabase";
+import { getFriends, getPendingRequests, searchUsers, sendFriendRequest, acceptFriendRequest, declineFriendRequest, removeFriend } from "../lib/friends";
 
-const ACTIVITY = [
-  { who: "QueenGambit", what: "won vs Stockfish", when: "1m ago" },
-  { who: "DarkBishop", what: "solved 12 puzzles", when: "3m ago" },
-  { who: "TacticsFanatic", what: "started a game", when: "7m ago" },
-];
+const log = (...args) => console.log("[social]", ...args);
+
+function Avatar({ url, name, size = "w-8 h-8" }) {
+  return url ? (
+    <img src={url} alt="" className={`${size} rounded-full object-cover`} referrerPolicy="no-referrer" />
+  ) : (
+    <div className={`${size} rounded-full bg-surface-high flex items-center justify-center`}>
+      <span className="font-headline text-[10px] font-bold text-on-surface-variant/50 uppercase">{name?.[0] || "?"}</span>
+    </div>
+  );
+}
 
 export default function SocialPanel() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [friends, setFriends] = useState([]);
+  const [pending, setPending] = useState({ incoming: [], outgoing: [] });
+  const [search, setSearch] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [sentIds, setSentIds] = useState(new Set());
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [addError, setAddError] = useState(null);
+
+  const loadData = useCallback(async () => {
+    if (!user || !isOnline()) {
+      log("skip — user:", user?.id, "online:", isOnline());
+      return;
+    }
+    log("loading friends for user:", user.id);
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const withTimeout = (p, ms, fallback) =>
+        Promise.race([p, new Promise((r) => setTimeout(() => r(fallback), ms))]);
+
+      const [f, p] = await Promise.all([
+        withTimeout(getFriends(user.id).catch((e) => { log("getFriends error:", e); return []; }), 6000, []),
+        withTimeout(getPendingRequests(user.id).catch((e) => { log("getPendingRequests error:", e); return null; }), 6000, null),
+      ]);
+
+      log("loaded — friends:", f?.length, "pending:", p);
+      setFriends(f || []);
+      const pData = p || { incoming: [], outgoing: [] };
+      setPending(pData);
+      setSentIds(new Set(pData.outgoing || []));
+    } catch (e) {
+      log("loadData exception:", e);
+      setLoadError("Could not load friends");
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(loadData, 15000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+
+  const searchTimer = useRef(null);
+  const handleSearch = useCallback((q) => {
+    setSearch(q);
+    if (!q.trim() || !user) { setSearchResults([]); setSearching(false); return; }
+    setSearching(true);
+    clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const results = await searchUsers(q.trim(), user.id);
+        setSearchResults(results);
+      } catch { setSearchResults([]); }
+      finally { setSearching(false); }
+    }, 400);
+  }, [user]);
+
+  const friendIds = new Set(friends.map((f) => f.id));
+  const incomingIds = new Set((pending.incoming || []).map((r) => r.id));
+
+  const handleAdd = useCallback(async (friendId) => {
+    if (!user) return;
+    setAddError(null);
+    try {
+      await sendFriendRequest(user.id, friendId);
+      setSentIds((prev) => new Set([...prev, friendId]));
+      setTimeout(() => loadData(), 1000);
+    } catch (e) {
+      log("handleAdd error:", e);
+      setAddError("Could not send request");
+    }
+  }, [user, loadData]);
+
+  const handleAccept = useCallback(async (requestId) => {
+    try { await acceptFriendRequest(requestId); } catch {}
+    loadData();
+  }, [loadData]);
+
+  const handleDecline = useCallback(async (requestId) => {
+    try { await declineFriendRequest(requestId); } catch {}
+    loadData();
+  }, [loadData]);
+
+  const handleRemove = useCallback(async (friendshipId) => {
+    try { await removeFriend(friendshipId); } catch {}
+    loadData();
+  }, [loadData]);
+
+  const isLoggedIn = !!user && isOnline();
+
+  const challengeFriend = useCallback(() => {
+    navigate("/create-challenge");
+  }, [navigate]);
+
+  const getUserStatus = (userId) => {
+    if (friendIds.has(userId)) return "friends";
+    if (sentIds.has(userId)) return "requested";
+    if (incomingIds.has(userId)) return "incoming";
+    return "none";
+  };
+
   return (
-    <div className="hidden 2xl:flex w-[220px] shrink-0 flex-col gap-5 border-l border-white/[0.03] px-5 py-5 sticky top-16 h-[calc(100vh-4rem)] overflow-y-auto">
-      <div>
-        <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Friends</h3>
-        <div className="space-y-1">
-          {FRIENDS.map((f) => (
-            <div key={f.name} className="flex items-center justify-between py-2 px-2.5 bg-surface-low/50 border border-white/[0.02] hover:bg-surface-high/30 transition-colors">
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <div className="w-6 h-6 rounded-full bg-surface-high flex items-center justify-center">
-                    <span className="font-headline text-[8px] font-bold text-on-surface-variant/50 uppercase">{f.name[0]}</span>
-                  </div>
-                  {f.online && <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-emerald-500 rounded-full border-[1.5px] border-surface" />}
-                </div>
-                <div className="min-w-0">
-                  <span className="font-headline text-[10px] font-bold text-on-surface-variant/60 block leading-tight truncate">{f.name}</span>
-                  <span className="text-[9px] text-on-surface-variant/25 tabular-nums">{f.rating}</span>
-                </div>
-              </div>
-              {f.online && <span className="text-[9px] text-emerald-500/50">online</span>}
-            </div>
-          ))}
-        </div>
-      </div>
+    <div className="hidden 2xl:flex w-[260px] shrink-0 flex-col gap-5 border-l border-white/[0.03] px-5 py-5 sticky top-16 h-[calc(100vh-4rem)] overflow-y-auto">
 
       <div>
-        <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Activity</h3>
-        <div className="space-y-2">
-          {ACTIVITY.map((a, i) => (
-            <div key={i} className="text-[10px] text-on-surface-variant/25 leading-relaxed">
-              <span className="text-on-surface-variant/40 font-bold">{a.who}</span> {a.what}
-              <span className="text-on-surface-variant/15 block">{a.when}</span>
-            </div>
-          ))}
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <h3 className="font-headline text-sm font-bold uppercase tracking-widest text-on-surface-variant/30">Friends</h3>
+            {loading && (
+              <div className="w-3 h-3 border border-primary/30 border-t-primary rounded-full animate-spin" />
+            )}
+          </div>
+          {isLoggedIn && (
+            <button onClick={() => setShowSearch(!showSearch)}
+              className="text-[10px] text-on-surface-variant/30 hover:text-primary transition-colors">
+              {showSearch ? "Close" : "+ Add"}
+            </button>
+          )}
         </div>
+
+        {loadError && (
+          <p className="text-[10px] text-error/60 mb-2 text-center">{loadError} — <button onClick={loadData} className="underline hover:text-error transition-colors">retry</button></p>
+        )}
+
+        {/* Search */}
+        {showSearch && isLoggedIn && (
+          <div className="mb-3 space-y-1.5">
+            <input value={search} onChange={(e) => handleSearch(e.target.value)} placeholder="Search by username..."
+              autoFocus
+              className="w-full bg-surface-low border border-white/[0.06] px-2.5 py-1.5 text-[12px] text-on-surface placeholder:text-on-surface-variant/20 outline-none focus:border-primary/40" />
+            {addError && <p className="text-[10px] text-error/70">{addError}</p>}
+            {searchResults.length > 0 && (
+              <div className="space-y-1">
+                {searchResults.map((u) => {
+                  const status = getUserStatus(u.id);
+                  return (
+                    <div key={u.id} className="flex items-center justify-between py-1.5 px-2 bg-surface-low/50 border border-white/[0.02] hover:bg-surface-high/30 transition-colors">
+                      <a href={`/u/${u.username}`} className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity">
+                        <Avatar url={u.avatar_url} name={u.display_name || u.username} size="w-6 h-6" />
+                        <div className="min-w-0">
+                          <span className="text-[12px] font-bold text-on-surface-variant/60 block truncate leading-tight">{u.display_name || u.username}</span>
+                          <span className="text-[9px] text-on-surface-variant/25">@{u.username}</span>
+                        </div>
+                      </a>
+                      <div className="shrink-0 ml-1">
+                        {status === "friends" && (
+                          <span className="text-[9px] text-emerald-400 font-bold">Friends</span>
+                        )}
+                        {status === "requested" && (
+                          <span className="text-[9px] text-on-surface-variant/30 font-bold">Requested</span>
+                        )}
+                        {status === "incoming" && (
+                          <span className="text-[9px] text-primary font-bold">Wants you</span>
+                        )}
+                        {status === "none" && (
+                          <button onClick={() => handleAdd(u.id)}
+                            className="px-2 py-0.5 text-[9px] font-bold bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+                            Add
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {search && !searching && searchResults.length === 0 && (
+              <p className="text-[10px] text-on-surface-variant/20">No users found</p>
+            )}
+            {searching && <p className="text-[10px] text-on-surface-variant/20">Searching...</p>}
+          </div>
+        )}
+
+        {/* Pending incoming requests */}
+        {(pending.incoming || []).length > 0 && (
+          <div className="mb-3">
+            <span className="text-[10px] text-primary/60 font-bold block mb-1.5">
+              {pending.incoming.length} Friend Request{pending.incoming.length > 1 ? "s" : ""}
+            </span>
+            <div className="space-y-1">
+              {pending.incoming.map((r) => (
+                <div key={r.requestId} className="py-2 px-2.5 bg-primary/5 border border-primary/10">
+                  <a href={`/u/${r.username}`} className="flex items-center gap-2 mb-1.5 hover:opacity-80 transition-opacity">
+                    <Avatar url={r.avatar_url} name={r.display_name || r.username} size="w-7 h-7" />
+                    <div className="min-w-0">
+                      <span className="text-[12px] font-bold text-on-surface-variant/70 block truncate leading-tight">{r.display_name || r.username}</span>
+                      <span className="text-[9px] text-on-surface-variant/30">@{r.username}</span>
+                    </div>
+                  </a>
+                  <div className="flex gap-1.5">
+                    <button onClick={() => handleAccept(r.requestId)}
+                      className="flex-1 py-1.5 text-[10px] font-bold bg-primary text-on-primary hover:bg-primary-dim transition-colors text-center">
+                      Accept
+                    </button>
+                    <button onClick={() => handleDecline(r.requestId)}
+                      className="flex-1 py-1.5 text-[10px] font-bold bg-surface-low text-on-surface-variant/40 hover:text-error transition-colors text-center">
+                      Decline
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Friends list */}
+        {loading && friends.length === 0 && !loadError ? (
+          <div className="flex justify-center py-6">
+            <div className="w-4 h-4 border-2 border-primary/20 border-t-primary/60 rounded-full animate-spin" />
+          </div>
+        ) : friends.length > 0 ? (
+          <div className="space-y-1">
+            {friends.map((f) => (
+              <div key={f.friendshipId} className="flex items-center justify-between py-2 px-2.5 bg-surface-low/50 border border-white/[0.02] hover:bg-surface-high/30 transition-colors group">
+                <a href={`/u/${f.username}`} className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity">
+                  <Avatar url={f.avatar_url} name={f.display_name || f.username} />
+                  <div className="min-w-0">
+                    <span className="font-headline text-[13px] font-bold text-on-surface-variant/60 block leading-tight truncate">{f.display_name || f.username}</span>
+                    {f.username && <span className="text-[10px] text-on-surface-variant/25">@{f.username}</span>}
+                  </div>
+                </a>
+                <div className="flex gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button onClick={() => challengeFriend(f.display_name || f.username)}
+                    className="text-[9px] text-primary/50 hover:text-primary transition-colors font-bold">⚔ Play</button>
+                  <button onClick={() => handleRemove(f.friendshipId)} className="text-[9px] text-on-surface-variant/15 hover:text-error transition-colors">✕</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : isLoggedIn ? (
+          <div className="text-center py-4">
+            <p className="text-[11px] text-on-surface-variant/25 mb-2">No friends yet</p>
+            {!showSearch && (
+              <button onClick={() => setShowSearch(true)}
+                className="text-[11px] text-primary/50 hover:text-primary transition-colors">Search for players</button>
+            )}
+          </div>
+        ) : (
+          <div className="text-center py-4">
+            <p className="text-[11px] text-on-surface-variant/25">Sign in to add friends</p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -79,21 +79,25 @@ The MVP proves the product shape is right: chess-first design, strong post-game 
 46. **Post-game analysis flow** — Engine eval done, needs coach explanations for mistakes
 47. **Puzzle generation** — Generate puzzles from game mistakes (not started)
 48. **Review card auto-generation** — Cards from game analysis, puzzle failures, coach explanations (not started)
+49. **Weakness-to-deck prompt flow** — User can prompt for motif training ("I keep missing forks"), system generates legal Anki-style cards and schedules them via SM-2 (not started)
+50. **Weakness detection service** — Aggregate repeated motif mistakes from games/puzzles into actionable tags and trigger suggestions (not started)
+51. **Card validation pipeline** — Enforce legality and schema checks on generated cards before deck insertion (not started)
+52. **Game library import** — Bulk import all games from Lichess/Chess.com via public API, feed into analysis + Review pipeline, detect cross-game weaknesses, incremental sync (not started)
 
 ## Phase 9: Review system completion — PARTIAL
 
-49. **SM-2 scheduling** — DONE (lib/review-engine.js)
-50. **Card types** — Position recall, move prediction, concept, opening line, tactic (data model defined, UI not built)
-51. **Deck management** — Create, browse, organize decks (not started)
-52. **Daily review flow** — Queue of due cards, review interface (not started)
-53. **Card creation** — Manual from analysis board (integration point exists), auto from games (not started)
+53. **SM-2 scheduling** — DONE (lib/review-engine.js)
+54. **Card types** — Position recall, move prediction, concept, opening line, tactic (data model defined, UI not built)
+55. **Deck management** — Create, browse, organize decks (not started)
+56. **Daily review flow** — Queue of due cards, review interface (not started)
+57. **Card creation** — Manual from analysis board (integration point exists), auto from games (not started)
 
 ## Phase 10: Social & variants — NOT STARTED
 
-54. **Collaborative analysis** — Real-time shared analysis rooms
-55. **Friends and chat** — Friend requests, direct messages, in-game chat
-56. **Variant support** — Chess960, Crazyhouse, other preset variants (playable)
-57. **Study system** — Full study tree with chapters and annotations
+58. **Collaborative analysis** — Real-time shared analysis rooms
+59. **Friends and chat** — Friend requests, direct messages, in-game chat
+60. **Variant support** — Chess960, Crazyhouse, other preset variants (playable)
+61. **Study system** — Full study tree with chapters and annotations
 
 ---
 

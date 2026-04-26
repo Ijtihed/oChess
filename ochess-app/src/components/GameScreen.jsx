@@ -10,6 +10,7 @@ import { unlockEval, lockEval } from "../lib/engine";
 import { getBotChatMessage } from "../lib/bot-chat";
 import { getOpeningName, resetOpeningCache } from "../lib/openings";
 import SocialPanel from "./SocialPanel";
+import { classifyMove, ANNOTATIONS } from "../lib/move-classify";
 
 const SAVE_KEY = "ochess_active_game";
 
@@ -40,6 +41,16 @@ function saveGame(gameRef, opponent, playerColor, botChat, clockState, timeContr
     }));
   } catch {}
 }
+
+const ANNOT_CSS = {
+  [ANNOTATIONS.book.glyph]:       "text-amber-400",
+  [ANNOTATIONS.brilliant.glyph]:  "text-cyan-400",
+  [ANNOTATIONS.great.glyph]:      "text-emerald-400",
+  [ANNOTATIONS.best.glyph]:       "text-emerald-400",
+  [ANNOTATIONS.inaccuracy.glyph]: "text-yellow-400",
+  [ANNOTATIONS.mistake.glyph]:    "text-orange-400",
+  [ANNOTATIONS.blunder.glyph]:    "text-red-400",
+};
 
 const STARTING = { p: 8, n: 2, b: 2, r: 2, q: 1 };
 const PIECE_VAL = { p: 1, n: 3, b: 3, r: 5, q: 9 };
@@ -146,7 +157,8 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
     return true;
   }, [playerColor, endGame]);
 
-  useEffect(() => { preloadAll(); resetOpeningCache(); lockEval(); return () => unlockEval(); }, []);
+  const mountedRef = useRef(true);
+  useEffect(() => { preloadAll(); resetOpeningCache(); lockEval(); return () => { mountedRef.current = false; unlockEval(); }; }, []);
 
   useEffect(() => {
     if (!hasTime || gameOver) return;
@@ -198,29 +210,34 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
     }
   }, [playerColor, syncState, clock, hasTime, checkGameEnd]);
 
+  const botMovingRef = useRef(false);
+
   const doBotMove = useCallback(async () => {
     if (gameOver || gameOverRef.current) return;
+    if (botMovingRef.current) return;
+    botMovingRef.current = true;
     setBotThinking(true);
     const delay = getThinkDelay(opponent.level);
     await new Promise((r) => setTimeout(r, delay));
 
     const g = gameRef.current;
-    if (g.isGameOver() || gameOverRef.current) { setBotThinking(false); return; }
+    if (g.isGameOver() || gameOverRef.current) { setBotThinking(false); botMovingRef.current = false; return; }
+    if (g.turn() === playerColor) { setBotThinking(false); botMovingRef.current = false; return; }
     let move;
     try { move = await getBotMove(g.fen(), opponent.level); } catch (err) {
-      setBotThinking(false);
+      setBotThinking(false); botMovingRef.current = false;
       setFatalError({ code: "BOT_ENGINE_CRASH", detail: err?.message || "Unknown", fen: g.fen(), level: opponent.level });
       return;
     }
     if (!move) {
-      setBotThinking(false);
+      setBotThinking(false); botMovingRef.current = false;
       setFatalError({ code: "BOT_NO_MOVE", detail: "Engine returned null", fen: g.fen(), level: opponent.level });
       return;
     }
     let result;
     try { result = g.move(move); } catch { result = null; }
     if (!result) {
-      setBotThinking(false);
+      setBotThinking(false); botMovingRef.current = false;
       setFatalError({ code: "BOT_ILLEGAL_MOVE", detail: `Move: ${JSON.stringify(move)}`, fen: g.fen(), level: opponent.level });
       return;
     }
@@ -229,6 +246,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
     syncState();
     if (hasTime) clock.switchSide();
     setBotThinking(false);
+    botMovingRef.current = false;
 
     if (checkGameEnd()) return;
 
@@ -278,6 +296,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
     try {
       const result = g.move(move);
       if (!result) return false;
+      playMoveSound(result);
       setLastMove({ from: result.from, to: result.to });
       syncState();
       if (hasTime) clock.switchSide();
@@ -296,9 +315,36 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
 
   const handleDrawOffer = useCallback(() => {
     if (!confirmDraw) { setConfirmDraw(true); return; }
-    endGame("1/2-1/2", "agreement", null);
     setConfirmDraw(false);
-  }, [endGame, confirmDraw]);
+
+    const g = gameRef.current;
+    const h = g.history();
+    const botColor = playerColor === "w" ? "b" : "w";
+
+    let botAccepts = false;
+    if (h.length >= 80) {
+      botAccepts = true;
+    } else if (g.isThreefoldRepetition?.() || g.isInsufficientMaterial?.()) {
+      botAccepts = true;
+    } else {
+      const level = opponent.level;
+      if (level <= 2) botAccepts = Math.random() < 0.5;
+      else if (level <= 4) botAccepts = Math.random() < 0.15;
+      else botAccepts = false;
+    }
+
+    if (botAccepts) {
+      endGame("1/2-1/2", "agreement", null);
+    } else {
+      const text = getBotChatMessage(opponent.level, { san: "draw_decline", captured: "", check: false, mate: false, moveCount: h.length });
+      setBotChat((prev) => {
+        const msg = text || "No thanks.";
+        const n = [...prev.slice(-10), { from: "bot", text: msg }];
+        botChatRef.current = n;
+        return n;
+      });
+    }
+  }, [endGame, confirmDraw, playerColor, opponent.level]);
 
   const handleAbort = useCallback(() => {
     clearSavedGame();
@@ -369,11 +415,14 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
   }, [gameOver, evalDepth]);
 
   useEffect(() => {
-    if (confirmResign) {
-      const t = setTimeout(() => setConfirmResign(false), 3000);
-      return () => clearTimeout(t);
-    }
-  }, [confirmResign]);
+    if (!confirmResign && !confirmDraw) return;
+    const handler = (e) => {
+      const btn = e.target.closest("[data-confirm-resign], [data-confirm-draw]");
+      if (!btn) { setConfirmResign(false); setConfirmDraw(false); }
+    };
+    window.addEventListener("pointerdown", handler, true);
+    return () => window.removeEventListener("pointerdown", handler, true);
+  }, [confirmResign, confirmDraw]);
 
   const handleMoveClick = useCallback(async (ply) => {
     if (!gameOver) return;
@@ -387,8 +436,13 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
     const fenBefore = ply > 1 ? (() => { const t = new Chess(); for (let i = 0; i < ply - 1; i++) t.move(history[i].san); return t.fen(); })() : "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     try {
       const text = await explainMove(fenBefore, moveSan);
+      if (!mountedRef.current) return;
       setPlyCoach({ text, fen: temp.fen(), san: moveSan, ply });
-    } catch { setPlyCoach({ text: "Could not analyze.", fen: temp.fen(), san: moveSan, ply }); }
+    } catch {
+      if (!mountedRef.current) return;
+      setPlyCoach({ text: "Could not analyze.", fen: temp.fen(), san: moveSan, ply });
+    }
+    if (!mountedRef.current) return;
     setPlyLoading(false);
   }, [gameOver, history, selectedPly]);
 
@@ -418,8 +472,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
           if (cur > 1) handleMoveClick(cur - 1);
         } else {
           const cur = previewPly ?? total;
-          if (cur < total) handlePreviewMove(cur + 1);
-          else handleBackToLive();
+          if (cur > 1) handlePreviewMove(cur - 1);
         }
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
@@ -429,16 +482,17 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
           else { setSelectedPly(null); setPlyCoach(null); setFen(gameRef.current.fen()); }
         } else {
           const cur = previewPly ?? total;
-          if (cur > 1) handlePreviewMove(cur - 1);
+          if (cur < total) handlePreviewMove(cur + 1);
+          else handleBackToLive();
         }
       } else if (e.key === "Home") {
         e.preventDefault();
         if (gameOver) handleMoveClick(1);
-        else handleBackToLive();
+        else handlePreviewMove(1);
       } else if (e.key === "End") {
         e.preventDefault();
         if (gameOver) { setSelectedPly(null); setPlyCoach(null); setFen(gameRef.current.fen()); }
-        else handlePreviewMove(1);
+        else handleBackToLive();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -465,19 +519,47 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
     if (text) setBotChat((prev) => { const n = [...prev.slice(-10), { from: "bot", text }]; botChatRef.current = n; return n; });
   }, [canTakeback, syncState, opponent.level]);
 
-  const highlightSquares = {};
-  const activePly = selectedPly || previewPly;
-  if (activePly && history[activePly - 1]) {
-    const m = history[activePly - 1];
-    highlightSquares[m.from] = { backgroundColor: "rgba(59,130,246,0.2)" };
-    highlightSquares[m.to] = { backgroundColor: "rgba(59,130,246,0.3)" };
-  } else if (lastMove) {
-    highlightSquares[lastMove.from] = { backgroundColor: "rgba(255,255,255,0.07)" };
-    highlightSquares[lastMove.to] = { backgroundColor: "rgba(255,255,255,0.11)" };
-  }
+  const highlightSquares = useMemo(() => {
+    const sq = {};
+    const activePly = selectedPly || previewPly;
+    if (activePly && history[activePly - 1]) {
+      const m = history[activePly - 1];
+      sq[m.from] = { backgroundColor: "rgba(59,130,246,0.2)" };
+      sq[m.to] = { backgroundColor: "rgba(59,130,246,0.3)" };
+    } else if (lastMove) {
+      sq[lastMove.from] = { backgroundColor: "rgba(255,255,255,0.07)" };
+      sq[lastMove.to] = { backgroundColor: "rgba(255,255,255,0.11)" };
+    }
+    return sq;
+  }, [selectedPly, previewPly, history, lastMove]);
   const isPreviewingPast = previewPly !== null || selectedPly !== null;
 
   const captured = useMemo(() => getCaptured(fen), [fen]);
+
+  const boardAnnotation = useMemo(() => {
+    const ply = selectedPly || previewPly;
+    if (!ply || ply < 1 || ply > history.length) return null;
+    if (!evals[ply - 1] || !evals[ply]) return null;
+    const move = history[ply - 1];
+    if (!move) return null;
+    const movingColor = ply % 2 === 1 ? "w" : "b";
+    const annot = classifyMove(evals[ply - 1], evals[ply], movingColor);
+    if (!annot || annot.glyph === "Book") return null;
+    return { square: move.to, ...annot };
+  }, [selectedPly, previewPly, history, evals]);
+
+  const bestMoveArrow = useMemo(() => {
+    if (!gameOver) return [];
+    const ply = selectedPly || previewPly || history.length;
+    const ev = evals[ply];
+    if (!ev?.bestMove || ev.bestMove.length < 4) return [];
+    const from = ev.bestMove.slice(0, 2);
+    const to = ev.bestMove.slice(2, 4);
+    const validSq = /^[a-h][1-8]$/;
+    if (!validSq.test(from) || !validSq.test(to)) return [];
+    return [{ startSquare: from, endSquare: to, color: "rgba(76,175,80,0.7)" }];
+  }, [gameOver, selectedPly, previewPly, history.length, evals]);
+
   const movePairs = [];
   for (let i = 0; i < history.length; i += 2) {
     movePairs.push({ num: Math.floor(i / 2) + 1, white: history[i], black: history[i + 1] || null });
@@ -489,8 +571,8 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
   const isPlayerTurn = !gameOver && gameRef.current.turn() === playerColor;
 
   const pgn = useMemo(() => {
-    const g = gameRef.current;
-    const moves = g.pgn({ maxWidth: 80, newline: "\n" }).replace(/\[.*?\]\s*\n?/g, "").trim();
+    const g = new Chess();
+    for (const m of history) g.move(m.san);
     const date = new Date();
     const dateStr = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, "0")}.${String(date.getDate()).padStart(2, "0")}`;
     const white = playerColor === "w" ? "You" : opponent.name;
@@ -502,7 +584,8 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
           ? playerColor === "w" ? "0-1" : "1-0"
           : "1/2-1/2"
       : "*";
-    return `[Event "oChess Bot Game"]\n[Site "oChess"]\n[Date "${dateStr}"]\n[White "${white}"]\n[Black "${black}"]\n[Result "${result}"]\n\n${moves} ${result}`;
+    g.header("Event", "oChess Bot Game", "Site", "oChess", "Date", dateStr, "White", white, "Black", black, "Result", result);
+    return g.pgn();
   }, [history.length, gameOver]);
 
   const turnLabel = gameOver
@@ -519,7 +602,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
   return (
     <div className="min-h-screen min-h-[100dvh] bg-surface flex flex-col">
       {fatalError && (
-        <div className="fixed inset-0 z-[9998] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-surface-container border border-error/20 max-w-md w-full p-6 space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-error/15 flex items-center justify-center shrink-0">
@@ -626,6 +709,9 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                 highlightSquares={highlightSquares}
                 premoveSquares={premove}
                 playerColor={playerColor}
+                onBoardClick={() => { if (premove) { setPremove(null); premoveRef.current = null; } }}
+                squareAnnotation={boardAnnotation}
+                arrows={bestMoveArrow}
               />
             </div>
           </div>
@@ -687,6 +773,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
               ) : (
                 <>
                   <button
+                    data-confirm-draw
                     onClick={handleDrawOffer}
                     className={`py-2.5 px-3 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
                       confirmDraw
@@ -694,9 +781,10 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                         : "bg-surface-low border border-white/[0.04] text-on-surface-variant/35 hover:text-amber-400 hover:border-amber-500/15"
                     }`}
                   >
-                    {confirmDraw ? "Confirm Draw" : "Draw"}
+                    Draw
                   </button>
                   <button
+                    data-confirm-resign
                     onClick={handleResign}
                     className={`flex-1 py-2.5 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
                       confirmResign
@@ -704,7 +792,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                         : "bg-surface-low border border-white/[0.04] text-on-surface-variant/35 hover:text-error hover:border-error/15"
                     }`}
                   >
-                    {confirmResign ? "Confirm Resign" : "Resign"}
+                    Resign
                   </button>
                 </>
               )}
@@ -809,7 +897,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                 </button>
               </div>
               <div className="flex gap-2 mt-2">
-                <button onClick={() => navigate("/analysis", { state: { pgn } })} className="flex-1 py-2 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">
+                <button onClick={() => navigate("/analysis", { state: { pgn, orientation: playerColor === "w" ? "white" : "black" } })} className="flex-1 py-2 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">
                   Analyze
                 </button>
                 <button
@@ -819,6 +907,17 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                   }`}
                 >
                   {pgnCopied ? "Copied!" : "Copy PGN"}
+                </button>
+                <button
+                  onClick={() => {
+                    const blob = new Blob([pgn], { type: "application/x-chess-pgn" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a"); a.href = url; a.download = "game.pgn"; a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="flex-1 py-2 font-headline text-[10px] font-bold uppercase tracking-wide bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]"
+                >
+                  Download PGN
                 </button>
               </div>
             </div>
@@ -898,7 +997,9 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                     </h3>
                     {evals[selectedPly] && (
                       <span className={`text-[10px] font-mono font-bold tabular-nums ${
-                        evals[selectedPly].cp > 50 ? "text-on-surface-variant/70" : evals[selectedPly].cp < -50 ? "text-on-surface-variant/40" : "text-on-surface-variant/50"
+                        evals[selectedPly].mate != null
+                          ? (evals[selectedPly].mate > 0 ? "text-on-surface-variant/70" : "text-on-surface-variant/40")
+                          : evals[selectedPly].cp > 50 ? "text-on-surface-variant/70" : evals[selectedPly].cp < -50 ? "text-on-surface-variant/40" : "text-on-surface-variant/50"
                       }`}>
                         {evalToLabel(evals[selectedPly])}
                       </span>
@@ -911,7 +1012,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                 {plyLoading ? (
                   <div className="flex items-center gap-2">
                     <div className="w-3 h-3 border border-primary/30 border-t-primary rounded-full animate-spin" />
-                    <span className="text-[11px] text-on-surface-variant/30">Analyzing...</span>
+                    <span className="text-[11px] text-on-surface-variant/30">Loading explanation...</span>
                   </div>
                 ) : plyCoach && (
                   <p className="text-[11px] text-on-surface-variant/50 leading-relaxed">{plyCoach.text}</p>
@@ -950,11 +1051,13 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                   const hasEvals = Object.keys(evals).length > 0;
                   const wEv = hasEvals ? evals[wPly] : null;
                   const bEv = hasEvals ? evals[bPly] : null;
+                  const wAnnot = (hasEvals && evals[wPly - 1] && evals[wPly]) ? classifyMove(evals[wPly - 1], evals[wPly], "w") : null;
+                  const bAnnot = (hasEvals && m.black && evals[bPly - 1] && evals[bPly]) ? classifyMove(evals[bPly - 1], evals[bPly], "b") : null;
                   return (
                     <div key={m.num} className={`grid text-[12px] ${ri % 2 === 0 ? "bg-surface-lowest/40" : ""}`} style={{ gridTemplateColumns: hasEvals ? "1.6rem 1fr 2rem 1fr 2rem" : "1.6rem 1fr 1fr" }}>
                       <span className="text-[9px] text-on-surface-variant/20 self-center px-1 py-1">{m.num}.</span>
                       <button onClick={() => handleMoveClick(wPly)} className={`font-mono text-left py-1 px-1 transition-colors hover:bg-primary/10 ${isActive(wPly) ? "bg-primary/15 text-primary font-bold" : "text-on-surface-variant/70"}`}>
-                        {m.white?.san}
+                        {m.white?.san}{wAnnot && <span className={`ml-0.5 ${ANNOT_CSS[wAnnot.glyph] || "text-on-surface-variant/50"}`} title={wAnnot.label}>{wAnnot.glyph}</span>}
                       </button>
                       {hasEvals && (
                         <span className="text-[8px] font-mono text-on-surface-variant/25 self-center text-right pr-0.5 tabular-nums">
@@ -963,7 +1066,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                       )}
                       {m.black ? (
                         <button onClick={() => handleMoveClick(bPly)} className={`font-mono text-left py-1 px-1 transition-colors hover:bg-primary/10 ${isActive(bPly) ? "bg-primary/15 text-primary font-bold" : "text-on-surface-variant/45"}`}>
-                          {m.black.san}
+                          {m.black.san}{bAnnot && <span className={`ml-0.5 ${ANNOT_CSS[bAnnot.glyph] || "text-on-surface-variant/50"}`} title={bAnnot.label}>{bAnnot.glyph}</span>}
                         </button>
                       ) : <span />}
                       {hasEvals && m.black && (
@@ -1098,13 +1201,13 @@ function EvalBar({ evals, currentPly, orientation }) {
   const showOnTop = topPct >= botPct;
 
   return (
-    <div className="w-7 shrink-0 flex flex-col relative select-none" style={{ minHeight: "100%" }}>
+    <div className="w-9 shrink-0 flex flex-col relative select-none" style={{ minHeight: "100%" }}>
       <div
         className="flex items-start justify-center transition-all duration-300 ease-out"
-        style={{ height: `${topPct}%`, backgroundColor: topBg, minHeight: "14px" }}
+        style={{ height: `${topPct}%`, backgroundColor: topBg, minHeight: "16px" }}
       >
         {hasAny && showOnTop && (
-          <span className="text-[9px] font-mono font-bold leading-none pt-1 tabular-nums"
+          <span className="text-[11px] font-mono font-bold leading-none pt-1 tabular-nums"
             style={{ color: topIsBlack ? "#bbb" : "#222" }}>
             {label}
           </span>
@@ -1112,10 +1215,10 @@ function EvalBar({ evals, currentPly, orientation }) {
       </div>
       <div
         className="flex-1 flex items-end justify-center transition-all duration-300 ease-out"
-        style={{ backgroundColor: botBg, minHeight: "14px" }}
+        style={{ backgroundColor: botBg, minHeight: "16px" }}
       >
         {hasAny && !showOnTop && (
-          <span className="text-[9px] font-mono font-bold leading-none pb-1 tabular-nums"
+          <span className="text-[11px] font-mono font-bold leading-none pb-1 tabular-nums"
             style={{ color: topIsBlack ? "#222" : "#bbb" }}>
             {label}
           </span>
@@ -1123,7 +1226,7 @@ function EvalBar({ evals, currentPly, orientation }) {
       </div>
       {!hasAny && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-2.5 h-2.5 border border-on-surface-variant/20 border-t-on-surface-variant/50 rounded-full animate-spin" />
+          <div className="w-3 h-3 border border-on-surface-variant/20 border-t-on-surface-variant/50 rounded-full animate-spin" />
         </div>
       )}
     </div>

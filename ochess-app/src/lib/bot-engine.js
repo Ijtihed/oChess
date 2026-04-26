@@ -72,7 +72,13 @@ async function initStockfish() {
           cb(match ? match[1] : null);
         }
       };
-      sfWorker.onerror = () => resolve(false);
+      sfWorker.onerror = () => {
+        try { sfWorker.terminate(); } catch {}
+        sfWorker = null;
+        sfReady = false;
+        if (sfResolve) { const cb = sfResolve; sfResolve = null; cb(null); }
+        resolve(false);
+      };
       sfWorker.postMessage("uci");
       sfWorker.postMessage("isready");
     } catch { resolve(false); }
@@ -82,7 +88,6 @@ async function initStockfish() {
 function sfGetMove(fen, elo) {
   return new Promise((resolve) => {
     sfResolve = resolve;
-    sfWorker.postMessage("ucinewgame");
     if (elo > 0) {
       sfWorker.postMessage("setoption name UCI_LimitStrength value true");
       sfWorker.postMessage(`setoption name UCI_Elo value ${elo}`);

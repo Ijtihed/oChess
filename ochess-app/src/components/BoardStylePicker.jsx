@@ -55,7 +55,7 @@ export default function BoardStylePicker() {
     return (
       <button
         onClick={handleOpen}
-        className="fixed bottom-4 left-4 z-40 w-10 h-10 bg-surface-high/80 backdrop-blur border border-white/[0.06] flex items-center justify-center hover:bg-surface-highest/80 transition-colors active:scale-90"
+        className="fixed bottom-4 left-4 z-[60] w-10 h-10 bg-surface-high/80 backdrop-blur border border-white/[0.06] flex items-center justify-center hover:bg-surface-highest/80 transition-colors active:scale-90"
         title="Board style"
       >
         <div className="w-5 h-5 grid grid-cols-2 gap-px overflow-hidden">
@@ -75,7 +75,7 @@ export default function BoardStylePicker() {
   }
 
   return (
-    <div ref={panelRef} className="fixed inset-4 sm:inset-auto sm:bottom-4 sm:left-4 z-40 bg-surface-container/95 backdrop-blur-xl border border-white/[0.06] shadow-2xl flex flex-col sm:max-h-[75vh]" style={{ width: undefined, maxWidth: "min(92vw, 560px)" }}>
+    <div ref={panelRef} className="fixed inset-4 sm:inset-auto sm:bottom-4 sm:left-4 z-[60] bg-surface-container/95 backdrop-blur-xl border border-white/[0.06] shadow-2xl flex flex-col sm:max-h-[75vh]" style={{ width: undefined, maxWidth: "min(92vw, 560px)" }}>
       <div className="p-3 border-b border-white/[0.04] flex items-center justify-between shrink-0">
         <h3 className="font-headline text-sm sm:text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">Board Style</h3>
         <button onClick={handleCancel} className="text-xs sm:text-[10px] text-on-surface-variant/30 hover:text-primary transition-colors">Cancel</button>

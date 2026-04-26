@@ -6,6 +6,8 @@ import LoadingScreen from "./LoadingScreen";
 import { loadPuzzles, getAdaptivePuzzle, findPuzzleById, searchPuzzleById, loadPuzzleRating, updatePuzzleRating } from "../lib/puzzles";
 import { playMoveSound, playError, playVictory, playDraw, preloadAll } from "../lib/sounds";
 import { explainPuzzle } from "../lib/coach";
+import SocialPanel from "./SocialPanel";
+import { useAuth } from "./AuthProvider";
 
 const TIMER_OPTIONS = [
   { label: "Off", sec: 0, bonus: null },
@@ -16,21 +18,29 @@ const TIMER_OPTIONS = [
 ];
 
 
-const SAMPLE_FRIENDS = [
-  { name: "KnightRider42", rating: 1580, online: true, puzzleStreak: 7 },
-  { name: "DarkBishop", rating: 1623, online: true, puzzleStreak: 3 },
-  { name: "PawnStorm99", rating: 1545, online: false, puzzleStreak: 0 },
-  { name: "QueenGambit", rating: 1601, online: true, puzzleStreak: 15 },
-  { name: "EndgameWizard", rating: 1890, online: false, puzzleStreak: 22 },
-  { name: "TacticsFanatic", rating: 1340, online: true, puzzleStreak: 1 },
-];
 
 const HISTORY_KEY = "ochess_puzzle_history";
 const STREAK_KEY = "ochess_puzzle_streak";
 const SETTINGS_KEY = "ochess_puzzle_settings";
 
-function savePuzzleResult(id, result) {
+function savePuzzleResult(id, result, puzzleRating, userId) {
   try { const h = JSON.parse(localStorage.getItem(HISTORY_KEY) || "{}"); h[id] = { result, ts: Date.now() }; localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch {}
+  // Sync to server
+  if (userId) {
+    import("../lib/puzzle-sync").then(({ savePuzzleAttempt }) => {
+      savePuzzleAttempt(userId, id, puzzleRating || 0, result, 0);
+    }).catch(() => {});
+  }
+}
+function getPuzzleHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "{}"); } catch { return {}; }
+}
+function wasPuzzleAttempted(id) {
+  return !!getPuzzleHistory()[id];
+}
+function getPuzzleResult(id) {
+  const h = getPuzzleHistory();
+  return h[id] || null;
 }
 function getPuzzleStats() {
   try { const h = JSON.parse(localStorage.getItem(HISTORY_KEY) || "{}"); let s = 0, f = 0; for (const v of Object.values(h)) { if (v.result === "solved") s++; else if (v.result === "failed") f++; } return { solved: s, failed: f, total: Object.keys(h).length }; } catch { return { solved: 0, failed: 0, total: 0 }; }
@@ -70,28 +80,44 @@ export default function PuzzlesPage() {
   const initRef = useRef(false);
   const initPuzzleId = useRef(urlPuzzleId);
 
+  const [loadError, setLoadError] = useState(null);
+
   useEffect(() => {
     if (initRef.current) return;
     initRef.current = true;
     preloadAll();
-    loadPuzzles(3000).then(async (p) => {
-      if (!p || p.length === 0) return;
-      setPuzzles(p);
+    let cancelled = false;
+    loadPuzzles(3000)
+      .then(async (p) => {
+        if (cancelled) return;
+        if (!p || p.length === 0) {
+          setLoadError("Puzzles are unavailable right now. Try again later.");
+          setPhase("error");
+          return;
+        }
+        setPuzzles(p);
 
-      const pid = initPuzzleId.current;
-      if (pid) {
-        let found = findPuzzleById(p, pid);
-        if (!found) found = await searchPuzzleById(pid);
-        if (found) { setDirectPuzzle(found); setPhase("play-direct"); return; }
-      }
+        const pid = initPuzzleId.current;
+        if (pid) {
+          let found = findPuzzleById(p, pid);
+          if (!found) found = await searchPuzzleById(pid);
+          if (found) { setDirectPuzzle(found); setPhase("play-direct"); return; }
+        }
 
-      const s = loadSettings();
-      if (s?.skipSetup) {
-        setPhase(loadStreak().current > 0 ? "play-continue" : "play-fresh");
-      } else {
-        setPhase("setup");
-      }
-    });
+        const s = loadSettings();
+        if (s?.skipSetup) {
+          setPhase(loadStreak().current > 0 ? "play-continue" : "play-fresh");
+        } else {
+          setPhase("setup");
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("[puzzles] loadPuzzles failed:", err);
+        setLoadError("Couldn't load puzzles. Check your connection and try again.");
+        setPhase("error");
+      });
+    return () => { cancelled = true; };
   }, []);
 
   const handleStart = useCallback((continueStreak, skipNext) => {
@@ -100,6 +126,21 @@ export default function PuzzlesPage() {
   }, [autoAdvance, timerSec]);
 
   if (phase === "loading") return <LoadingScreen message="Loading puzzles..." />;
+
+  if (phase === "error") {
+    return (
+      <div className="min-h-[calc(100vh-8rem)] flex items-center justify-center px-6">
+        <div className="text-center max-w-sm">
+          <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-2">Puzzles unavailable</h1>
+          <p className="text-[12px] text-on-surface-variant/40 mb-6">{loadError}</p>
+          <button onClick={() => { initRef.current = false; setPhase("loading"); setLoadError(null); }}
+            className="px-5 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors">
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (phase === "setup") {
     return (
@@ -193,9 +234,12 @@ export default function PuzzlesPage() {
 
 function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, timerSec, setTimerSec, initialStreak, initialBest, onBack }) {
   const navigate = useNavigate();
+  const { user: authUser } = useAuth();
   const [puzzle, setPuzzle] = useState(null);
   const [fen, setFen] = useState(null);
   const [playerColor, setPlayerColor] = useState("w");
+  const [previousResult, setPreviousResult] = useState(null);
+  const [boardFlipped, setBoardFlipped] = useState(false);
   const [moveIndex, setMoveIndex] = useState(0);
   const [status, setStatus] = useState("init");
   const [attempts, setAttempts] = useState(0);
@@ -250,7 +294,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     const effectiveTimer = pendingTimer !== null ? pendingTimer : timerSecRef.current;
     if (pendingTimer !== null) { setTimerSec(pendingTimer); setPendingTimer(null); }
     setSolutionSAN(computeSolutionSAN(pzl.fen, pzl.moves));
-    setAttempts(0); setHintLevel(0); setHighlight({}); setAnimating(true); setRatingDelta(null); setBoardFlash(""); setPlayedMoves([]); setCopied(false); setSaved(false); setPosEval(null);
+    setAttempts(0); setHintLevel(0); setHighlight({}); setAnimating(true); setRatingDelta(null); setBoardFlash(""); setPlayedMoves([]); setCopied(false); setSaved(false); setPosEval(null); setPreviousResult(getPuzzleResult(pzl.id));
     const g = new Chess(pzl.fen);
     gameRef.current = g; setPuzzle(pzl); setFen(g.fen()); setStatus("setup"); setTimeLeft(-1); setPuzzleCount((c) => c + 1);
     navigate(`/puzzles/${pzl.id}`, { replace: true });
@@ -291,9 +335,15 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     } catch {}
     setFen(g.fen());
     setHighlight({ [m.from]: { backgroundColor: "rgba(239,68,68,0.25)" }, [m.to]: { backgroundColor: "rgba(239,68,68,0.35)" } });
-    setStatus("failed"); setSessionFailed((f) => f + 1); setStreak(0); savePuzzleResult(puzzle.id, "failed"); playDraw();
-    const updated = updatePuzzleRating(puzzle.rating, false, { timerSec: timerSecRef.current });
-    setRatingDelta(updated.rating - myRating.rating); setMyRating(updated);
+    setStatus("failed"); setSessionFailed((f) => f + 1); setStreak(0); playDraw();
+    const isRetry = wasPuzzleAttempted(puzzle.id);
+    savePuzzleResult(puzzle.id, "failed", puzzle.rating, authUser?.id);
+    if (!isRetry) {
+      const updated = updatePuzzleRating(puzzle.rating, false, { timerSec: timerSecRef.current });
+      setRatingDelta(updated.rating - myRating.rating); setMyRating(updated);
+    } else {
+      setRatingDelta(null);
+    }
     setBoardFlash("board-flash-incorrect"); setTimeout(() => setBoardFlash(""), 600);
   }, [puzzle, moveIndex]);
 
@@ -319,10 +369,20 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
       if (ni >= puzzle.moves.length) {
         clearInterval(timerRef.current); setTimerRunning(false); setMoveIndex(ni); setStatus("solved"); setSessionSolved((s) => s + 1);
         setStreak((s) => { const n = s + 1; setBestStreak((b) => Math.max(b, n)); return n; });
-        savePuzzleResult(puzzle.id, "solved"); playVictory();
-        const tlPct = timerSecRef.current > 0 && timeLeft > 0 ? timeLeft / (timerSecRef.current * 1000) : 0;
-        const updated = updatePuzzleRating(puzzle.rating, true, { timerSec: timerSecRef.current, timeLeftPct: tlPct, usedHints: hintLevel > 0 });
-        setRatingDelta(updated.rating - myRating.rating); setMyRating(updated);
+        const isRetry = wasPuzzleAttempted(puzzle.id);
+        savePuzzleResult(puzzle.id, "solved", puzzle.rating, authUser?.id); playVictory();
+        if (authUser?.id && directPuzzle && directPuzzle.id === puzzle.id) {
+          import("../lib/puzzle-sync").then(({ markDailyPuzzleSolved }) => {
+            markDailyPuzzleSolved(authUser.id, new Date().toISOString().slice(0, 10));
+          }).catch(() => {});
+        }
+        if (!isRetry) {
+          const tlPct = timerSecRef.current > 0 && timeLeft > 0 ? timeLeft / (timerSecRef.current * 1000) : 0;
+          const updated = updatePuzzleRating(puzzle.rating, true, { timerSec: timerSecRef.current, timeLeftPct: tlPct, usedHints: hintLevel > 0 });
+          setRatingDelta(updated.rating - myRating.rating); setMyRating(updated);
+        } else {
+          setRatingDelta(null);
+        }
         setBoardFlash("board-flash-correct"); setTimeout(() => setBoardFlash(""), 600);
         return true;
       }
@@ -417,9 +477,9 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     <>
     {showLoader && <LoadingScreen message="Setting up..." />}
     {!ready ? <div className="min-h-[60vh]" /> :
-    <div className="flex">
+    <div className="flex min-h-[calc(100vh-4rem)]">
       {/* Main content area */}
-      <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-8 py-5 sm:py-8">
+      <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-5 sm:py-8">
         <div className="flex flex-col xl:flex-row gap-5">
 
         {/* ══ Left: Board ══ */}
@@ -430,6 +490,11 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
               <h1 className={`font-headline text-xl sm:text-2xl font-extrabold tracking-tighter ${status === "solved" ? "text-emerald-400" : status === "failed" ? "text-error" : "text-primary"}`}>
                 {status === "solved" ? "Correct!" : status === "failed" ? "Incorrect" : "Find the best move"}
               </h1>
+              {previousResult && status === "playing" && (
+                <span className={`text-[10px] font-bold uppercase tracking-wide ${previousResult.result === "solved" ? "text-emerald-400/50" : "text-error/50"}`}>
+                  Previously {previousResult.result} · Rating won't change
+                </span>
+              )}
               <p className="text-[11px] text-on-surface-variant/40">
                 {playerColor === "w" ? "White" : "Black"} to move · Puzzle {puzzle.rating}
                 {isDone && ratingDelta !== null && (
@@ -471,7 +536,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
               </div>
             )}
             <div className={`flex-1 ${boardFlash}`}>
-              <InteractiveBoard fen={fen} onMove={handleMove} orientation={playerColor === "w" ? "white" : "black"} interactive={status === "playing" && !animating} highlightSquares={highlight} />
+              <InteractiveBoard fen={fen} onMove={handleMove} orientation={boardFlipped ? (playerColor === "w" ? "black" : "white") : (playerColor === "w" ? "white" : "black")} interactive={status === "playing" && !animating} highlightSquares={highlight} playerColor={playerColor} />
             </div>
           </div>
 
@@ -485,6 +550,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
                 </button>
                 <button onClick={skipPuzzle} className="flex-1 py-3 bg-surface-high/60 border border-white/[0.06] font-headline text-sm font-bold uppercase tracking-wide text-on-surface-variant/60 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">Skip</button>
                 <button onClick={doReveal} className="flex-1 py-3 bg-red-950/40 border border-red-800/25 font-headline text-sm font-bold uppercase tracking-wide text-red-400/80 hover:bg-red-950/60 hover:text-red-300 transition-colors active:scale-[0.96]">Give up</button>
+                <button onClick={() => setBoardFlipped((f) => !f)} className="py-3 px-4 bg-surface-high/60 border border-white/[0.06] font-headline text-sm font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-primary transition-colors active:scale-[0.96]" title="Flip board">Flip</button>
               </div>
             )}
             {isDone && (
@@ -671,47 +737,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
       </div>
     </div>
 
-      {/* ══ Social — pinned far right ══ */}
-      <div className="hidden 2xl:flex w-[220px] shrink-0 flex-col gap-5 border-l border-white/[0.03] px-5 py-5 sticky top-16 h-[calc(100vh-4rem)] overflow-y-auto">
-        <div>
-          <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Friends</h3>
-          <div className="space-y-1">
-            {SAMPLE_FRIENDS.map((f) => (
-              <div key={f.name} className="flex items-center justify-between py-2 px-2.5 bg-surface-low/50 border border-white/[0.02] hover:bg-surface-high/30 transition-colors">
-                <div className="flex items-center gap-2">
-                  <div className="relative">
-                    <div className="w-6 h-6 rounded-full bg-surface-high flex items-center justify-center">
-                      <span className="font-headline text-[8px] font-bold text-on-surface-variant/50 uppercase">{f.name[0]}</span>
-                    </div>
-                    {f.online && <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-emerald-500 rounded-full border-[1.5px] border-surface" />}
-                  </div>
-                  <div className="min-w-0">
-                    <span className="font-headline text-[10px] font-bold text-on-surface-variant/60 block leading-tight truncate">{f.name}</span>
-                    <span className="text-[9px] text-on-surface-variant/25 tabular-nums">{f.rating}</span>
-                  </div>
-                </div>
-                {f.puzzleStreak > 0 && <span className="text-[9px] font-bold text-primary/40 tabular-nums">{f.puzzleStreak}🔥</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Activity</h3>
-          <div className="space-y-2">
-            {[
-              { who: "QueenGambit", what: "solved 15 in a row", when: "2m ago" },
-              { who: "DarkBishop", what: "failed a 2200 puzzle", when: "5m ago" },
-              { who: "KnightRider42", what: "started puzzle rush", when: "8m ago" },
-            ].map((a, i) => (
-              <div key={i} className="text-[10px] text-on-surface-variant/25 leading-relaxed">
-                <span className="text-on-surface-variant/40 font-bold">{a.who}</span> {a.what}
-                <span className="text-on-surface-variant/15 block">{a.when}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      <SocialPanel />
     </div>
     }
     </>

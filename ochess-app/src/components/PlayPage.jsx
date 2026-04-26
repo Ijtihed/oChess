@@ -1,7 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { BOT_CONFIG } from "../lib/bot-engine";
 import { getSavedGame, clearSavedGame } from "./GameScreen";
+import { useAuth } from "./AuthProvider";
+import { isOnline, supabase } from "../lib/supabase";
+import { createSeek, cancelSeek, findMatch, claimSeekRPC, getActiveGame, cancelAllMySeeks } from "../lib/online-game";
+import { getRatings } from "../lib/auth";
+import { categoryFromTimeControl } from "../lib/glicko2";
 import SocialPanel from "./SocialPanel";
 
 const BOTS = BOT_CONFIG.map((b) => ({
@@ -24,13 +29,6 @@ const PRESETS = [
   { label: "∞",     cat: "Unlimited", m: 0,  s: 0 },
 ];
 
-const SAMPLE_FRIENDS = [
-  { name: "KnightRider42", rating: 1580, online: true },
-  { name: "DarkBishop",    rating: 1623, online: true },
-  { name: "PawnStorm99",   rating: 1545, online: false },
-  { name: "QueenGambit",   rating: 1601, online: true },
-  { name: "EndgameWizard", rating: 1890, online: false },
-];
 
 export default function PlayPage() {
   const navigate = useNavigate();
@@ -196,82 +194,359 @@ export default function PlayPage() {
 
       {/* ═══ vs Humans ═══ */}
       {tab === "humans" && (
-        <div className="anim-fade-up flex flex-col xl:flex-row gap-6 xl:gap-10" style={{ "--delay": "0.1s" }}>
-          <div className="flex-1 space-y-6">
-            {/* Quick match */}
-            <div>
-              <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Quick match</h2>
-              <div className="flex gap-1.5 mb-3">
-                {["rated", "casual"].map((m) => (
-                  <button key={m} onClick={() => setMode(m)}
-                    className={`px-4 py-2 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${mode === m ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>
-                    {m}
-                  </button>
-                ))}
-              </div>
-              <div className="grid grid-cols-5 gap-1.5">
-                {PRESETS.map((p) => (
-                  <button key={p.label}
-                    className="flex flex-col items-center justify-center py-3.5 bg-surface-low border border-white/[0.04] hover:bg-surface-high transition-all duration-150 active:scale-[0.95] opacity-60">
-                    <span className="font-headline text-sm sm:text-base font-extrabold text-primary">{p.label}</span>
-                    <span className="text-[9px] text-on-surface-variant/30 uppercase tracking-wide mt-0.5">{p.cat}</span>
-                  </button>
-                ))}
-              </div>
-              <p className="text-[10px] text-on-surface-variant/20 mt-2 uppercase tracking-widest">
-                Online matchmaking coming soon
-              </p>
-            </div>
-
-            {/* Create game */}
-            <div>
-              <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Create game</h2>
-              <div className="w-full py-3.5 bg-surface-low/50 border border-white/[0.04] font-headline text-xs font-bold uppercase tracking-wide text-on-surface-variant/20 flex items-center justify-center gap-2">
-                Invite links coming soon
-              </div>
-            </div>
-
-            {/* Challenge a friend */}
-            <div>
-              <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Challenge a friend</h2>
-              <div className="space-y-1 max-h-[240px] overflow-y-auto">
-                {SAMPLE_FRIENDS.map((f) => (
-                  <div key={f.name} className="flex items-center justify-between py-2.5 px-3 bg-surface-low/50 border border-white/[0.02]">
-                    <div className="flex items-center gap-2.5">
-                      <div className="relative">
-                        <div className="w-7 h-7 rounded-full bg-surface-high flex items-center justify-center">
-                          <span className="font-headline text-[9px] font-bold text-on-surface-variant/50 uppercase">{f.name[0]}</span>
-                        </div>
-                        {f.online && <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-surface" />}
-                      </div>
-                      <div>
-                        <span className="font-headline text-xs font-bold text-on-surface-variant/70 block">{f.name}</span>
-                        <span className="text-[10px] text-on-surface-variant/25 tabular-nums">{f.rating}</span>
-                      </div>
-                    </div>
-                    <span className="text-[10px] font-headline font-bold uppercase tracking-wide text-on-surface-variant/20">Soon</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Right: open games */}
-          <div className="w-full xl:w-[320px] shrink-0">
-            <div className="sticky top-20">
-              <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Open games</h2>
-              <div className="p-6 text-center bg-surface-low border border-white/[0.04]">
-                <span className="text-[11px] text-on-surface-variant/20">No open games yet</span>
-              </div>
-              <p className="text-[10px] text-on-surface-variant/20 mt-3 leading-relaxed">
-                Online play coming soon. Play bots for now.
-              </p>
-            </div>
-          </div>
-        </div>
+        <OnlineMatchmaking navigate={navigate} mode={mode} setMode={setMode} />
       )}
       </div>
       <SocialPanel />
+    </div>
+  );
+}
+
+const plog = (...args) => console.log("[play]", ...args);
+
+function OnlineMatchmaking({ navigate, mode, setMode }) {
+  const { user, profile } = useAuth();
+  const [seeking, setSeeking] = useState(false);
+  const [seekId, setSeekId] = useState(null);
+  const [seekTC, setSeekTC] = useState(null);
+  const [openSeeks, setOpenSeeks] = useState([]);
+  const [myRating, setMyRating] = useState(1500);
+  const [activeGame, setActiveGame] = useState(null);
+  const pollRef = useRef(null);
+  const seekIdRef = useRef(null);
+  seekIdRef.current = seekId;
+
+  const isLoggedIn = !!user && isOnline();
+
+  // Check for active online game + clean stale seeks on mount.
+  // Re-runs when the tab regains focus so finishing a game in another
+  // tab clears the "Game in progress" banner here without a refresh.
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    let cancelled = false;
+    const refreshActive = () => {
+      plog("refreshActive: checking active game, user:", user.id);
+      getActiveGame(user.id).then((game) => {
+        if (cancelled) return;
+        plog("active game check:", game ? game.id : "none");
+        setActiveGame(game || null);
+      });
+    };
+    refreshActive();
+    // Clean up any ghost seeks left by a previous crashed session.
+    // Skipped if we're currently seeking (e.g. user opened a 2nd tab).
+    if (!seeking) {
+      cancelAllMySeeks(user.id).then(() => plog("stale seeks cleaned up")).catch(() => {});
+    }
+    const onFocus = () => refreshActive();
+    const onVis = () => { if (!document.hidden) refreshActive(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, isLoggedIn]);
+
+  // Load my rating for the display label
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    getRatings(user.id).catch(() => []).then((ratings) => {
+      const blitz = ratings?.find((r) => r.category === "blitz");
+      if (blitz) { plog("my blitz rating:", Math.round(blitz.rating)); setMyRating(Math.round(blitz.rating)); }
+    });
+  }, [user?.id, isLoggedIn]);
+
+  // Load open seeks — initial fetch + Realtime subscription for instant updates
+  useEffect(() => {
+    if (!isLoggedIn || !supabase) return;
+
+    const loadSeeks = () => {
+      plog("loadSeeks: fetching...");
+      supabase
+        .from("seeks")
+        .select("*")
+        .neq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(20)
+        .then(({ data, error }) => {
+          if (error) { console.error("[play] loadSeeks error:", error.message, error.details, error.hint); return; }
+          plog("loadSeeks:", data?.length || 0, "seeks found", data?.map(s => ({ id: s.id, user: s.username, tc: s.time_control })));
+          if (data) setOpenSeeks(data);
+        })
+        .catch((e) => console.error("[play] loadSeeks exception:", e));
+    };
+
+    loadSeeks();
+
+    // Realtime: re-fetch whenever seeks table changes (INSERT/DELETE)
+    const channel = supabase
+      .channel("seeks-list")
+      .on("postgres_changes", { event: "*", schema: "public", table: "seeks" }, (payload) => {
+        plog("seeks realtime event:", payload.eventType, payload.new?.id || payload.old?.id);
+        loadSeeks();
+      })
+      .subscribe((status) => { plog("seeks subscription status:", status); });
+
+    return () => { supabase.removeChannel(channel); };
+  }, [user?.id, isLoggedIn]);
+
+  const [seekError, setSeekError] = useState(null);
+  const gameSubRef = useRef(null);
+  const seekingRef = useRef(false);
+  seekingRef.current = seeking;
+
+  // Tear down any background seek work (poll, INSERT subscription).
+  // Called from both successful-claim paths and from cancel/unmount.
+  const stopSeekWatchers = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (gameSubRef.current && supabase) { supabase.removeChannel(gameSubRef.current); gameSubRef.current = null; }
+  }, []);
+
+  const startSeeking = useCallback(async (tc) => {
+    if (!isLoggedIn || !supabase) { plog("startSeeking blocked: not logged in or no supabase"); return; }
+    if (seekingRef.current) { plog("startSeeking blocked: already seeking"); return; }
+    if (activeGame) { plog("startSeeking blocked: active game exists"); setSeekError("You have an active game. Resume or resign it first."); return; }
+    plog("startSeeking:", tc);
+    setSeeking(true);
+    seekingRef.current = true;
+    setSeekTC(tc);
+    setSeekError(null);
+    try {
+      const category = categoryFromTimeControl(tc);
+      const ratings = await getRatings(user.id).catch(() => []);
+      const r = ratings?.find((x) => x.category === category);
+      const rating = r ? Math.round(r.rating) : 1500;
+      setMyRating(rating);
+      const myName = profile?.display_name || profile?.username || "Player";
+      plog("seeking as:", myName, "rating:", rating, "category:", category);
+
+      // Clean up any stale seeks this user might have left behind
+      await cancelAllMySeeks(user.id);
+
+      // Try to claim an existing seek first
+      const match = await findMatch(user.id, rating, { timeControl: tc });
+      if (match) {
+        plog("found matching seek:", match.id, "by", match.username);
+        try {
+          const game = await claimSeekRPC(match.id, user.id, myName, rating);
+          plog("claimed seek, navigating to game:", game.id);
+          stopSeekWatchers();
+          setSeeking(false);
+          seekingRef.current = false;
+          navigate(`/game/online/${game.id}`, { state: { gameData: game } });
+          return;
+        } catch (e) { plog("claim failed (seek may be taken):", e.message); }
+      }
+
+      // No match found — post our own seek (only one at a time)
+      plog("no match found, creating seek...");
+      const seek = await createSeek(user.id, myName, rating, {
+        timeControl: tc, category, isRated: mode === "rated",
+      });
+      plog("seek created:", seek.id, "— waiting for opponent to claim it");
+      setSeekId(seek.id);
+
+      // Subscribe to games table — fires when opponent claims our seek
+      if (gameSubRef.current) { supabase.removeChannel(gameSubRef.current); gameSubRef.current = null; }
+      const gameCh = supabase
+        .channel("my-game-created")
+        .on("postgres_changes",
+          { event: "INSERT", schema: "public", table: "games" },
+          (payload) => {
+            const g = payload.new;
+            plog("games INSERT received:", g?.id, "white:", g?.white_id, "black:", g?.black_id);
+            if (g && (g.white_id === user.id || g.black_id === user.id) && g.status === "active") {
+              plog("game created for us! navigating:", g.id);
+              stopSeekWatchers();
+              setSeeking(false);
+              seekingRef.current = false;
+              navigate(`/game/online/${g.id}`, { state: { gameData: g } });
+            }
+          }
+        )
+        .subscribe((status) => { plog("games INSERT subscription status:", status); });
+      gameSubRef.current = gameCh;
+
+      // Fallback poll in case realtime hiccups
+      pollRef.current = setInterval(async () => {
+        plog("fallback poll: checking for active game...");
+        try {
+          const game = await getActiveGame(user.id);
+          if (game) {
+            plog("fallback poll found game:", game.id);
+            stopSeekWatchers();
+            setSeeking(false);
+            seekingRef.current = false;
+            navigate(`/game/online/${game.id}`, { state: { gameData: game } });
+          }
+        } catch {}
+      }, 5000);
+    } catch (err) {
+      console.error("[play] startSeeking error:", err);
+      setSeeking(false);
+      seekingRef.current = false;
+      setSeekError(err.message || "Failed to find match");
+    }
+  }, [isLoggedIn, user, profile, mode, navigate, activeGame, stopSeekWatchers]);
+
+  const stopSeeking = useCallback(async () => {
+    stopSeekWatchers();
+    // Cancel via specific ID (fast) and also clean up any strays
+    if (seekIdRef.current) cancelSeek(seekIdRef.current).catch(() => {});
+    if (user?.id) cancelAllMySeeks(user.id).catch(() => {});
+    setSeeking(false);
+    seekingRef.current = false;
+    setSeekId(null);
+    setSeekTC(null);
+  }, [user?.id, stopSeekWatchers]);
+
+  // Cleanup on unmount / tab close
+  useEffect(() => {
+    const cleanup = () => {
+      stopSeekWatchers();
+      if (seekIdRef.current) cancelSeek(seekIdRef.current).catch(() => {});
+    };
+    window.addEventListener("beforeunload", cleanup);
+    return () => {
+      window.removeEventListener("beforeunload", cleanup);
+      cleanup();
+    };
+  }, [stopSeekWatchers]);
+
+  const [claiming, setClaiming] = useState(false);
+
+  const acceptSeek = useCallback(async (seek) => {
+    plog("acceptSeek:", seek.id, "by", seek.username);
+    if (!isLoggedIn || claiming) { plog("acceptSeek blocked:", !isLoggedIn ? "not logged in" : "already claiming"); return; }
+    if (activeGame) { plog("acceptSeek blocked: active game exists"); setSeekError("You have an active game. Resume or resign it first."); return; }
+    setSeekError(null);
+    setClaiming(true);
+    try {
+      await cancelAllMySeeks(user.id);
+
+      const myName = profile?.display_name || profile?.username || "Player";
+      const category = categoryFromTimeControl(seek.time_control);
+      const ratings = await getRatings(user.id).catch(() => []);
+      const r = ratings?.find((x) => x.category === category);
+      const rating = r ? Math.round(r.rating) : 1500;
+      plog("claiming seek as:", myName, "rating:", rating);
+      const game = await claimSeekRPC(seek.id, user.id, myName, rating);
+      plog("acceptSeek OK, navigating to game:", game.id);
+      navigate(`/game/online/${game.id}`, { state: { gameData: game } });
+    } catch (err) {
+      console.error("[play] acceptSeek error:", err);
+      setClaiming(false);
+      setSeekError(err.message || "Game no longer available");
+    }
+  }, [isLoggedIn, user, profile, navigate, activeGame, claiming]);
+
+  return (
+    <div className="anim-fade-up flex flex-col xl:flex-row gap-6 xl:gap-10" style={{ "--delay": "0.1s" }}>
+      <div className="flex-1 space-y-6">
+        {!isLoggedIn && (
+          <div className="p-4 bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400">
+            Sign in to play online. You can still play against bots in the Bots tab.
+          </div>
+        )}
+
+        {activeGame && (
+          <div className="p-4 bg-primary/10 border border-primary/20 flex items-center justify-between mb-2">
+            <div>
+              <span className="font-headline text-sm font-bold text-primary block">Game in progress</span>
+              <span className="text-[11px] text-on-surface-variant/50">
+                {activeGame.white_name || "?"} vs {activeGame.black_name || "?"} · {activeGame.time_control || "Unlimited"} · {activeGame.moves_count || 0} moves
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => navigate(`/game/online/${activeGame.id}`)}
+                className="px-4 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.96]">
+                Resume
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Challenge link */}
+        {isLoggedIn && (
+          <div className="mb-4">
+            <button onClick={() => navigate("/create-challenge")}
+              className="w-full py-3 bg-surface-low border border-primary/15 hover:border-primary/30 hover:bg-surface-high/40 font-headline text-[12px] font-bold uppercase tracking-wide text-primary transition-colors active:scale-[0.97]">
+              Create Game Link · Challenge a Friend
+            </button>
+          </div>
+        )}
+
+        {seekError && (
+          <div className="p-3 bg-error/10 border border-error/20 text-[12px] text-error mb-4">{seekError}</div>
+        )}
+
+        <div>
+          <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Quick match</h2>
+          <div className="flex gap-1.5 mb-3">
+            {["rated", "casual"].map((m) => (
+              <button key={m} onClick={() => setMode(m)}
+                className={`px-4 py-2 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${mode === m ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>
+                {m}
+              </button>
+            ))}
+          </div>
+
+          {seeking ? (
+            <div className="p-6 bg-surface-low border border-primary/20 text-center">
+              <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin mx-auto mb-3" />
+              <p className="text-[13px] text-primary font-bold mb-1">Searching for opponent...</p>
+              <p className="text-[11px] text-on-surface-variant/40 mb-3">{seekTC} · {mode} · ~{myRating}</p>
+              <button onClick={stopSeeking} className="px-5 py-2 bg-surface-high border border-white/[0.06] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/50 hover:text-error transition-colors">
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+              {PRESETS.map((p) => (
+                <button key={p.label} onClick={() => isLoggedIn && startSeeking(p.label)}
+                  disabled={!isLoggedIn}
+                  className={`flex flex-col items-center justify-center py-3.5 border transition-all duration-150 active:scale-[0.95] ${
+                    isLoggedIn ? "bg-surface-low border-white/[0.04] hover:bg-surface-high hover:border-primary/15" : "bg-surface-low/50 border-white/[0.03] opacity-40"
+                  }`}>
+                  <span className="font-headline text-sm sm:text-base font-extrabold text-primary">{p.label}</span>
+                  <span className="text-[9px] text-on-surface-variant/30 uppercase tracking-wide mt-0.5">{p.cat}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Open seeks */}
+      <div className="w-full xl:w-[320px] shrink-0">
+        <div className="sticky top-20">
+          <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">
+            Open Games {openSeeks.length > 0 && `(${openSeeks.length})`}
+          </h2>
+          {openSeeks.length > 0 ? (
+            <div className="space-y-1 max-h-[400px] overflow-y-auto">
+              {openSeeks.map((s) => (
+                <button key={s.id} onClick={() => acceptSeek(s)}
+                  disabled={!isLoggedIn || seeking || claiming}
+                  className="w-full text-left px-3 py-2.5 bg-surface-low border border-white/[0.04] hover:bg-surface-high hover:border-primary/15 transition-colors disabled:opacity-40 disabled:pointer-events-none flex items-center justify-between group">
+                  <div>
+                    <span className="text-[12px] font-bold text-on-surface-variant/70 group-hover:text-primary transition-colors block">{s.username}</span>
+                    <span className="text-[10px] text-on-surface-variant/30">{s.time_control} · {s.is_rated ? "rated" : "casual"}</span>
+                  </div>
+                  <span className="text-[12px] font-mono font-bold text-primary tabular-nums">{Math.round(s.rating)}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="p-6 text-center bg-surface-low border border-white/[0.04]">
+              <span className="text-[11px] text-on-surface-variant/20">No open games</span>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

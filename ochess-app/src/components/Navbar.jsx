@@ -1,28 +1,70 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
+import { searchUsers } from "../lib/friends";
+import { isOnline } from "../lib/supabase";
 
 const NAV_LINKS = [
+  { id: "home",     label: "Home" },
   { id: "play",     label: "Play" },
   { id: "puzzles",  label: "Puzzles" },
   { id: "variants", label: "Variants" },
   { id: "analysis", label: "Analysis" },
   { id: "study",    label: "Study" },
-  { id: "bots",     label: "Bots" },
   { id: "review",   label: "Anki" },
 ];
 
 export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
+  const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const searchRef = useRef(null);
+  const searchTimer = useRef(null);
 
   const handleNav = (id) => {
     onNavigate(id);
     setMobileOpen(false);
+    setSearchOpen(false);
   };
+
+  const handleSearchInput = useCallback((q) => {
+    setSearchQuery(q);
+    if (!q.trim() || !isOnline()) { setSearchResults([]); return; }
+    clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const results = await searchUsers(q.trim(), user?.id || "none");
+        setSearchResults(results);
+      } catch { setSearchResults([]); }
+    }, 350);
+  }, [user]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const handler = (e) => { if (searchRef.current && !searchRef.current.contains(e.target)) { setSearchOpen(false); setSearchQuery(""); setSearchResults([]); } };
+    document.addEventListener("pointerdown", handler);
+    return () => document.removeEventListener("pointerdown", handler);
+  }, [searchOpen]);
+
+  // Close the mobile menu when the user taps anywhere outside of the
+  // navbar element itself (the menu lives inside <nav>, so any pointer
+  // event landing on the page below should dismiss it).
+  const navRef = useRef(null);
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const handler = (e) => {
+      if (navRef.current && !navRef.current.contains(e.target)) setMobileOpen(false);
+    };
+    document.addEventListener("pointerdown", handler);
+    return () => document.removeEventListener("pointerdown", handler);
+  }, [mobileOpen]);
 
   const isLoggedIn = !!user;
   const showSignIn = !user || user.guest;
 
   return (
-    <nav className="fixed top-0 w-full z-50 bg-surface-lowest/80 backdrop-blur-xl">
+    <nav ref={navRef} className="fixed top-0 w-full z-50 bg-surface-lowest/80 backdrop-blur-xl">
       <div className="max-w-[1440px] mx-auto flex items-center justify-between px-5 sm:px-6 md:px-10 h-16">
         {/* Logo */}
         <button
@@ -49,6 +91,44 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
           ))}
         </div>
 
+        {/* Search */}
+        <div ref={searchRef} className="hidden md:block relative">
+          {searchOpen ? (
+            <div>
+              <input value={searchQuery} onChange={(e) => handleSearchInput(e.target.value)} placeholder="Search players..."
+                autoFocus
+                className="w-48 bg-surface-low border border-white/[0.08] px-3 py-1.5 text-[12px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40" />
+              {searchResults.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-surface-container border border-white/[0.08] shadow-xl z-50 max-h-[240px] overflow-y-auto">
+                  {searchResults.map((u) => (
+                    <button key={u.id} onClick={() => { navigate(`/u/${u.username}`); setSearchOpen(false); setSearchQuery(""); setSearchResults([]); }}
+                      className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-surface-high transition-colors">
+                      {u.avatar_url ? (
+                        <img src={u.avatar_url} alt="" className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-6 h-6 rounded-full bg-surface-high flex items-center justify-center">
+                          <span className="text-[8px] font-bold text-on-surface-variant/50 uppercase">{(u.display_name || u.username)?.[0]}</span>
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <span className="text-[12px] font-bold text-on-surface-variant/70 block truncate">{u.display_name || u.username}</span>
+                        <span className="text-[10px] text-on-surface-variant/30">@{u.username}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button onClick={() => setSearchOpen(true)}
+              className="p-2 text-on-surface-variant/40 hover:text-primary transition-colors">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+              </svg>
+            </button>
+          )}
+        </div>
+
         {/* Right side */}
         <div className="flex items-center gap-2">
           {showSignIn ? (
@@ -65,13 +145,15 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
                 activePage === "profile" ? "bg-surface-high/40" : "hover:bg-surface-high/30"
               }`}
             >
-              <div className="w-7 h-7 rounded-full bg-surface-high flex items-center justify-center">
-                <span className="font-headline text-[10px] font-bold text-on-surface-variant uppercase">
-                  {user.name?.[0] || "U"}
-                </span>
-              </div>
+              {user.avatar ? (
+                <img src={user.avatar} alt="" className="w-7 h-7 rounded-full object-cover" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-surface-high flex items-center justify-center">
+                  <span className="font-headline text-[10px] font-bold text-on-surface-variant uppercase">{user.name?.[0] || "U"}</span>
+                </div>
+              )}
               <span className="font-headline text-[11px] font-bold text-on-surface-variant/70">
-                {user.name}
+                {user.name?.split(" ")[0]}
               </span>
             </button>
           )}
@@ -87,11 +169,13 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
           ) : (
             <button
               onClick={() => handleNav("profile")}
-              className="md:hidden w-8 h-8 rounded-full bg-surface-high flex items-center justify-center active:scale-90 transition-transform"
+              className="md:hidden w-8 h-8 rounded-full bg-surface-high flex items-center justify-center active:scale-90 transition-transform overflow-hidden"
             >
-              <span className="font-headline text-[10px] font-bold text-on-surface-variant uppercase">
-                {user.name?.[0] || "U"}
-              </span>
+              {user.avatar ? (
+                <img src={user.avatar} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              ) : (
+                <span className="font-headline text-[10px] font-bold text-on-surface-variant uppercase">{user.name?.[0] || "U"}</span>
+              )}
             </button>
           )}
 
