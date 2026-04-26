@@ -133,6 +133,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   const [myDrawOffers, setMyDrawOffers] = useState(0);
   const MAX_DRAW_OFFERS = 3;
   const [connected, setConnected] = useState(false);
+  const [connectionDegraded, setConnectionDegraded] = useState(false);
   const [opponentOnline, setOpponentOnline] = useState(false);
   const [pgnCopied, setPgnCopied] = useState(false);
   const [dbError, setDbError] = useState(null);
@@ -432,6 +433,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       onRematchDecline: () => { setRematchOffered(false); },
       onConnected: () => {
         setConnected(true);
+        setConnectionDegraded(false);
         // On first connect, do one manual read to catch up
         if (supabase) {
           supabase.from("games").select("*").eq("id", gameData.id).maybeSingle()
@@ -481,11 +483,21 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       }
     }
 
+    // If the realtime channel never reaches SUBSCRIBED within 8s,
+    // surface a banner so the user knows something is off — moves
+    // still go through the DB write path so the game continues, but
+    // they won't see opponent moves until the page reconciles.
+    const degradeTimer = setTimeout(() => {
+      if (!gameOverRef.current) setConnectionDegraded((prev) => prev || !connected);
+    }, 8000);
+
     return () => {
       ch?.leave();
       dbSub?.unsubscribe();
       if (abortTimer) clearTimeout(abortTimer);
+      clearTimeout(degradeTimer);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Handlers ──
@@ -726,7 +738,13 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
           <span className="text-[10px] font-label uppercase tracking-widest text-on-surface-variant/30">
             vs {opponentName} · {tcLabel}
           </span>
-          {!connected && <div className="w-2.5 h-2.5 border border-primary/30 border-t-primary rounded-full animate-spin" />}
+          {!connected && !connectionDegraded && <div className="w-2.5 h-2.5 border border-primary/30 border-t-primary rounded-full animate-spin" aria-label="Connecting" />}
+          {connectionDegraded && !connected && (
+            <span title="Realtime is unreachable. Your moves still reach the server, but updates may be delayed."
+              className="text-[10px] font-headline font-bold uppercase tracking-wide px-2 py-0.5 bg-amber-500/15 text-amber-400">
+              Reconnecting
+            </span>
+          )}
           <span className={`text-[10px] font-headline font-bold uppercase tracking-wide px-2 py-0.5 ${
             gameOver
               ? gameOver.won ? "bg-emerald-500/15 text-emerald-400" : gameOver.won === false ? "bg-error/15 text-error" : "bg-surface-high text-on-surface-variant/50"

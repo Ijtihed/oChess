@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import ChessBoard from "./ChessBoard";
 import SocialPanel from "./SocialPanel";
 
@@ -18,24 +19,36 @@ const STUDIES = [
 
 export default function StudyPage({ onNavigate }) {
   const [activeChapter, setActiveChapter] = useState(1);
+  const navigate = useNavigate();
 
   return (
     <div className="flex">
       <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
       {/* Header */}
-      <div className="anim-fade-up flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-6" style={{ "--delay": "0.05s" }}>
+      <div className="anim-fade-up flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-3" style={{ "--delay": "0.05s" }}>
         <div>
           <h1 className="font-headline text-3xl sm:text-4xl font-extrabold tracking-tighter text-primary">Study</h1>
-          <p className="text-[11px] text-on-surface-variant/35 uppercase tracking-widest mt-1">Italian Game Repertoire</p>
+          <p className="text-[11px] text-on-surface-variant/55 uppercase tracking-widest mt-1">Preview · Italian Game Repertoire</p>
         </div>
         <div className="flex gap-2">
-          <button className="px-4 py-2 bg-primary text-on-primary text-xs font-headline font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.96]">
-            New Study
-          </button>
-          <button className="px-4 py-2 bg-surface-low border border-white/[0.04] text-xs font-headline font-bold uppercase tracking-wide text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">
-            Import PGN
+          <span className="px-3 py-2 bg-amber-500/10 border border-amber-500/20 text-[10px] font-headline font-bold uppercase tracking-wide text-amber-400">Coming soon</span>
+          <button onClick={() => navigate("/analysis")}
+            className="btn btn-secondary px-4 py-2 text-xs">
+            Open Analysis
           </button>
         </div>
+      </div>
+
+      {/* Honest preview banner — the chapters / annotations below
+          are hard-coded sample content while the real Study system
+          is being built. Send users to working surfaces now. */}
+      <div className="anim-fade-up mb-6 p-3 bg-surface-low border border-white/[0.04] text-[12px] text-on-surface-variant/70 leading-relaxed" style={{ "--delay": "0.06s" }}>
+        Studies aren't fully wired up yet — this page shows a sample to illustrate the layout.
+        For now, use{" "}
+        <button onClick={() => navigate("/analysis")} className="text-primary hover:underline font-bold">Analysis</button>
+        {" "}to explore positions and{" "}
+        <button onClick={() => navigate("/review")} className="text-primary hover:underline font-bold">Anki</button>
+        {" "}to drill saved cards.
       </div>
 
       <div className="flex flex-col xl:flex-row gap-6 xl:gap-8">

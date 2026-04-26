@@ -71,9 +71,9 @@ export async function cancelSeek(seekId) {
 
 export async function findMatch(userId, rating, options) {
   if (!supabase) return null;
-  log("findMatch:", { userId, rating, tc: options.timeControl });
+  log("findMatch:", { userId, rating, tc: options.timeControl, isRated: options.isRated });
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from("seeks")
       .select("*")
       .neq("user_id", userId)
@@ -83,6 +83,13 @@ export async function findMatch(userId, rating, options) {
       .lte("min_rating", rating + 100)
       .order("created_at", { ascending: true })
       .limit(1);
+    // Only pair a rated seeker with another rated seeker — and vice
+    // versa — otherwise a casual click can drag a rated player into a
+    // ratings-affecting game (or strip ratings off a rated seek).
+    if (options.isRated !== undefined) {
+      query = query.eq("is_rated", options.isRated !== false);
+    }
+    const { data, error } = await query;
     if (error) { logErr("findMatch error:", error.message); return null; }
     log("findMatch result:", data?.length ? data[0].id : "none");
     if (!data?.length) return null;

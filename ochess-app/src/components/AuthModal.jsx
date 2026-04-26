@@ -32,6 +32,7 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
+  const [confirmationSentTo, setConfirmationSentTo] = useState(null);
 
   const usernameId = useId();
   const emailId = useId();
@@ -109,9 +110,17 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
           setLoading(false);
           return;
         }
-        await signUp(email, password, username.trim().toLowerCase());
+        const data = await signUp(email, password, username.trim().toLowerCase());
         setError(null);
-        onLogin?.();
+        // If the project requires email confirmation, signUp resolves
+        // with `data.user` but `data.session === null` until the user
+        // clicks the confirmation link. Tell them to check their inbox
+        // instead of pretending we logged them in.
+        if (data?.session) {
+          onLogin?.();
+        } else {
+          setConfirmationSentTo(email);
+        }
       } else {
         await signIn(email, password);
         onLogin?.();
@@ -162,6 +171,19 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
         {!isOnline() && (
           <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400 leading-relaxed">
             Online features are not configured yet. You can play as a guest with full access to bots, puzzles, analysis, and variants.
+          </div>
+        )}
+
+        {confirmationSentTo && (
+          <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/20 text-[12px] text-emerald-400 leading-relaxed">
+            <p className="font-bold mb-1">Check your inbox</p>
+            <p className="text-emerald-400/80">
+              We sent a confirmation link to <span className="font-mono">{confirmationSentTo}</span>. Click it to activate your account, then come back and sign in.
+            </p>
+            <button type="button" onClick={() => { setConfirmationSentTo(null); setTab("signin"); }}
+              className="mt-2 text-[11px] underline text-emerald-300 hover:text-emerald-200 transition-colors">
+              Got it, take me to sign in
+            </button>
           </div>
         )}
 

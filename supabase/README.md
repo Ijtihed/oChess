@@ -6,7 +6,10 @@ This folder is the canonical database for oChess. The single source of truth is 
 
 1. Open the Supabase project for your environment (`Project → SQL Editor`).
 2. Paste the entire contents of `schema.sql`, run.
-3. Verify in `Database → Replication → Tables` that `seeks`, `games`, and `challenges` are all part of the `supabase_realtime` publication.
+3. Verify in `Database → Replication → Tables` that `seeks`, `games`, `challenges`, and `friendships` are all part of the `supabase_realtime` publication.
+4. Verify in `Storage` that the `avatars` bucket exists and is **public**.
+
+For the full operational launch flow (env vars, OAuth, hosting, SPA rewrites, etc.) see [`../docs/launch-checklist.md`](../docs/launch-checklist.md).
 
 The script is idempotent: every `create` uses `if not exists`, every `policy` is dropped before recreation, every `alter table` adds columns conditionally, and the realtime publication step uses a `DO` block that checks `pg_publication_tables` first. It is safe to re-run on any environment to converge to the target shape.
 
@@ -26,7 +29,10 @@ If neither is set, the app falls back to fully local guest mode (bots, puzzles, 
 In the Supabase Dashboard:
 
 - `Authentication → Providers → Email`: enabled, confirmations off for dev (or wired to your SMTP for prod).
-- `Authentication → Providers → Google`: client id + secret from the Google Cloud Console; redirect to `<app-origin>/`.
+- `Authentication → Providers → Google`: client id + secret from the Google Cloud Console.
+  - In Google Cloud Console, the **Authorized redirect URI** must be Supabase's callback, not your app origin: `https://<PROJECT_REF>.supabase.co/auth/v1/callback`.
+  - **Authorized JavaScript origins** should include your app origin and `http://localhost:5173`.
+  - The app's `signInWithOAuth({ redirectTo })` then sends the user back to your origin after Supabase finishes the handshake.
 - `Authentication → URL Configuration`: site URL = your deployed origin; add localhost variants to redirect URLs.
 
 ## RLS model
@@ -52,8 +58,9 @@ Live game subscriptions rely on `postgres_changes` events from these tables:
 - `seeks` — UI updates the open-seeks list as players join / cancel.
 - `games` — the authoritative move / clock / chat / draw / rematch feed.
 - `challenges` — the challenge-link page polls for `status='accepted'`.
+- `friendships` — accept / decline / remove propagates instantly to both sides of the pair.
 
-`schema.sql` adds all three to `supabase_realtime` automatically.
+`schema.sql` adds all four to `supabase_realtime` automatically.
 
 ## Cron / housekeeping
 

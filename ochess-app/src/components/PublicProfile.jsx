@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import { getProfileByUsername, getRatings, getRecentGames } from "../lib/auth";
 import { isOnline } from "../lib/supabase";
-import { sendFriendRequest, getFriends, getPendingRequests, acceptFriendRequest } from "../lib/friends";
+import { sendFriendRequest, getFriends, getPendingRequests, acceptFriendRequest, declineFriendRequest } from "../lib/friends";
 import SocialPanel from "./SocialPanel";
 
 const CATEGORY_LABELS = { bullet: "Bullet", blitz: "Blitz", rapid: "Rapid", classical: "Classical" };
@@ -20,6 +20,7 @@ export default function PublicProfile() {
   const [notFound, setNotFound] = useState(false);
   const [friendStatus, setFriendStatus] = useState(null);
   const [incomingRequestId, setIncomingRequestId] = useState(null);
+  const [outgoingRequestId, setOutgoingRequestId] = useState(null);
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -67,8 +68,10 @@ export default function PublicProfile() {
             const [friends, pending] = await Promise.all([getFriends(authUser.id), getPendingRequests(authUser.id)]);
             if (cancelled) return;
             if (friends.some((f) => f.id === p.id)) setFriendStatus("friends");
-            else if (pending.outgoing?.includes(p.id)) setFriendStatus("pending");
-            else {
+            else if (pending.outgoing?.includes(p.id)) {
+              setFriendStatus("pending");
+              setOutgoingRequestId(pending.outgoingRequestIds?.[p.id] || null);
+            } else {
               const incomingReq = pending.incoming?.find((r) => r.id === p.id);
               if (incomingReq) { setFriendStatus("incoming"); setIncomingRequestId(incomingReq.requestId); }
               else setFriendStatus(null);
@@ -111,6 +114,23 @@ export default function PublicProfile() {
     }
     setAdding(false);
   }, [incomingRequestId]);
+
+  const handleWithdrawRequest = useCallback(async () => {
+    if (!outgoingRequestId) return;
+    setAdding(true);
+    setAddError(null);
+    try {
+      // declineFriendRequest also deletes the row, so it's the right
+      // primitive for "withdraw my own request" too — same operation.
+      await declineFriendRequest(outgoingRequestId);
+      setFriendStatus(null);
+      setOutgoingRequestId(null);
+    } catch (err) {
+      setAddError(err.message || "Couldn't withdraw the request");
+      setTimeout(() => setAddError(null), 4000);
+    }
+    setAdding(false);
+  }, [outgoingRequestId]);
 
   if (loading) {
     return (
@@ -189,7 +209,15 @@ export default function PublicProfile() {
               </button>
             )}
             {friendStatus === "pending" && (
-              <span className="px-4 py-2.5 bg-surface-low border border-white/[0.06] font-headline text-[11px] font-bold uppercase tracking-wide text-on-surface-variant/40">Request Sent</span>
+              <div className="flex flex-col gap-1.5 items-end">
+                <span className="px-4 py-2.5 bg-surface-low border border-white/[0.06] font-headline text-[11px] font-bold uppercase tracking-wide text-on-surface-variant/55">Request Sent</span>
+                {outgoingRequestId && (
+                  <button onClick={handleWithdrawRequest} disabled={adding}
+                    className="text-[10px] font-headline font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-error transition-colors disabled:opacity-50">
+                    {adding ? "..." : "Withdraw"}
+                  </button>
+                )}
+              </div>
             )}
             {friendStatus === "friends" && (
               <span className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/20 font-headline text-[11px] font-bold uppercase tracking-wide text-emerald-400">Friends</span>

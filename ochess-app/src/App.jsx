@@ -33,15 +33,32 @@ export default function App() {
   );
 }
 
+const GUEST_KEY = "ochess_guest_session";
+
 function AppShell() {
   const [authOpen, setAuthOpen] = useState(false);
+  const [guest, setGuest] = useState(() => {
+    try { return localStorage.getItem(GUEST_KEY) === "1"; } catch { return false; }
+  });
   const { user: authUser, profile, loading: authLoading } = useAuth();
+  // The signed-in user wins; if there's no auth session but the user
+  // chose "Play as Guest", expose a synthetic local-only user so the
+  // dashboard, profile shell, and online-disabled flows know to render
+  // a guest experience instead of the landing page.
   const user = authUser ? {
     id: authUser.id,
     name: profile?.display_name || profile?.username || authUser.email?.split("@")[0] || "Player",
     email: authUser.email,
     avatar: profile?.avatar_url || authUser.user_metadata?.avatar_url || null,
     profile,
+    guest: false,
+  } : guest ? {
+    id: "guest",
+    name: "Guest",
+    email: null,
+    avatar: null,
+    profile: null,
+    guest: true,
   } : null;
   const navigate = useNavigate();
   const location = useLocation();
@@ -55,20 +72,26 @@ function AppShell() {
     [navigate]
   );
 
-  const handleLogin = useCallback(
-    (u) => {
-      setAuthOpen(false);
-      navigate("/");
-    },
-    [navigate]
-  );
+  const handleLogin = useCallback(() => {
+    // A real auth session has just been created (or is about to be).
+    // Drop any guest flag and route home; the AuthProvider listener
+    // is what actually populates `authUser`.
+    try { localStorage.removeItem(GUEST_KEY); } catch {}
+    setGuest(false);
+    setAuthOpen(false);
+    navigate("/");
+  }, [navigate]);
 
   const handleGuest = useCallback(() => {
-    handleLogin({ name: "Guest", guest: true });
-  }, [handleLogin]);
+    try { localStorage.setItem(GUEST_KEY, "1"); } catch {}
+    setGuest(true);
+    setAuthOpen(false);
+    navigate("/");
+  }, [navigate]);
 
   const handleLogout = useCallback(async () => {
     try { const { signOut } = await import("./lib/auth"); await signOut(); } catch {}
+    try { localStorage.removeItem(GUEST_KEY); } catch {}
     for (const key of Object.keys(localStorage)) {
       if (key.startsWith("sb-")) localStorage.removeItem(key);
     }
@@ -304,6 +327,7 @@ function GameRoute() {
 
 function LogoutPage() {
   useEffect(() => {
+    try { localStorage.removeItem(GUEST_KEY); } catch {}
     for (const key of Object.keys(localStorage)) {
       if (key.startsWith("sb-")) localStorage.removeItem(key);
     }

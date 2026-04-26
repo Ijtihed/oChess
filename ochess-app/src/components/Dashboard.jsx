@@ -96,6 +96,7 @@ export default function Dashboard({ user, onNavigate }) {
   const streak = useMemo(() => getStreak(), []);
   const [dailyPuzzle, setDailyPuzzle] = useState(null);
   const [dailySolved, setDailySolved] = useState(false);
+  const [dailyError, setDailyError] = useState(false);
 
   const firstName = useMemo(() => {
     if (!user?.name) return "there";
@@ -118,13 +119,24 @@ export default function Dashboard({ user, onNavigate }) {
   }, [user]);
 
   useEffect(() => {
-    loadPuzzles().then((puzzles) => {
-      if (puzzles?.length) {
-        const dp = getDailyPuzzle(puzzles);
-        setDailyPuzzle(dp);
-        checkDailySolved(dp);
-      }
-    }).catch(() => {});
+    let cancelled = false;
+    loadPuzzles()
+      .then((puzzles) => {
+        if (cancelled) return;
+        if (puzzles?.length) {
+          const dp = getDailyPuzzle(puzzles);
+          if (dp) {
+            setDailyPuzzle(dp);
+            checkDailySolved(dp);
+          } else {
+            setDailyError(true);
+          }
+        } else {
+          setDailyError(true);
+        }
+      })
+      .catch(() => { if (!cancelled) setDailyError(true); });
+    return () => { cancelled = true; };
   }, [user, checkDailySolved]);
 
   // Re-check when tab regains focus (user solved puzzle in another tab/page)
@@ -239,12 +251,17 @@ export default function Dashboard({ user, onNavigate }) {
                   <DailyBoard puzzle={dailyPuzzle} />
                 </div>
                 <div className="mt-2 flex items-center justify-between px-1">
-                  <span className="text-[10px] text-on-surface-variant/25 font-mono">
+                  <span className="text-[10px] text-on-surface-variant/55 font-mono">
                     {(Array.isArray(dailyPuzzle.themes) ? dailyPuzzle.themes : (dailyPuzzle.themes || "").split?.(" ") || []).filter(Boolean).slice(0, 2).join(" · ") || "Tactics"}
                   </span>
-                  <span className="text-[10px] text-on-surface-variant/20 font-mono">Rating: {dailyPuzzle.rating || "?"}</span>
+                  <span className="text-[10px] text-on-surface-variant/55 font-mono">Rating: {dailyPuzzle.rating || "?"}</span>
                 </div>
               </>
+            ) : dailyError ? (
+              <div className="aspect-square bg-surface-low border border-white/[0.04] flex flex-col items-center justify-center text-center px-4">
+                <span className="text-[12px] text-on-surface-variant/60 mb-2">Daily puzzle unavailable</span>
+                <span className="text-[10px] text-on-surface-variant/40">Puzzles will be back when the database is reachable.</span>
+              </div>
             ) : (
               <div className="aspect-square bg-surface-low border border-white/[0.04] flex items-center justify-center">
                 <span className="text-on-surface-variant/55 text-sm">Loading puzzle...</span>

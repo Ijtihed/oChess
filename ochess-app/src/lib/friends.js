@@ -117,9 +117,16 @@ export async function getPendingRequests(userId) {
     log("getPendingRequests incoming:", inRes.data?.length, "outgoing:", outRes.data?.length);
     const incomingIds = (inRes.data || []).map((r) => r.user_id);
     const profiles = await getProfilesById(incomingIds);
+    const outgoingRows = outRes.data || [];
+    const outgoing = outgoingRows.map((r) => r.friend_id);
+    // Also expose request ids keyed by recipient so the UI can wire
+    // a "Withdraw" affordance without re-querying.
+    const outgoingRequestIds = {};
+    for (const r of outgoingRows) outgoingRequestIds[r.friend_id] = r.id;
     return {
       incoming: (inRes.data || []).map((r) => ({ requestId: r.id, id: r.user_id, ...(profiles[r.user_id] || {}) })),
-      outgoing: (outRes.data || []).map((r) => r.friend_id),
+      outgoing,
+      outgoingRequestIds,
     };
-  } catch (e) { logErr("getPendingRequests exception:", e); return { incoming: [], outgoing: [] }; }
+  } catch (e) { logErr("getPendingRequests exception:", e); return { incoming: [], outgoing: [], outgoingRequestIds: {} }; }
 }

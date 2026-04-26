@@ -337,8 +337,10 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
       // Clean up any stale seeks this user might have left behind
       await cancelAllMySeeks(user.id);
 
-      // Try to claim an existing seek first
-      const match = await findMatch(user.id, rating, { timeControl: tc });
+      // Try to claim an existing seek first. We pass `isRated` so the
+      // matchmaker only pairs us with a seek of the same flavour —
+      // rated-with-rated, casual-with-casual.
+      const match = await findMatch(user.id, rating, { timeControl: tc, isRated: mode === "rated" });
       if (match) {
         plog("found matching seek:", match.id, "by", match.username);
         try {

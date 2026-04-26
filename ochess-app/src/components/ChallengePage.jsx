@@ -163,16 +163,16 @@ export function CreateChallenge() {
               <span className="text-[12px] text-on-surface-variant/40">Waiting for opponent to join...</span>
             </div>
             <p className="text-[11px] text-on-surface-variant/25 text-center">{tc} · Casual · Expires in 15 min</p>
-            <a href="/play"
-              onPointerDown={() => {
+            <button onClick={() => {
                 watchRef.current?.unsubscribe();
                 if (expiryRef.current) clearTimeout(expiryRef.current);
                 if (pollRef.current) clearInterval(pollRef.current);
                 if (challenge) deleteChallenge(challenge.id).catch(() => {});
+                navigate("/play");
               }}
-              className="w-full py-2 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-error transition-colors block text-center">
+              className="btn btn-secondary w-full py-2 text-[10px] hover:!text-error">
               Cancel
-            </a>
+            </button>
           </div>
         )}
       </div>

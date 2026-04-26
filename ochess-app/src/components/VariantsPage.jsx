@@ -318,13 +318,18 @@ export default function VariantsPage() {
                 </div>
                 {botSupported ? (
                   <button onClick={startGame}
-                    className="w-full py-3 bg-primary text-on-primary font-headline text-sm font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.97]">
+                    className="btn btn-primary w-full py-3 text-sm">
                     Play
                   </button>
                 ) : (
-                  <button onClick={() => navigate("/create-challenge")}
-                    className="w-full py-3 bg-surface-low border border-primary/20 font-headline text-sm font-bold uppercase tracking-wide text-primary/70 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.97]">
-                    Challenge a friend
+                  // Honest UX: friend challenges currently only carry
+                  // standard chess time controls, not the variant id.
+                  // Until the challenge model gains a variant field,
+                  // tell the user this is a future feature instead of
+                  // routing them to a misleading flow.
+                  <button disabled aria-disabled="true"
+                    className="btn btn-secondary w-full py-3 text-sm cursor-not-allowed">
+                    Friend matches coming soon
                   </button>
                 )}
               </div>
