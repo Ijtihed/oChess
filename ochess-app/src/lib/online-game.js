@@ -5,9 +5,9 @@
  */
 
 import { supabase, getRealtimeClient } from "./supabase";
+import { makeLogger } from "./log";
 
-const log = (...args) => console.log("[online-game]", ...args);
-const logErr = (...args) => console.error("[online-game]", ...args);
+const { log, error: logErr } = makeLogger("online-game");
 
 /**
  * One-shot auth diagnostic — call from a UI surface where you actually

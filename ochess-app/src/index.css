@@ -87,6 +87,25 @@ body * {
   cursor: none !important;
 }
 
+/* ── Keyboard focus baseline (a11y) ──
+   Coarse-pointer / no-hover devices keep the system cursor and get
+   the default focus outlines. Custom-cursor desktop sessions get a
+   subtle ring instead, drawn outside the element so it never shifts
+   layout. The ring deliberately applies only on `:focus-visible` so
+   click/tap interactions stay clean. */
+@media (hover: hover) {
+  button:focus-visible,
+  a:focus-visible,
+  [role="button"]:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--color-primary) 50%, transparent);
+    outline-offset: 2px;
+  }
+}
+
 @media (pointer: coarse) and (hover: none) {
   #custom-cursor {
     display: none !important;
@@ -97,10 +116,62 @@ body * {
   }
 }
 
-/* ── Animations ── */
+/* ── Button utilities ──
+   The primary patterns repeated ~40 times across the app. Each class
+   is a `font-headline / font-bold / uppercase / tracking-wide` button
+   that handles the primary, secondary, and ghost color variants plus
+   the active-scale press affordance. Sizing (padding, font-size) is
+   left to the call site so existing layouts don't shift. */
+.btn {
+  font-family: var(--font-headline);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.btn-primary {
+  background-color: var(--color-primary);
+  color: var(--color-on-primary);
+}
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--color-primary-dim);
+}
+
+.btn-secondary {
+  background-color: var(--color-surface-low);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  color: color-mix(in oklab, var(--color-on-surface-variant) 60%, transparent);
+}
+.btn-secondary:hover:not(:disabled) {
+  background-color: var(--color-surface-high);
+  color: var(--color-primary);
+}
+
+.btn-ghost {
+  background-color: transparent;
+  color: color-mix(in oklab, var(--color-on-surface-variant) 50%, transparent);
+}
+.btn-ghost:hover:not(:disabled) {
+  color: var(--color-primary);
+}
+
+/* ── Animations ──
+   `page-enter` wraps the whole router; individual pages then use
+   `anim-fade-up` on their headings. Keep page-enter purely an opacity
+   fade so the two animations don't fight each other on first paint
+   (a stacked translate would make headings start lower than they
+   should and "snap" into place when the parent finishes). */
 
 .page-enter {
-  animation: fade-up 0.25s ease-out both;
+  animation: fade-in 0.2s ease-out both;
 }
 
 .anim-fade-up {

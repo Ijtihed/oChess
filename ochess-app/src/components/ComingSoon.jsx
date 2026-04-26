@@ -5,7 +5,7 @@ export default function ComingSoon({ page, onBack }) {
   const is404 = page === "unknown";
 
   return (
-    <div className="min-h-[calc(100dvh-56px)] flex flex-col items-center justify-center px-6 text-center">
+    <div className="min-h-[calc(100dvh-4rem)] flex flex-col items-center justify-center px-6 text-center">
       <span
         className="anim-fade-up font-label text-[10px] uppercase tracking-[0.3em] text-on-surface-variant/30 mb-4"
         style={{ "--delay": "0.05s" }}

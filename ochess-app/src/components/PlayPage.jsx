@@ -8,6 +8,7 @@ import { createSeek, cancelSeek, findMatch, claimSeekRPC, getActiveGame, cancelA
 import { getRatings } from "../lib/auth";
 import { categoryFromTimeControl } from "../lib/glicko2";
 import SocialPanel from "./SocialPanel";
+import { makeLogger } from "../lib/log";
 
 const BOTS = BOT_CONFIG.map((b) => ({
   name: b.name,
@@ -202,7 +203,7 @@ export default function PlayPage() {
   );
 }
 
-const plog = (...args) => console.log("[play]", ...args);
+const { log: plog } = makeLogger("play");
 
 function OnlineMatchmaking({ navigate, mode, setMode }) {
   const { user, profile } = useAuth();

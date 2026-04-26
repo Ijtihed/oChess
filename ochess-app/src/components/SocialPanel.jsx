@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import { isOnline } from "../lib/supabase";
 import { getFriends, getPendingRequests, searchUsers, sendFriendRequest, acceptFriendRequest, declineFriendRequest, removeFriend } from "../lib/friends";
+import { makeLogger } from "../lib/log";
 
-const log = (...args) => console.log("[social]", ...args);
+const { log } = makeLogger("social");
 
 function Avatar({ url, name, size = "w-8 h-8" }) {
   return url ? (
@@ -19,6 +20,16 @@ function Avatar({ url, name, size = "w-8 h-8" }) {
 export default function SocialPanel() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  // The panel is meant for navigation/social context — hide it on
+  // game-style routes so it doesn't steal focus or wrap layout.
+  const path = location.pathname;
+  const isGameRoute =
+    path === "/game" ||
+    path === "/variant-game" ||
+    path.startsWith("/game/online/") ||
+    path === "/create-challenge" ||
+    path.startsWith("/challenge/");
   const [friends, setFriends] = useState([]);
   const [pending, setPending] = useState({ incoming: [], outgoing: [] });
   const [search, setSearch] = useState("");
@@ -117,6 +128,8 @@ export default function SocialPanel() {
   const challengeFriend = useCallback(() => {
     navigate("/create-challenge");
   }, [navigate]);
+
+  if (isGameRoute) return null;
 
   const getUserStatus = (userId) => {
     if (friendIds.has(userId)) return "friends";
@@ -245,10 +258,22 @@ export default function SocialPanel() {
                     {f.username && <span className="text-[10px] text-on-surface-variant/25">@{f.username}</span>}
                   </div>
                 </a>
-                <div className="flex gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                   <button onClick={() => challengeFriend(f.display_name || f.username)}
-                    className="text-[9px] text-primary/50 hover:text-primary transition-colors font-bold">⚔ Play</button>
-                  <button onClick={() => handleRemove(f.friendshipId)} className="text-[9px] text-on-surface-variant/15 hover:text-error transition-colors">✕</button>
+                    aria-label={`Play with ${f.display_name || f.username}`}
+                    className="flex items-center gap-1 text-[10px] font-headline font-bold uppercase tracking-wide text-primary/60 hover:text-primary transition-colors">
+                    <svg width="9" height="9" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+                      <path d="M3 2 L10 6 L3 10 Z" />
+                    </svg>
+                    Play
+                  </button>
+                  <button onClick={() => handleRemove(f.friendshipId)}
+                    aria-label={`Remove ${f.display_name || f.username}`}
+                    className="text-[10px] text-on-surface-variant/20 hover:text-error transition-colors">
+                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                      <path d="M3 3 L9 9 M9 3 L3 9" />
+                    </svg>
+                  </button>
                 </div>
               </div>
             ))}

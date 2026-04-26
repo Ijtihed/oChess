@@ -4,9 +4,9 @@
  */
 
 import { supabase } from "./supabase";
+import { makeLogger } from "./log";
 
-const log = (...args) => console.log("[friends]", ...args);
-const logErr = (...args) => console.error("[friends]", ...args);
+const { log, error: logErr } = makeLogger("friends");
 
 export async function searchUsers(query, currentUserId) {
   if (!supabase || !query.trim()) return [];

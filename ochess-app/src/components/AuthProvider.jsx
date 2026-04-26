@@ -2,6 +2,9 @@ import { createContext, useContext, useState, useEffect, useCallback } from "rea
 import { supabase } from "../lib/supabase";
 import { getProfile } from "../lib/auth";
 import { syncPuzzleProgressFromServer } from "../lib/puzzle-sync";
+import { makeLogger } from "../lib/log";
+
+const { log: alog, warn: awarn } = makeLogger("auth");
 
 const AuthContext = createContext({ user: null, profile: null, loading: true, refreshProfile: async () => {} });
 
@@ -22,44 +25,44 @@ export default function AuthProvider({ children }) {
 
   useEffect(() => {
     if (!supabase) {
-      console.log("[auth] no supabase client, going offline");
+      alog("no supabase client, going offline");
       setLoading(false);
       return;
     }
 
     let resolved = false;
-    const done = () => { if (!resolved) { resolved = true; setLoading(false); console.log("[auth] ready"); } };
+    const done = () => { if (!resolved) { resolved = true; setLoading(false); alog("ready"); } };
 
     // Safety timeout — if onAuthStateChange never fires for any reason,
     // unblock the UI rather than leaving the user stuck on the splash.
-    const timeout = setTimeout(() => { console.warn("[auth] safety timeout (3s) — forcing ready"); done(); }, 3000);
+    const timeout = setTimeout(() => { awarn("safety timeout (3s) — forcing ready"); done(); }, 3000);
 
     let subscription = null;
     try {
       const result = supabase.auth.onAuthStateChange(async (event, session) => {
-        console.log("[auth] event:", event, "user:", session?.user?.id || "none");
+        alog("event:", event, "user:", session?.user?.id || "none");
         const u = session?.user || null;
         setUser(u);
 
         if (event === "INITIAL_SESSION") {
           if (u) {
-            console.log("[auth] session restored for", u.id);
+            alog("session restored for", u.id);
             try { setProfile(await getProfile(u.id)); } catch {}
             // Merge local puzzle state with the server row — picks
             // whichever side has played more games and takes the
             // higher streak. Safe to fire-and-forget.
             syncPuzzleProgressFromServer(u.id).catch(() => {});
           } else {
-            console.log("[auth] no stored session — user is logged out");
+            alog("no stored session — user is logged out");
           }
         } else if (event === "SIGNED_IN") {
-          console.log("[auth] signed in:", u?.id);
+          alog("signed in:", u?.id);
           if (u) {
             try { setProfile(await getProfile(u.id)); } catch {}
             syncPuzzleProgressFromServer(u.id).catch(() => {});
           }
         } else if (event === "SIGNED_OUT") {
-          console.log("[auth] signed out");
+          alog("signed out");
           setProfile(null);
         }
         // Always release the loading gate after handling any auth event.
@@ -72,7 +75,7 @@ export default function AuthProvider({ children }) {
       });
       subscription = result?.data?.subscription;
     } catch (e) {
-      console.warn("[auth] listener failed:", e);
+      awarn("listener failed:", e);
       clearTimeout(timeout);
       done();
     }

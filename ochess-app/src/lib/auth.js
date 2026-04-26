@@ -80,6 +80,40 @@ export async function updateProfile(userId, updates) {
   return data;
 }
 
+/**
+ * Upload an avatar image to Supabase Storage and return the public URL.
+ *
+ * Uses a single `avatars` bucket keyed by user id so each user can
+ * only see / write their own files (the bucket should have RLS that
+ * restricts inserts to `auth.uid()::text = (storage.foldername(name))[1]`).
+ *
+ * @param {string} userId
+ * @param {File} file
+ * @returns {Promise<string>} public URL of the uploaded image
+ */
+export async function uploadAvatar(userId, file) {
+  if (!supabase) throw new Error("Online features not configured");
+  if (!file) throw new Error("No file selected");
+  const allowed = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+  if (!allowed.includes(file.type)) throw new Error("Avatar must be a PNG, JPEG, WEBP, or GIF image");
+  const MAX_SIZE = 4 * 1024 * 1024;
+  if (file.size > MAX_SIZE) throw new Error("Avatar must be under 4 MB");
+
+  const ext = (file.name.split(".").pop() || "png").toLowerCase().replace(/[^a-z0-9]/g, "") || "png";
+  const path = `${userId}/${Date.now()}.${ext}`;
+  const { error: uploadErr } = await supabase.storage
+    .from("avatars")
+    .upload(path, file, { cacheControl: "3600", upsert: true, contentType: file.type });
+  if (uploadErr) throw new Error(uploadErr.message || "Failed to upload avatar");
+
+  const { data } = supabase.storage.from("avatars").getPublicUrl(path);
+  const url = data?.publicUrl;
+  if (!url) throw new Error("Couldn't read public URL for the uploaded image");
+
+  await updateProfile(userId, { avatar_url: url });
+  return url;
+}
+
 export async function getRatings(userId) {
   if (!supabase) return [];
   try {

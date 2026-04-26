@@ -10,9 +10,9 @@
  */
 
 import { supabase } from "./supabase";
+import { makeLogger } from "./log";
 
-const log = (...args) => console.log("[challenge]", ...args);
-const logErr = (...args) => console.error("[challenge]", ...args);
+const { log, error: logErr } = makeLogger("challenge");
 
 const EXPIRE_MINUTES = 15;
 

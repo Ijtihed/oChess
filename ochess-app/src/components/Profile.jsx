@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import ReactDOM from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
-import { updateProfile, getRatings, getRecentGames, signOut } from "../lib/auth";
+import { updateProfile, uploadAvatar, getRatings, getRecentGames, signOut } from "../lib/auth";
 import { isOnline } from "../lib/supabase";
 import { loadPuzzleRating } from "../lib/puzzles";
 import { load as loadPrefs } from "../lib/board-prefs";
@@ -99,7 +99,10 @@ function CountrySelect({ value, onChange, disabled }) {
         )}
       </button>
       {open && ReactDOM.createPortal(
-        <div ref={dropRef} style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, zIndex: 9990 }}
+        // 1000 keeps the dropdown above the page chrome (navbar=50,
+        // board picker=60) but below modals (9000+) and the fatal
+        // error overlay so a loading screen still covers it.
+        <div ref={dropRef} style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, zIndex: 1000 }}
           className="bg-surface-container border border-white/[0.08] shadow-2xl max-h-[260px] flex flex-col">
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search..."
             autoFocus
@@ -135,6 +138,25 @@ export default function Profile() {
   const [saveMsg, setSaveMsg] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
   const [copiedLink, setCopiedLink] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarError, setAvatarError] = useState(null);
+  const avatarFileRef = useRef(null);
+
+  const handleAvatarChange = useCallback(async (file) => {
+    if (!authUser || !file) return;
+    setAvatarUploading(true);
+    setAvatarError(null);
+    try {
+      await uploadAvatar(authUser.id, file);
+      await refreshProfile(authUser.id);
+    } catch (err) {
+      setAvatarError(err.message || "Couldn't upload that image");
+      setTimeout(() => setAvatarError(null), 5000);
+    } finally {
+      setAvatarUploading(false);
+      if (avatarFileRef.current) avatarFileRef.current.value = "";
+    }
+  }, [authUser, refreshProfile]);
 
   const puzzleRating = useMemo(() => loadPuzzleRating(), []);
   const puzzleStats = useMemo(() => getPuzzleStats(), []);
@@ -215,13 +237,29 @@ export default function Profile() {
       <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-6 sm:py-10">
         {/* Header */}
         <div className="anim-fade-up flex items-center gap-4 sm:gap-5 mb-6" style={{ "--delay": "0.05s" }}>
-          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-surface-high flex items-center justify-center shrink-0">
+          <div className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-surface-high flex items-center justify-center shrink-0 group">
             {profile?.avatar_url ? (
-              <img src={profile.avatar_url} alt="" className="w-full h-full rounded-full object-cover" />
+              <img src={profile.avatar_url} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
             ) : (
               <span className="font-headline text-2xl sm:text-3xl font-bold text-on-surface-variant/70 uppercase">
                 {userName[0]}
               </span>
+            )}
+            {isLoggedIn && isOnline() && (
+              <>
+                <input ref={avatarFileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+                  className="hidden"
+                  onChange={(e) => handleAvatarChange(e.target.files?.[0])} />
+                <button onClick={() => avatarFileRef.current?.click()} disabled={avatarUploading}
+                  className="absolute inset-0 rounded-full flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity disabled:opacity-100"
+                  aria-label="Change avatar">
+                  {avatarUploading ? (
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <span className="text-[9px] font-headline font-bold uppercase tracking-widest text-white">Change</span>
+                  )}
+                </button>
+              </>
             )}
           </div>
           <div className="flex-1 min-w-0">
@@ -230,6 +268,7 @@ export default function Profile() {
               {isLoggedIn ? (profile?.username ? <a href={`/u/${profile.username}`} className="hover:text-primary transition-colors">@{profile.username}</a> : authUser.email) : "Guest account"}
               {profile?.country && (() => { const c = COUNTRIES.find((x) => x.name === profile.country); return ` · ${c?.flag || ""} ${profile.country}`; })()}
             </p>
+            {avatarError && <p className="text-[11px] text-error mt-1">{avatarError}</p>}
             {profile?.bio && <p className="text-[12px] text-on-surface-variant/50 mt-1 line-clamp-2">{profile.bio}</p>}
             {(profile?.lichess_username || profile?.chesscom_username) && (
               <div className="flex gap-3 mt-1.5">
