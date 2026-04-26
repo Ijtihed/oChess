@@ -15,13 +15,22 @@ export default function BoardStylePicker() {
 
   useEffect(() => {
     if (!open) return;
-    const handler = (e) => {
+    const outside = (e) => {
       if (panelRef.current && !panelRef.current.contains(e.target)) {
         handleCancel();
       }
     };
-    setTimeout(() => document.addEventListener("mousedown", handler), 0);
-    return () => document.removeEventListener("mousedown", handler);
+    const onKey = (e) => { if (e.key === "Escape") handleCancel(); };
+    // pointerdown matches the rest of the app (modal dismissals,
+    // navbar search) so touch + pen + mouse all behave identically.
+    const id = setTimeout(() => document.addEventListener("pointerdown", outside), 0);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(id);
+      document.removeEventListener("pointerdown", outside);
+      window.removeEventListener("keydown", onKey);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, original]);
 
   const handleOpen = () => {

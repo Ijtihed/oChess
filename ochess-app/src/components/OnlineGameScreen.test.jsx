@@ -1,5 +1,33 @@
 import { describe, it, expect } from "vitest";
-import { computeGameOver } from "./OnlineGameScreen";
+import { computeGameOver, normalizeChat } from "./OnlineGameScreen";
+
+describe("normalizeChat", () => {
+  const me = "user-me";
+  const opp = "user-opp";
+
+  it("preserves messages stored with explicit user ids", () => {
+    expect(normalizeChat({ from: me, text: "hi" }, opp, me).fromId).toBe(me);
+    expect(normalizeChat({ from: opp, text: "hi" }, opp, me).fromId).toBe(opp);
+  });
+
+  it("rehydrates legacy 'opp' senders to the actual opponent id", () => {
+    // Older rows persisted opponent messages as { from: "opp" }.
+    // Hard-refreshing should still attribute them to the opponent.
+    const out = normalizeChat({ from: "opp", text: "hi" }, opp, me);
+    expect(out.fromId).toBe(opp);
+  });
+
+  it("rehydrates legacy 'you' senders to my id", () => {
+    const out = normalizeChat({ from: "you", text: "hi" }, opp, me);
+    expect(out.fromId).toBe(me);
+  });
+
+  it("falls back to a sensible name when one isn't stored", () => {
+    expect(normalizeChat({ from: me, text: "hi" }, opp, me).name).toBe("You");
+    expect(normalizeChat({ from: opp, text: "hi" }, opp, me).name).toBe("Opponent");
+    expect(normalizeChat({ from: opp, text: "hi", name: "Bob" }, opp, me).name).toBe("Bob");
+  });
+});
 
 describe("computeGameOver", () => {
   it("maps a 1-0 result to a win for white and a loss for black", () => {

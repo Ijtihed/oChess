@@ -22,6 +22,27 @@ function moderateChat(text) {
 }
 
 /**
+ * Normalize a stored chat row into the in-memory shape used by the UI.
+ *
+ * Older rows persisted opponent messages as `{from: "opp"}` because
+ * the receiver didn't store the sender's user_id. New rows store the
+ * actual user_id (or `null` if it couldn't be determined). Either
+ * shape round-trips to a stable `fromId` that equals one of the two
+ * participants — so `fromId === authUserId` is the only thing the
+ * renderer needs to ask.
+ */
+export function normalizeChat(stored, opponentId, myId) {
+  let fromId = stored.from;
+  if (fromId === "opp" || fromId === "them") fromId = opponentId || null;
+  if (fromId === "you") fromId = myId || null;
+  return {
+    fromId,
+    text: stored.text,
+    name: stored.name || (fromId === myId ? "You" : "Opponent"),
+  };
+}
+
+/**
  * Map a chess result + the local player's color to a UI outcome.
  *
  * Decisive games (`1-0`, `0-1`) map to `won: true` for the winning
@@ -240,11 +261,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       clock.restore(wTime, bTime);
     }
     if (gameData.chat && Array.isArray(gameData.chat) && gameData.chat.length > 0) {
-      setChatMessages(gameData.chat.map((m) => ({
-        from: m.from === authUser?.id ? "you" : "them",
-        text: m.text,
-        name: m.name || "Player",
-      })));
+      setChatMessages(gameData.chat.map((m) => normalizeChat(m, opponentId, authUser?.id)));
     }
 
     const validPlayers = new Set([gameData.white_id, gameData.black_id].filter(Boolean));
@@ -293,11 +310,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
 
       // Sync chat
       if (row.chat && Array.isArray(row.chat) && row.chat.length > 0) {
-        const restored = row.chat.map((m) => ({
-          from: m.from === authUserIdRef.current ? "you" : "them",
-          text: m.text,
-          name: m.name || (m.from === authUserIdRef.current ? "You" : "Opponent"),
-        }));
+        const restored = row.chat.map((m) => normalizeChat(m, opponentId, authUserIdRef.current));
         setChatMessages((prev) => prev.length > restored.length ? prev : restored);
       }
 
@@ -362,7 +375,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       onChat: ({ userId, text, name }) => {
         if (!validPlayers.has(userId)) return;
         const fromMe = userId === authUserIdRef.current;
-        setChatMessages((prev) => [...prev.slice(-50), { from: fromMe ? "you" : "them", text, name: name || (fromMe ? "You" : "Opponent") }]);
+        setChatMessages((prev) => [...prev.slice(-50), { fromId: userId, text, name: name || (fromMe ? "You" : "Opponent") }]);
         setTimeout(() => chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }), 50);
       },
       onRematchOffer: ({ userId }) => {
@@ -515,10 +528,12 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
     const text = moderateChat(chatInput.trim());
     if (!text) { setChatInput(""); return; }
     channelRef.current?.sendChat(authUserIdRef.current, text, myDisplayName);
-    const newMsg = { from: "you", text, name: myDisplayName };
+    const newMsg = { fromId: authUserIdRef.current, text, name: myDisplayName };
     setChatMessages((prev) => {
       const updated = [...prev.slice(-50), newMsg];
-      saveGameState({ chat: updated.map((m) => ({ from: m.from === "you" ? authUserIdRef.current : "opp", text: m.text, name: m.name || m.from })) });
+      // Persist with stable user ids so a hard-refresh by either
+      // player rehydrates each message under the correct sender.
+      saveGameState({ chat: updated.map((m) => ({ from: m.fromId, text: m.text, name: m.name })) });
       return updated;
     });
     setChatInput("");
@@ -761,12 +776,15 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
               </div>
               <div ref={chatRef} className="max-h-[140px] overflow-y-auto p-2.5 space-y-1.5">
                 {chatMessages.length === 0 && <p className="text-[11px] text-on-surface-variant/20 italic">Say hello...</p>}
-                {chatMessages.map((msg, i) => (
-                  <p key={i} className={`text-[11px] leading-relaxed break-words ${msg.from === "you" ? "text-primary/70" : "text-on-surface-variant/60"}`}>
-                    <span className="font-bold text-[10px]">{msg.from === "you" ? myDisplayName : opponentName}: </span>
-                    {msg.text}
-                  </p>
-                ))}
+                {chatMessages.map((msg, i) => {
+                  const isMe = msg.fromId === authUser?.id;
+                  return (
+                    <p key={i} className={`text-[11px] leading-relaxed break-words ${isMe ? "text-primary/70" : "text-on-surface-variant/60"}`}>
+                      <span className="font-bold text-[10px]">{isMe ? myDisplayName : opponentName}: </span>
+                      {msg.text}
+                    </p>
+                  );
+                })}
               </div>
               <div className="flex border-t border-white/[0.03]">
                 <input value={chatInput} onChange={(e) => setChatInput(e.target.value)}

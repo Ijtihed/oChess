@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import SocialPanel from "./SocialPanel";
 import { load as loadPrefs, getTheme } from "../lib/board-prefs";
+import { isBotSupportedVariant } from "../lib/variants";
 
 const PLAYABLE = [
   {
@@ -198,8 +199,10 @@ export default function VariantsPage() {
   const [selectedColor, setSelectedColor] = useState("w");
   const [showComingSoon, setShowComingSoon] = useState(false);
 
+  const botSupported = selectedVariant ? isBotSupportedVariant(selectedVariant) : true;
+
   const startGame = () => {
-    if (!selectedVariant) return;
+    if (!selectedVariant || !botSupported) return;
     const bot = BOTS[selectedBot];
     const color = selectedColor === "random" ? (Math.random() < 0.5 ? "w" : "b") : selectedColor;
     navigate("/variant-game", {
@@ -283,12 +286,20 @@ export default function VariantsPage() {
                 <h3 className="font-headline text-sm font-bold uppercase tracking-widest text-primary/70">
                   {PLAYABLE.find((v) => v.id === selectedVariant)?.name}
                 </h3>
+                {!botSupported && (
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400/90 leading-relaxed">
+                    The bot can't play this variant yet — its rules are too far from standard
+                    chess for the engine to handle. Challenge a friend with the link tool on the
+                    Play page instead.
+                  </div>
+                )}
                 <div>
                   <label className="text-[10px] text-on-surface-variant/30 block mb-1.5">Opponent</label>
                   <div className="grid grid-cols-3 gap-1">
                     {BOTS.map((bot, i) => (
                       <button key={i} onClick={() => setSelectedBot(i)}
-                        className={`py-2 px-1 text-center transition-colors ${selectedBot === i ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>
+                        disabled={!botSupported}
+                        className={`py-2 px-1 text-center transition-colors disabled:opacity-30 disabled:pointer-events-none ${selectedBot === i ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>
                         <span className="font-headline text-[10px] font-bold block">{bot.name}</span>
                         <span className="text-[9px] opacity-60">{bot.rating}</span>
                       </button>
@@ -300,14 +311,22 @@ export default function VariantsPage() {
                   <div className="flex gap-1">
                     {[{ id: "w", label: "White" }, { id: "b", label: "Black" }, { id: "random", label: "Random" }].map((c) => (
                       <button key={c.id} onClick={() => setSelectedColor(c.id)}
-                        className={`flex-1 py-2 font-headline text-[10px] font-bold uppercase transition-colors ${selectedColor === c.id ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>{c.label}</button>
+                        disabled={!botSupported}
+                        className={`flex-1 py-2 font-headline text-[10px] font-bold uppercase transition-colors disabled:opacity-30 disabled:pointer-events-none ${selectedColor === c.id ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>{c.label}</button>
                     ))}
                   </div>
                 </div>
-                <button onClick={startGame}
-                  className="w-full py-3 bg-primary text-on-primary font-headline text-sm font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.97]">
-                  Play
-                </button>
+                {botSupported ? (
+                  <button onClick={startGame}
+                    className="w-full py-3 bg-primary text-on-primary font-headline text-sm font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.97]">
+                    Play
+                  </button>
+                ) : (
+                  <button onClick={() => navigate("/create-challenge")}
+                    className="w-full py-3 bg-surface-low border border-primary/20 font-headline text-sm font-bold uppercase tracking-wide text-primary/70 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.97]">
+                    Challenge a friend
+                  </button>
+                )}
               </div>
             </div>
           )}

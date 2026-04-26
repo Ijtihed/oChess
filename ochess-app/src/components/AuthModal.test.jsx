@@ -12,7 +12,35 @@ vi.mock("../lib/supabase", () => ({
   isOnline: () => true,
 }));
 
-import AuthModal from "./AuthModal";
+import AuthModal, { validateUsername } from "./AuthModal";
+
+describe("validateUsername", () => {
+  it("accepts simple lowercase usernames", () => {
+    expect(validateUsername("alice")).toBeNull();
+    expect(validateUsername("alice_42")).toBeNull();
+    expect(validateUsername("a1b2c3")).toBeNull();
+  });
+  it("requires a non-empty value", () => {
+    expect(validateUsername("")).toMatch(/required/i);
+    expect(validateUsername("   ")).toMatch(/required/i);
+  });
+  it("rejects names that are too short", () => {
+    expect(validateUsername("ab")).toMatch(/at least 3/i);
+  });
+  it("rejects names that are too long", () => {
+    expect(validateUsername("a".repeat(25))).toMatch(/24/);
+  });
+  it("requires the first character to be a lowercase letter", () => {
+    expect(validateUsername("9abc")).toMatch(/start with/i);
+    expect(validateUsername("_alice")).toMatch(/start with/i);
+    expect(validateUsername("Alice")).toMatch(/start with|lowercase/i);
+  });
+  it("rejects forbidden characters", () => {
+    expect(validateUsername("alice-bob")).toMatch(/lowercase|numbers/i);
+    expect(validateUsername("alice bob")).toMatch(/lowercase|numbers/i);
+    expect(validateUsername("alice!")).toMatch(/lowercase|numbers/i);
+  });
+});
 
 describe("AuthModal", () => {
   beforeEach(() => {

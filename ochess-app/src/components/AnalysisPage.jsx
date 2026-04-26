@@ -4,7 +4,7 @@ import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import InteractiveBoard from "./InteractiveBoard";
 import SocialPanel from "./SocialPanel";
-import { evaluate, init as initEngine } from "../lib/engine";
+import { evaluate, init as initEngine, destroy as destroyEngine } from "../lib/engine";
 import { getOpeningName, resetOpeningCache, isBookMove } from "../lib/openings";
 import { classifyMove } from "../lib/move-classify";
 import { playMoveSound } from "../lib/sounds";
@@ -230,6 +230,13 @@ export default function AnalysisPage() {
     }
   }, [history.length]);
 
+  // Tear down the Stockfish worker when the page unmounts. Without
+  // this the worker keeps running across route changes and racks up
+  // memory and CPU on long sessions.
+  useEffect(() => () => {
+    try { destroyEngine(); } catch {}
+  }, []);
+
   const loadGame = useCallback((pgn, customStartFen) => {
     const g = new Chess();
     if (customStartFen) {
@@ -276,7 +283,18 @@ export default function AnalysisPage() {
     return true;
   }, []);
 
+  const urlImportAbortRef = useRef(null);
+
+  const cancelUrlImport = useCallback(() => {
+    urlImportAbortRef.current?.abort();
+    urlImportAbortRef.current = null;
+    setUrlLoading(false);
+  }, []);
+
   const importFromUrl = useCallback(async (url) => {
+    cancelUrlImport();
+    const ac = new AbortController();
+    urlImportAbortRef.current = ac;
     setUrlLoading(true);
     setUrlError(null);
     try {
@@ -288,6 +306,7 @@ export default function AnalysisPage() {
         const id = lichessMatch[1].slice(0, 8);
         const res = await fetch(`https://lichess.org/game/export/${id}`, {
           headers: { Accept: "application/x-chess-pgn" },
+          signal: ac.signal,
         });
         if (!res.ok) throw new Error(`Lichess returned ${res.status}`);
         pgn = await res.text();
@@ -297,13 +316,13 @@ export default function AnalysisPage() {
         const chesscomMatch = u.match(/chess\.com\/(?:game\/)?(?:live|daily|computer)\/(\d+)/);
         if (chesscomMatch) {
           const id = chesscomMatch[1];
-          const res = await fetch(`https://api.chess.com/pub/game/${id}`);
+          const res = await fetch(`https://api.chess.com/pub/game/${id}`, { signal: ac.signal });
           if (res.ok) {
             const data = await res.json();
             pgn = data.pgn;
           }
           if (!pgn) {
-            const cbRes = await fetch(`https://www.chess.com/callback/live/game/${id}`);
+            const cbRes = await fetch(`https://www.chess.com/callback/live/game/${id}`, { signal: ac.signal });
             if (cbRes.ok) {
               const cbData = await cbRes.json();
               pgn = cbData.pgn || cbData.game?.pgn;
@@ -318,11 +337,16 @@ export default function AnalysisPage() {
       if (!ok) throw new Error("Failed to parse the PGN from this game.");
       setUrlInput("");
     } catch (err) {
-      setUrlError(err.message || "Import failed");
+      if (err.name === "AbortError") {
+        setUrlError(null);
+      } else {
+        setUrlError(err.message || "Import failed");
+      }
     } finally {
       setUrlLoading(false);
+      urlImportAbortRef.current = null;
     }
-  }, [loadGame]);
+  }, [loadGame, cancelUrlImport]);
 
   const cancelImport = useCallback(() => {
     importAbortRef.current?.abort();
@@ -521,29 +545,43 @@ export default function AnalysisPage() {
 
   const mat = useMemo(() => materialCount(fen), [fen]);
 
+  // Stockfish UCI scores are reported from the side-to-move's POV.
+  // Convert to white-relative so the eval bar / label always reads
+  // "positive = white winning, negative = black winning" regardless
+  // of whose turn it is.
+  const whiteRelEval = useMemo(() => {
+    if (!posEval) return null;
+    const sideToMove = (fen.split(" ")[1] || "w");
+    const sign = sideToMove === "w" ? 1 : -1;
+    return {
+      cp: posEval.eval_cp !== null ? sign * posEval.eval_cp : null,
+      mate: posEval.eval_mate !== null ? sign * posEval.eval_mate : null,
+    };
+  }, [posEval, fen]);
+
   const evalLabel = useMemo(() => {
-    if (!posEval) return evalLoading ? "..." : "?";
-    if (posEval.eval_mate !== null) {
-      const sign = posEval.eval_mate > 0 ? "+" : "-";
-      return `${sign}M${Math.abs(posEval.eval_mate)}`;
+    if (!whiteRelEval) return evalLoading ? "..." : "?";
+    if (whiteRelEval.mate !== null) {
+      const sign = whiteRelEval.mate > 0 ? "+" : "-";
+      return `${sign}M${Math.abs(whiteRelEval.mate)}`;
     }
-    if (posEval.eval_cp !== null) {
-      const p = posEval.eval_cp / 100;
+    if (whiteRelEval.cp !== null) {
+      const p = whiteRelEval.cp / 100;
       if (Math.abs(p) < 0.15) return "0.0";
       return (p > 0 ? "+" : "") + p.toFixed(1);
     }
     return "?";
-  }, [posEval, evalLoading]);
+  }, [whiteRelEval, evalLoading]);
 
   const evalBarPct = useMemo(() => {
-    if (!posEval) return 50;
-    if (posEval.eval_mate !== null) return posEval.eval_mate > 0 ? 96 : 4;
-    if (posEval.eval_cp !== null) {
-      const clamped = Math.max(-600, Math.min(600, posEval.eval_cp));
+    if (!whiteRelEval) return 50;
+    if (whiteRelEval.mate !== null) return whiteRelEval.mate > 0 ? 96 : 4;
+    if (whiteRelEval.cp !== null) {
+      const clamped = Math.max(-600, Math.min(600, whiteRelEval.cp));
       return 50 + (clamped / 600) * 46;
     }
     return 50;
-  }, [posEval]);
+  }, [whiteRelEval]);
 
   const highlightSquares = useMemo(() => {
     const sq = {};

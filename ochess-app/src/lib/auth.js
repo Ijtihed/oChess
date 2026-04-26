@@ -58,7 +58,10 @@ export async function getProfileByUsername(username) {
 }
 
 export async function updateProfile(userId, updates) {
-  if (!supabase) return null;
+  // Refuse silently-succeeding writes when there is no backend. Without
+  // this guard the UI would show "Saved!" while the changes vanished
+  // on the next page load.
+  if (!supabase) throw new Error("Online features not configured");
   const clean = {};
   for (const [k, v] of Object.entries(updates)) {
     if (v !== undefined) clean[k] = v;

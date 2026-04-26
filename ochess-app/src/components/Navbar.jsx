@@ -40,12 +40,23 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
     }, 350);
   }, [user]);
 
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchResults([]);
+  }, []);
+
   useEffect(() => {
     if (!searchOpen) return;
-    const handler = (e) => { if (searchRef.current && !searchRef.current.contains(e.target)) { setSearchOpen(false); setSearchQuery(""); setSearchResults([]); } };
+    const handler = (e) => { if (searchRef.current && !searchRef.current.contains(e.target)) closeSearch(); };
+    const onKey = (e) => { if (e.key === "Escape") closeSearch(); };
     document.addEventListener("pointerdown", handler);
-    return () => document.removeEventListener("pointerdown", handler);
-  }, [searchOpen]);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", handler);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [searchOpen, closeSearch]);
 
   // Close the mobile menu when the user taps anywhere outside of the
   // navbar element itself (the menu lives inside <nav>, so any pointer
@@ -203,6 +214,37 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
       {/* Mobile menu */}
       {mobileOpen && (
         <div className="menu-enter md:hidden bg-surface-lowest/95 backdrop-blur-xl border-t border-outline-variant/10 px-5 pb-5 pt-3">
+          {isLoggedIn && (
+            <div className="mb-3">
+              <input value={searchQuery}
+                onChange={(e) => handleSearchInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") closeSearch(); }}
+                placeholder="Search players..."
+                aria-label="Search players"
+                className="w-full bg-surface-low border border-white/[0.08] px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40" />
+              {searchResults.length > 0 && (
+                <div className="mt-1 bg-surface-container border border-white/[0.08] max-h-[180px] overflow-y-auto">
+                  {searchResults.map((u) => (
+                    <button key={u.id}
+                      onClick={() => { navigate(`/u/${u.username}`); setMobileOpen(false); closeSearch(); }}
+                      className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-surface-high transition-colors">
+                      {u.avatar_url ? (
+                        <img src={u.avatar_url} alt="" className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-6 h-6 rounded-full bg-surface-high flex items-center justify-center">
+                          <span className="text-[8px] font-bold text-on-surface-variant/50 uppercase">{(u.display_name || u.username)?.[0]}</span>
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <span className="text-[12px] font-bold text-on-surface-variant/70 block truncate">{u.display_name || u.username}</span>
+                        <span className="text-[10px] text-on-surface-variant/30">@{u.username}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-1">
             {NAV_LINKS.map((link) => (
               <button

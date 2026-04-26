@@ -589,7 +589,22 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
                     onClick={() => {
                       try {
                         const cards = JSON.parse(localStorage.getItem("ochess_review_cards") || "[]");
-                        cards.push({ id: puzzle.id, fen, type: "puzzle", rating: puzzle.rating, themes: puzzle.themes, ts: Date.now() });
+                        // Save the position the player failed on, plus the
+                        // next correct UCI move so Review can validate it.
+                        const nextUci = puzzle.moves?.[moveIndex];
+                        const answerMove = nextUci && nextUci.length >= 4
+                          ? { from: nextUci.slice(0, 2), to: nextUci.slice(2, 4), promotion: nextUci.length > 4 ? nextUci[4] : undefined }
+                          : null;
+                        cards.push({
+                          id: `${puzzle.id}-${Date.now()}`,
+                          puzzleId: puzzle.id,
+                          fen,
+                          type: "puzzle",
+                          rating: puzzle.rating,
+                          themes: puzzle.themes,
+                          answerMove: answerMove || undefined,
+                          ts: Date.now(),
+                        });
                         localStorage.setItem("ochess_review_cards", JSON.stringify(cards));
                         setSaved(true); setTimeout(() => setSaved(false), 1500);
                       } catch {}

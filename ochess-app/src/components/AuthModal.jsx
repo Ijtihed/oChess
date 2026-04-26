@@ -2,6 +2,28 @@ import { useState, useEffect } from "react";
 import { signUp, signIn, signInWithGoogle, signOut } from "../lib/auth";
 import { isOnline } from "../lib/supabase";
 
+/**
+ * Username rules:
+ * - 3 to 24 characters
+ * - lowercase letters, digits, and underscores only
+ * - must start with a letter
+ *
+ * Mirrors what the Supabase trigger generates for OAuth users so a
+ * manually-chosen username can't conflict with the auto-generated
+ * shape later.
+ */
+export const USERNAME_REGEX = /^[a-z][a-z0-9_]{2,23}$/;
+
+export function validateUsername(raw) {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return "Username is required";
+  if (trimmed.length < 3) return "Username must be at least 3 characters";
+  if (trimmed.length > 24) return "Username must be 24 characters or fewer";
+  if (!/^[a-z]/.test(trimmed)) return "Username must start with a lowercase letter";
+  if (!USERNAME_REGEX.test(trimmed)) return "Use lowercase letters, numbers, and underscores only";
+  return null;
+}
+
 export default function AuthModal({ open, onClose, onGuest, onLogin }) {
   const [tab, setTab] = useState("signin");
   const [email, setEmail] = useState("");
@@ -9,6 +31,7 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
 
   // Lock body scroll while open and close on Escape so the modal
   // behaves like a real overlay (and never leaves the user with a
@@ -30,6 +53,7 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
+    setFieldErrors({});
     setLoading(true);
     try {
       if (!isOnline()) {
@@ -37,9 +61,14 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
         return;
       }
       if (tab === "signup") {
-        if (!username.trim()) throw new Error("Username is required");
-        if (password.length < 6) throw new Error("Password must be at least 6 characters");
-        await signUp(email, password, username.trim());
+        const usernameError = validateUsername(username);
+        const passwordError = password.length < 6 ? "Password must be at least 6 characters" : null;
+        if (usernameError || passwordError) {
+          setFieldErrors({ username: usernameError, password: passwordError });
+          setLoading(false);
+          return;
+        }
+        await signUp(email, password, username.trim().toLowerCase());
         setError(null);
         onLogin?.();
       } else {
@@ -104,13 +133,25 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
 
         <form onSubmit={handleSubmit} className="space-y-3">
           {tab === "signup" && (
-            <input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)}
-              className="w-full bg-surface-low border-b border-outline-variant/20 focus:border-primary px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors" />
+            <div>
+              <input type="text" placeholder="Username" value={username}
+                onChange={(e) => { setUsername(e.target.value.toLowerCase()); if (fieldErrors.username) setFieldErrors((p) => ({ ...p, username: null })); }}
+                autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                aria-invalid={!!fieldErrors.username}
+                className={`w-full bg-surface-low border-b px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors ${fieldErrors.username ? "border-error" : "border-outline-variant/20 focus:border-primary"}`} />
+              {fieldErrors.username && <p className="text-[11px] text-error mt-1">{fieldErrors.username}</p>}
+            </div>
           )}
           <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required
             className="w-full bg-surface-low border-b border-outline-variant/20 focus:border-primary px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors" />
-          <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6}
-            className="w-full bg-surface-low border-b border-outline-variant/20 focus:border-primary px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors" />
+          <div>
+            <input type="password" placeholder="Password" value={password}
+              onChange={(e) => { setPassword(e.target.value); if (fieldErrors.password) setFieldErrors((p) => ({ ...p, password: null })); }}
+              required minLength={6}
+              aria-invalid={!!fieldErrors.password}
+              className={`w-full bg-surface-low border-b px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors ${fieldErrors.password ? "border-error" : "border-outline-variant/20 focus:border-primary"}`} />
+            {fieldErrors.password && <p className="text-[11px] text-error mt-1">{fieldErrors.password}</p>}
+          </div>
           {error && <p className="text-[11px] text-error">{error}</p>}
           <button type="submit" disabled={loading}
             className="w-full bg-primary text-on-primary py-3 font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors mt-2 active:scale-[0.98] disabled:opacity-50">

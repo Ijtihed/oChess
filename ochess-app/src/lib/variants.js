@@ -335,6 +335,23 @@ export const VARIANT_DEFS = {
   },
 };
 
+// Variants the standard `chess.js` + bot engine pair can play without
+// generating illegal moves. Variants outside this set either change
+// the move rules (atomic, antichess, rifle, circe, torpedo) or require
+// information masking (fogOfWar) or asymmetric setup (horde, monster)
+// that the standard engine doesn't model. Their UI shows "bot not
+// available" and asks the player to challenge a friend instead.
+export const BOT_SUPPORTED_VARIANTS = new Set([
+  "chess960",
+  "kingOfTheHill",
+  "threeCheck",
+  "noCastling",
+]);
+
+export function isBotSupportedVariant(variantId) {
+  return BOT_SUPPORTED_VARIANTS.has(variantId);
+}
+
 // ── Game wrapper ──
 
 export function createVariantGame(variantId) {

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 import { getProfile } from "../lib/auth";
+import { syncPuzzleProgressFromServer } from "../lib/puzzle-sync";
 
 const AuthContext = createContext({ user: null, profile: null, loading: true, refreshProfile: async () => {} });
 
@@ -44,12 +45,19 @@ export default function AuthProvider({ children }) {
           if (u) {
             console.log("[auth] session restored for", u.id);
             try { setProfile(await getProfile(u.id)); } catch {}
+            // Merge local puzzle state with the server row — picks
+            // whichever side has played more games and takes the
+            // higher streak. Safe to fire-and-forget.
+            syncPuzzleProgressFromServer(u.id).catch(() => {});
           } else {
             console.log("[auth] no stored session — user is logged out");
           }
         } else if (event === "SIGNED_IN") {
           console.log("[auth] signed in:", u?.id);
-          if (u) try { setProfile(await getProfile(u.id)); } catch {}
+          if (u) {
+            try { setProfile(await getProfile(u.id)); } catch {}
+            syncPuzzleProgressFromServer(u.id).catch(() => {});
+          }
         } else if (event === "SIGNED_OUT") {
           console.log("[auth] signed out");
           setProfile(null);
