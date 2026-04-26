@@ -108,6 +108,8 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
             <div>
               <input value={searchQuery} onChange={(e) => handleSearchInput(e.target.value)} placeholder="Search players..."
                 autoFocus
+                aria-label="Search players"
+                onKeyDown={(e) => { if (e.key === "Escape") closeSearch(); }}
                 className="w-48 bg-surface-low border border-white/[0.08] px-3 py-1.5 text-[12px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40" />
               {searchResults.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-surface-container border border-white/[0.08] shadow-xl z-50 max-h-[240px] overflow-y-auto">
@@ -132,8 +134,10 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
             </div>
           ) : (
             <button onClick={() => setSearchOpen(true)}
+              aria-label="Search players"
+              aria-expanded={searchOpen}
               className="p-2 text-on-surface-variant/40 hover:text-primary transition-colors">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
               </svg>
             </button>

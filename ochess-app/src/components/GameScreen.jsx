@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
 import useClock, { formatTime } from "../hooks/useClock";
-import { getBotMove, getThinkDelay } from "../lib/bot-engine";
+import { getBotMove, getThinkDelay, destroyBotEngines } from "../lib/bot-engine";
 import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, playLowTime, preloadAll } from "../lib/sounds";
 import { explainMove, evaluatePosition } from "../lib/coach";
 import { unlockEval, lockEval } from "../lib/engine";
@@ -278,6 +278,12 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
     }
     const g = gameRef.current;
     if (g.turn() !== playerColor && !g.isGameOver()) doBotMove();
+    // Tear down the JCE + Stockfish workers when leaving the bot
+    // game screen — otherwise they keep running for the rest of the
+    // SPA session and Stockfish in particular holds onto its WASM
+    // heap.
+    return () => { destroyBotEngines(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleMove = useCallback((move) => {

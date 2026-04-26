@@ -162,4 +162,26 @@ function getThinkDelay(level) {
   return 700 + Math.random() * 800;
 }
 
-export { getBotMove, getThinkDelay, BOT_CONFIG };
+/**
+ * Tear down both bot workers (JCE + Stockfish).
+ *
+ * Both modules cache their workers as module-level singletons so a
+ * second bot game can reuse them without paying the WASM init cost
+ * twice. That's fine while the user is in the bot game flow, but the
+ * workers were never released afterwards — leaving Stockfish (multi
+ * MB heap) running for the rest of the SPA session.
+ *
+ * Call this from a `useEffect` cleanup in `GameScreen` so the
+ * workers go away as soon as the user leaves the bot screen.
+ */
+function destroyBotEngines() {
+  try { jceWorker?.terminate(); } catch {}
+  jceWorker = null;
+  jceResolve = null;
+  try { sfWorker?.terminate(); } catch {}
+  sfWorker = null;
+  sfReady = false;
+  sfResolve = null;
+}
+
+export { getBotMove, getThinkDelay, destroyBotEngines, BOT_CONFIG };

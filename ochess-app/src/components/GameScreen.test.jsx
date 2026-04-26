@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 vi.mock("../lib/bot-engine", () => ({
   getBotMove: vi.fn(() => Promise.resolve({ from: "e7", to: "e5", san: "e5" })),
   getThinkDelay: () => 0,
+  destroyBotEngines: vi.fn(),
   BOT_CONFIG: Array.from({ length: 8 }, (_, i) => ({ level: i, name: `Bot${i}`, desc: "d", engine: "random" })),
 }));
 

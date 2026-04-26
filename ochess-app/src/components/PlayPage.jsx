@@ -543,7 +543,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
             </div>
           ) : (
             <div className="p-6 text-center bg-surface-low border border-white/[0.04]">
-              <span className="text-[11px] text-on-surface-variant/20">No open games</span>
+              <span className="text-[11px] text-on-surface-variant/55">No open games</span>
             </div>
           )}
         </div>

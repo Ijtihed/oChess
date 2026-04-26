@@ -215,6 +215,11 @@ create index if not exists idx_games_created on games(created_at desc);
 create index if not exists idx_games_ended on games(ended_at desc);
 create index if not exists idx_ratings_user on ratings(user_id);
 create index if not exists idx_seeks_category on seeks(category, variant);
+-- Composite for findMatch: filters by time_control + variant + a
+-- rating window then orders by created_at. The leading columns line
+-- up with the equality predicates so Postgres can range-scan.
+create index if not exists idx_seeks_match on seeks(time_control, variant, created_at);
+create index if not exists idx_seeks_created on seeks(created_at desc);
 create index if not exists idx_review_next on review_cards(user_id, next_review);
 create index if not exists idx_friendships_user on friendships(user_id, status);
 create index if not exists idx_profiles_username on profiles(username);
@@ -286,11 +291,14 @@ create policy "Players can create own games" on games
 -- Updates only on active rows, only by participants. After a row
 -- transitions to status='completed' it becomes immutable to clients;
 -- glicko2_update is the only path to that final write (security definer).
+-- WITH CHECK enforces that the row is *still* active after the update
+-- so a client cannot transition status='active' -> 'completed' (and
+-- forge result / pgn / rating fields) while bypassing glicko2_update.
 create policy "Players can update own active games" on games
   for update using (
     auth.uid() in (white_id, black_id) and status = 'active'
   ) with check (
-    auth.uid() in (white_id, black_id)
+    auth.uid() in (white_id, black_id) and status = 'active'
   );
 
 -- ── seeks ──
@@ -314,16 +322,29 @@ drop policy if exists "Anyone can view challenges" on challenges;
 drop policy if exists "Auth users can create challenges" on challenges;
 drop policy if exists "Auth users can update challenges" on challenges;
 drop policy if exists "Auth users can update own or accept challenges" on challenges;
+drop policy if exists "Creator can update own challenge" on challenges;
+drop policy if exists "Auth users can mark expired challenges" on challenges;
 drop policy if exists "Creator can delete challenges" on challenges;
+drop policy if exists "Creator can delete own challenge" on challenges;
 create policy "Anyone can view challenges" on challenges
   for select using (true);
 create policy "Auth users can create own challenges" on challenges
   for insert with check (auth.uid() = creator_id);
--- Only the creator can directly update (e.g. mark expired). Acceptance
--- is funneled through accept_challenge() (security definer), which
--- bypasses RLS — so we do NOT permit "anyone where status='waiting'".
+-- Two narrow update paths are allowed directly to clients:
+--   1. The creator can update their own challenge (e.g. cancel).
+--   2. Any authenticated user may flip a stale "waiting" row to
+--      "expired" — needed because non-creator viewers detect expiry
+--      client-side and would otherwise leave dangling rows in the DB.
+-- Acceptance is funneled through accept_challenge() (security definer),
+-- which bypasses RLS, so we do NOT need a "status='waiting'" path here.
 create policy "Creator can update own challenge" on challenges
   for update using (auth.uid() = creator_id) with check (auth.uid() = creator_id);
+create policy "Auth users can mark expired challenges" on challenges
+  for update using (
+    auth.role() = 'authenticated' and status = 'waiting'
+  ) with check (
+    status = 'expired'
+  );
 create policy "Creator can delete own challenge" on challenges
   for delete using (auth.uid() = creator_id);
 
@@ -750,14 +771,78 @@ end;
 $$ language plpgsql security definer;
 grant execute on function glicko2_update(uuid, text, text, text, int) to authenticated;
 
+-- ── create_rematch: atomic rematch creation ──
+-- Two clients hitting Accept at once would otherwise produce two new
+-- `games` rows. This RPC locks the source row, returns an existing
+-- rematch if `rematch_game_id` is already set, and otherwise inserts
+-- a single new row + stamps the link in one transaction.
+create or replace function create_rematch(
+  p_source_game_id uuid,
+  p_user_id uuid
+)
+returns jsonb as $$
+declare
+  v_source record;
+  v_existing_id uuid;
+  v_new_id uuid;
+  v_new_white_id uuid; v_new_black_id uuid;
+  v_new_white_name text; v_new_black_name text;
+  v_new_white_rating float; v_new_black_rating float;
+begin
+  if auth.uid() is null or auth.uid() <> p_user_id then
+    return jsonb_build_object('error', 'Not authenticated');
+  end if;
+
+  select * into v_source from games where id = p_source_game_id for update;
+  if v_source is null then
+    return jsonb_build_object('error', 'Source game not found');
+  end if;
+  if auth.uid() not in (v_source.white_id, v_source.black_id) then
+    return jsonb_build_object('error', 'Not a participant');
+  end if;
+
+  -- Already linked — both clients converge to the same row.
+  if v_source.rematch_game_id is not null then
+    return (select row_to_json(g)::jsonb from games g where g.id = v_source.rematch_game_id);
+  end if;
+
+  -- Swap colors so the player who was Black plays White next, etc.
+  v_new_white_id := v_source.black_id;
+  v_new_black_id := v_source.white_id;
+  v_new_white_name := v_source.black_name;
+  v_new_black_name := v_source.white_name;
+  v_new_white_rating := v_source.black_rating;
+  v_new_black_rating := v_source.white_rating;
+
+  insert into games (
+    white_id, black_id, white_name, black_name, white_rating, black_rating,
+    pgn, time_control, category, variant, is_rated, status
+  ) values (
+    v_new_white_id, v_new_black_id, v_new_white_name, v_new_black_name,
+    v_new_white_rating, v_new_black_rating,
+    '', v_source.time_control, coalesce(v_source.category, 'blitz'),
+    coalesce(v_source.variant, 'standard'), coalesce(v_source.is_rated, false),
+    'active'
+  ) returning id into v_new_id;
+
+  update games set rematch_game_id = v_new_id where id = p_source_game_id;
+
+  return (select row_to_json(g)::jsonb from games g where g.id = v_new_id);
+end;
+$$ language plpgsql security definer;
+grant execute on function create_rematch(uuid, uuid) to authenticated;
+
 -- ── cleanup_stale_seeks: housekeeping (call from a cron job) ──
+-- Restricted to the service_role so a logged-in user can't grief
+-- matchmaking by globally evicting other players' open seeks.
 create or replace function cleanup_stale_seeks()
 returns void as $$
 begin
   delete from seeks where created_at < now() - interval '15 minutes';
 end;
 $$ language plpgsql security definer;
-grant execute on function cleanup_stale_seeks() to authenticated;
+revoke all on function cleanup_stale_seeks() from public, anon, authenticated;
+grant execute on function cleanup_stale_seeks() to service_role;
 
 -- ────────────────────────────────────────────────────────────────
 -- REALTIME
@@ -775,4 +860,49 @@ do $$ begin
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'challenges') then
     alter publication supabase_realtime add table challenges;
   end if;
+  -- friendships: needed so accept / decline propagates instantly to
+  -- the other side instead of waiting for the SocialPanel poll.
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'friendships') then
+    alter publication supabase_realtime add table friendships;
+  end if;
 end $$;
+
+-- ────────────────────────────────────────────────────────────────
+-- STORAGE
+-- The `avatars` bucket backs uploadAvatar() in the frontend. The
+-- bucket is public-read so <img> tags can render avatars without a
+-- signed URL, and writes are restricted to objects whose first path
+-- segment matches the uploader's auth.uid().
+-- ────────────────────────────────────────────────────────────────
+insert into storage.buckets (id, name, public)
+values ('avatars', 'avatars', true)
+on conflict (id) do update set public = excluded.public;
+
+drop policy if exists "Avatars are publicly readable" on storage.objects;
+drop policy if exists "Users can upload their own avatar" on storage.objects;
+drop policy if exists "Users can update their own avatar" on storage.objects;
+drop policy if exists "Users can delete their own avatar" on storage.objects;
+
+create policy "Avatars are publicly readable" on storage.objects
+  for select using (bucket_id = 'avatars');
+
+create policy "Users can upload their own avatar" on storage.objects
+  for insert with check (
+    bucket_id = 'avatars'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+create policy "Users can update their own avatar" on storage.objects
+  for update using (
+    bucket_id = 'avatars'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  ) with check (
+    bucket_id = 'avatars'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+create policy "Users can delete their own avatar" on storage.objects
+  for delete using (
+    bucket_id = 'avatars'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );

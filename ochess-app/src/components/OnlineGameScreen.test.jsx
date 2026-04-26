@@ -1,5 +1,65 @@
 import { describe, it, expect } from "vitest";
-import { computeGameOver, normalizeChat } from "./OnlineGameScreen";
+import { computeGameOver, normalizeChat, reconcileClockState } from "./OnlineGameScreen";
+
+describe("reconcileClockState", () => {
+  it("subtracts elapsed time from the active side", () => {
+    const out = reconcileClockState({
+      whiteMs: 60_000, blackMs: 60_000,
+      lastMoveAt: new Date("2026-04-26T00:00:00Z"),
+      turn: "w",
+      now: new Date("2026-04-26T00:00:30Z").getTime(),
+    });
+    expect(out.activeSide).toBe("w");
+    expect(out.white).toBeCloseTo(30_000);
+    expect(out.black).toBe(60_000);
+  });
+
+  it("never drives an active clock below zero", () => {
+    const out = reconcileClockState({
+      whiteMs: 1_000, blackMs: 60_000,
+      lastMoveAt: new Date("2026-04-26T00:00:00Z"),
+      turn: "w",
+      now: new Date("2026-04-26T00:01:00Z").getTime(),
+    });
+    expect(out.white).toBe(0);
+  });
+
+  it("caps the elapsed deduction at 5 minutes by default so a stale last_move_at can't insta-time out", () => {
+    // Closing the laptop overnight should not show the user back on
+    // a flag-fall position when they reopen it.
+    const out = reconcileClockState({
+      whiteMs: 60_000, blackMs: 60_000,
+      lastMoveAt: new Date("2026-04-26T00:00:00Z"),
+      turn: "w",
+      now: new Date("2026-04-27T00:00:00Z").getTime(),
+    });
+    expect(out.white).toBe(0); // would be very negative without cap
+    // The black clock is untouched — only the active side burns time.
+    expect(out.black).toBe(60_000);
+  });
+
+  it("falls back to the in-game turn when the row didn't store one", () => {
+    const out = reconcileClockState({
+      whiteMs: 30_000, blackMs: 30_000,
+      lastMoveAt: null,
+      turn: null,
+      fallbackTurn: "b",
+    });
+    expect(out.activeSide).toBe("b");
+    expect(out.white).toBe(30_000);
+    expect(out.black).toBe(30_000);
+  });
+
+  it("ignores nonsense numeric inputs", () => {
+    const out = reconcileClockState({
+      whiteMs: undefined, blackMs: NaN,
+      lastMoveAt: null,
+      turn: "w",
+    });
+    expect(out.white).toBe(0);
+    expect(out.black).toBe(0);
+  });
+});
 
 describe("normalizeChat", () => {
   const me = "user-me";

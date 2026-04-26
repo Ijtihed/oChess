@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import { Chess } from "chess.js";
 import LivePulse from "./LivePulse";
@@ -89,6 +90,7 @@ function DailyBoard({ puzzle }) {
 }
 
 export default function Dashboard({ user, onNavigate }) {
+  const navigate = useNavigate();
   const pr = useMemo(() => loadPuzzleRating(), []);
   const ps = useMemo(() => getPuzzleStats(), []);
   const streak = useMemo(() => getStreak(), []);
@@ -251,11 +253,22 @@ export default function Dashboard({ user, onNavigate }) {
             <button
               onClick={() => {
                 if (dailySolved && dailyPuzzle?.fen) {
-                  const { Chess } = require("chess.js");
-                  const g = new Chess(dailyPuzzle.fen);
-                  if (dailyPuzzle.moves) { for (const uci of dailyPuzzle.moves) { try { g.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined }); } catch { break; } } }
-                  onNavigate("analysis");
-                  setTimeout(() => { window.location.href = `/analysis?fen=${encodeURIComponent(dailyPuzzle.fen)}`; }, 0);
+                  // Apply the puzzle's setup move(s) so analysis opens
+                  // on the position the user just solved, not the
+                  // raw upstream FEN. Stay in the SPA (no full reload)
+                  // by using react-router's navigate with a search param.
+                  let fen = dailyPuzzle.fen;
+                  try {
+                    const g = new Chess(dailyPuzzle.fen);
+                    if (Array.isArray(dailyPuzzle.moves)) {
+                      for (const uci of dailyPuzzle.moves) {
+                        try { g.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined }); }
+                        catch { break; }
+                      }
+                    }
+                    fen = g.fen();
+                  } catch {}
+                  navigate(`/analysis?fen=${encodeURIComponent(fen)}`);
                 } else {
                   onNavigate(dailyPuzzle ? `puzzles/${dailyPuzzle.id || ""}` : "puzzles");
                 }

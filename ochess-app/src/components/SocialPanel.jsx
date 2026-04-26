@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
-import { isOnline } from "../lib/supabase";
+import { isOnline, supabase } from "../lib/supabase";
 import { getFriends, getPendingRequests, searchUsers, sendFriendRequest, acceptFriendRequest, declineFriendRequest, removeFriend } from "../lib/friends";
 import { makeLogger } from "../lib/log";
 
@@ -73,9 +73,27 @@ export default function SocialPanel() {
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 15000);
+    // Fall back to a slow poll for safety (e.g. realtime publication
+    // disabled on the project), but the channel below is the fast
+    // path for accept/decline/remove on either side of the pair.
+    const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  // Live updates from the friendships table — instant rather than
+  // 30 s polling. Filtering by the current user's id is done on the
+  // RLS layer (see schema.sql); we just refresh on any change.
+  useEffect(() => {
+    if (!user || !supabase) return;
+    const ch = supabase
+      .channel(`friendships:${user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "friendships" }, () => {
+        log("friendships change received");
+        loadData();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [user, loadData]);
 
   const searchTimer = useRef(null);
   const handleSearch = useCallback((q) => {

@@ -89,4 +89,38 @@ describe("AuthModal", () => {
     expect(screen.getAllByText("Sign In").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Create Account").length).toBeGreaterThan(0);
   });
+
+  it("declares dialog semantics for screen readers", () => {
+    const { container } = render(<AuthModal open={true} onClose={() => {}} />);
+    const dialog = container.querySelector("[role='dialog']");
+    expect(dialog).not.toBeNull();
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("aria-labelledby")).toBeTruthy();
+  });
+
+  it("moves focus into the modal after opening", async () => {
+    render(<AuthModal open={true} onClose={() => {}} />);
+    // Focus is moved on the next paint; wait a tick.
+    await new Promise((r) => setTimeout(r, 5));
+    const active = document.activeElement;
+    // The first focusable inside the sheet should now hold focus —
+    // either the close button or the email input depending on tab.
+    expect(active).not.toBe(document.body);
+  });
+
+  it("traps Tab inside the modal (loops to the first element)", async () => {
+    render(<AuthModal open={true} onClose={() => {}} />);
+    await new Promise((r) => setTimeout(r, 5));
+    const dialog = document.querySelector("[role='dialog'] > div:nth-child(2)");
+    const focusables = dialog.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), a[href]'
+    );
+    const last = focusables[focusables.length - 1];
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    // Tab from last should wrap to first (preventDefault + .focus()).
+    const evt = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    window.dispatchEvent(evt);
+    expect(document.activeElement).toBe(focusables[0]);
+  });
 });

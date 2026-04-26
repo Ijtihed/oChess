@@ -4,6 +4,13 @@ import { MemoryRouter } from "react-router-dom";
 
 vi.mock("../lib/supabase", () => ({
   isOnline: () => true,
+  supabase: {
+    channel: () => ({
+      on: function () { return this; },
+      subscribe: function () { return this; },
+    }),
+    removeChannel: vi.fn(),
+  },
 }));
 
 vi.mock("../lib/friends", () => ({

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId, useRef } from "react";
 import { signUp, signIn, signInWithGoogle, signOut } from "../lib/auth";
 import { isOnline } from "../lib/supabase";
 
@@ -33,18 +33,59 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
   const [error, setError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
 
-  // Lock body scroll while open and close on Escape so the modal
-  // behaves like a real overlay (and never leaves the user with a
-  // double-scrolling page underneath).
+  const usernameId = useId();
+  const emailId = useId();
+  const passwordId = useId();
+  const sheetRef = useRef(null);
+  const previouslyFocusedRef = useRef(null);
+
+  // Lock body scroll while open, close on Escape, and trap Tab focus
+  // inside the modal so keyboard users can't tab to the navbar / page
+  // chrome while the dialog is up. Restores focus to whatever the
+  // user was on before opening.
   useEffect(() => {
     if (!open) return;
+    previouslyFocusedRef.current = document.activeElement;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
+
+    // Move focus into the modal on the next paint so the autofocused
+    // first field wins (or the close button if no field is rendered).
+    const t = setTimeout(() => {
+      const sheet = sheetRef.current;
+      if (!sheet) return;
+      const first = sheet.querySelector("input, button, [tabindex]:not([tabindex='-1'])");
+      first?.focus?.();
+    }, 0);
+
+    const focusables = () => {
+      const sheet = sheetRef.current;
+      if (!sheet) return [];
+      return Array.from(sheet.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      ));
+    };
+
+    const onKey = (e) => {
+      if (e.key === "Escape") { onClose?.(); return; }
+      if (e.key !== "Tab") return;
+      const list = focusables();
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
     window.addEventListener("keydown", onKey);
     return () => {
+      clearTimeout(t);
       document.body.style.overflow = prevOverflow;
       window.removeEventListener("keydown", onKey);
+      // Return focus to the trigger that opened us, if it still exists.
+      const prev = previouslyFocusedRef.current;
+      if (prev && typeof prev.focus === "function" && document.contains(prev)) {
+        try { prev.focus(); } catch {}
+      }
     };
   }, [open, onClose]);
 
@@ -100,10 +141,12 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
   };
 
   return (
-    <div className="fixed inset-0 z-[9998] flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-[9998] flex items-end sm:items-center justify-center" onClick={onClose}
+         role="dialog" aria-modal="true" aria-labelledby={`${emailId}-title`}>
       <div className="modal-backdrop-enter absolute inset-0 bg-black/70 backdrop-blur-sm" />
 
-      <div className="modal-sheet-enter relative w-full sm:max-w-sm sm:mx-4 bg-surface-container border-t sm:border border-white/[0.06] p-6 sm:p-7 rounded-t-xl sm:rounded-none max-h-[90dvh] overflow-y-auto"
+      <div ref={sheetRef}
+        className="modal-sheet-enter relative w-full sm:max-w-sm sm:mx-4 bg-surface-container border-t sm:border border-white/[0.06] p-6 sm:p-7 rounded-t-xl sm:rounded-none max-h-[90dvh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose}
           className="absolute top-4 right-4 p-2 text-on-surface-variant/40 hover:text-primary transition-colors active:scale-90"
@@ -113,7 +156,7 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
           </svg>
         </button>
 
-        <h2 className="font-headline text-xl font-extrabold tracking-tighter text-primary mb-1">oChess</h2>
+        <h2 id={`${emailId}-title`} className="font-headline text-xl font-extrabold tracking-tighter text-primary mb-1">oChess</h2>
         <p className="text-[11px] text-on-surface-variant/50 mb-6">Play, learn, compete.</p>
 
         {!isOnline() && (
@@ -134,23 +177,32 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
         <form onSubmit={handleSubmit} className="space-y-3">
           {tab === "signup" && (
             <div>
-              <input type="text" placeholder="Username" value={username}
+              <label htmlFor={usernameId} className="sr-only">Username</label>
+              <input id={usernameId} type="text" placeholder="Username" value={username}
                 onChange={(e) => { setUsername(e.target.value.toLowerCase()); if (fieldErrors.username) setFieldErrors((p) => ({ ...p, username: null })); }}
                 autoCapitalize="none" autoCorrect="off" spellCheck={false}
                 aria-invalid={!!fieldErrors.username}
+                aria-describedby={fieldErrors.username ? `${usernameId}-err` : undefined}
                 className={`w-full bg-surface-low border-b px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors ${fieldErrors.username ? "border-error" : "border-outline-variant/20 focus:border-primary"}`} />
-              {fieldErrors.username && <p className="text-[11px] text-error mt-1">{fieldErrors.username}</p>}
+              {fieldErrors.username && <p id={`${usernameId}-err`} className="text-[11px] text-error mt-1">{fieldErrors.username}</p>}
             </div>
           )}
-          <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required
-            className="w-full bg-surface-low border-b border-outline-variant/20 focus:border-primary px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors" />
           <div>
-            <input type="password" placeholder="Password" value={password}
+            <label htmlFor={emailId} className="sr-only">Email</label>
+            <input id={emailId} type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required
+              autoComplete="email"
+              className="w-full bg-surface-low border-b border-outline-variant/20 focus:border-primary px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors" />
+          </div>
+          <div>
+            <label htmlFor={passwordId} className="sr-only">Password</label>
+            <input id={passwordId} type="password" placeholder="Password" value={password}
               onChange={(e) => { setPassword(e.target.value); if (fieldErrors.password) setFieldErrors((p) => ({ ...p, password: null })); }}
               required minLength={6}
+              autoComplete={tab === "signup" ? "new-password" : "current-password"}
               aria-invalid={!!fieldErrors.password}
+              aria-describedby={fieldErrors.password ? `${passwordId}-err` : undefined}
               className={`w-full bg-surface-low border-b px-3 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/30 outline-none transition-colors ${fieldErrors.password ? "border-error" : "border-outline-variant/20 focus:border-primary"}`} />
-            {fieldErrors.password && <p className="text-[11px] text-error mt-1">{fieldErrors.password}</p>}
+            {fieldErrors.password && <p id={`${passwordId}-err`} className="text-[11px] text-error mt-1">{fieldErrors.password}</p>}
           </div>
           {error && <p className="text-[11px] text-error">{error}</p>}
           <button type="submit" disabled={loading}
@@ -178,7 +230,7 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
           </button>
         </div>
 
-        <p className="text-[10px] text-on-surface-variant/25 mt-4 leading-relaxed">
+        <p className="text-[10px] text-on-surface-variant/55 mt-4 leading-relaxed">
           Guest accounts can play bots, puzzles, analysis, and variants. Create an account to save games, track ratings, play online, and unlock all features.
         </p>
       </div>

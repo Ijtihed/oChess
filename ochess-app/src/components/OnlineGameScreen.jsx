@@ -22,6 +22,34 @@ function moderateChat(text) {
 }
 
 /**
+ * Apply server-stored time-control state to the live clock.
+ *
+ * The active side has the wall-clock time since `last_move_at`
+ * subtracted from it, but the deduction is capped at 5 minutes so a
+ * tab that was closed for hours (or a row with an old / missing
+ * `last_move_at` we somehow didn't notice) cannot land on the page
+ * with a clock already at 0 and immediately fire a bogus timeout.
+ *
+ * Returns `{ white, black, activeSide }` for the caller to feed into
+ * useClock.restore + useClock.start.
+ */
+export function reconcileClockState({ whiteMs, blackMs, lastMoveAt, turn, fallbackTurn, now = Date.now(), maxElapsedMs = 5 * 60 * 1000 }) {
+  const activeSide = turn || fallbackTurn || "w";
+  let white = Number.isFinite(whiteMs) ? whiteMs : 0;
+  let black = Number.isFinite(blackMs) ? blackMs : 0;
+  if (lastMoveAt) {
+    const t = new Date(lastMoveAt).getTime();
+    if (Number.isFinite(t)) {
+      const raw = now - t;
+      const elapsed = Math.max(0, Math.min(raw, maxElapsedMs));
+      if (activeSide === "w") white = Math.max(0, white - elapsed);
+      else black = Math.max(0, black - elapsed);
+    }
+  }
+  return { white, black, activeSide };
+}
+
+/**
  * Normalize a stored chat row into the in-memory shape used by the UI.
  *
  * Older rows persisted opponent messages as `{from: "opp"}` because
@@ -253,11 +281,13 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       } catch {}
     }
     if (hasTime && gameData.white_time_ms != null && gameData.black_time_ms != null) {
-      const elapsed = gameData.last_move_at ? Date.now() - new Date(gameData.last_move_at).getTime() : 0;
-      const activeSide = gameData.turn || gameRef.current.turn();
-      let wTime = gameData.white_time_ms;
-      let bTime = gameData.black_time_ms;
-      if (elapsed > 0) { if (activeSide === "w") wTime = Math.max(0, wTime - elapsed); else bTime = Math.max(0, bTime - elapsed); }
+      const { white: wTime, black: bTime } = reconcileClockState({
+        whiteMs: gameData.white_time_ms,
+        blackMs: gameData.black_time_ms,
+        lastMoveAt: gameData.last_move_at,
+        turn: gameData.turn,
+        fallbackTurn: gameRef.current.turn(),
+      });
       clock.restore(wTime, bTime);
     }
     if (gameData.chat && Array.isArray(gameData.chat) && gameData.chat.length > 0) {
@@ -298,12 +328,13 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       // Replaying restore() on every chat / draw / rematch update jitters
       // the local ticker against the elapsed time we re-derive here.
       if (movesAdvanced && hasTime && row.white_time_ms != null && row.black_time_ms != null && row.last_move_at) {
-        const elapsed = Date.now() - new Date(row.last_move_at).getTime();
-        const activeSide = row.turn || gameRef.current.turn();
-        let wTime = row.white_time_ms;
-        let bTime = row.black_time_ms;
-        if (activeSide === "w") wTime = Math.max(0, wTime - elapsed);
-        else bTime = Math.max(0, bTime - elapsed);
+        const { white: wTime, black: bTime, activeSide } = reconcileClockState({
+          whiteMs: row.white_time_ms,
+          blackMs: row.black_time_ms,
+          lastMoveAt: row.last_move_at,
+          turn: row.turn,
+          fallbackTurn: gameRef.current.turn(),
+        });
         clock.restore(wTime, bTime);
         clock.start(activeSide);
       }
@@ -367,7 +398,20 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         if (!validPlayers.has(userId)) return;
         endGame("1/2-1/2", "draw by agreement");
       },
-      onDrawDecline: () => { setConfirmDraw(false); },
+      onDrawDecline: ({ userId }) => {
+        // Broadcast self:false hides this from the decliner, so we
+        // are the offerer. Refund the increment we charged on offer
+        // and persist the corrected count back to the DB so a
+        // refresh doesn't re-debit the player.
+        if (userId && !validPlayers.has(userId)) return;
+        setMyDrawOffers((c) => {
+          const next = Math.max(0, c - 1);
+          const field = playerColor === "w" ? "white_draw_offers" : "black_draw_offers";
+          saveGameState({ [field]: next });
+          return next;
+        });
+        setConfirmDraw(false);
+      },
       onGameOver: (data) => {
         if (data?.userId && !validPlayers.has(data.userId)) return;
         endGame(data.result, data.reason);
@@ -413,17 +457,28 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
     // Auto-abort if no moves are played within 30s of the game's
     // creation. Both sides run the timer, anchored to created_at so a
     // refresh by either player does NOT reset the window. Skipped if
-    // this client joins an in-progress game.
+    // this client joins an in-progress game, or if the row predates
+    // the created_at column (no anchor → don't fire client-side; the
+    // host that originally created the game still aborts on its own
+    // server-stamped 30s window).
     let abortTimer = null;
-    if (gameRef.current.history().length === 0) {
-      const startedAt = gameData.created_at ? new Date(gameData.created_at).getTime() : Date.now();
-      const remaining = Math.max(0, 30000 - (Date.now() - startedAt));
-      abortTimer = setTimeout(() => {
-        if (gameRef.current.history().length === 0 && !gameOverRef.current) {
-          ch?.sendGameOver({ result: "*", reason: "aborted — no moves in 30s", userId: authUserIdRef.current });
-          endGame("*", "aborted — no moves in 30s");
+    if (gameRef.current.history().length === 0 && gameData.created_at) {
+      const startedAt = new Date(gameData.created_at).getTime();
+      if (Number.isFinite(startedAt)) {
+        const elapsed = Date.now() - startedAt;
+        if (elapsed < 30000) {
+          const remaining = 30000 - elapsed;
+          abortTimer = setTimeout(() => {
+            if (gameRef.current.history().length === 0 && !gameOverRef.current) {
+              ch?.sendGameOver({ result: "*", reason: "aborted — no moves in 30s", userId: authUserIdRef.current });
+              endGame("*", "aborted — no moves in 30s");
+            }
+          }, remaining);
         }
-      }, remaining);
+        // If we're already past the 30s window without moves, don't
+        // fire instantly — the originating host has already aborted
+        // (or is about to) and we'll learn about it via the DB sync.
+      }
     }
 
     return () => {
@@ -510,13 +565,21 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
     saveGameState({ rematch_offered_by: null });
   }, [saveGameState]);
 
+  const rematchAcceptingRef = useRef(false);
   const handleRematchAccept = useCallback(async () => {
-    const newGame = await createRematchGame(gameData, authUserIdRef.current, opponentId, myDisplayName, opponentName, myRating, opponentRating);
-    if (!newGame) return;
-    saveGameState({ rematch_game_id: newGame.id });
-    channelRef.current?.sendRematchAccept(newGame);
-    navigate(`/game/online/${newGame.id}`);
-  }, [opponentId, opponentName, myDisplayName, opponentRating, myRating, gameData, saveGameState, navigate]);
+    if (rematchAcceptingRef.current) return;
+    rematchAcceptingRef.current = true;
+    try {
+      // The RPC handles the race: if the opponent already accepted,
+      // we get back the same rematch row instead of creating a new one.
+      const newGame = await createRematchGame(gameData.id, authUserIdRef.current);
+      if (!newGame) return;
+      channelRef.current?.sendRematchAccept(newGame);
+      navigate(`/game/online/${newGame.id}`);
+    } finally {
+      rematchAcceptingRef.current = false;
+    }
+  }, [gameData, navigate]);
 
   const handleRematchDecline = useCallback(() => {
     channelRef.current?.sendRematchDecline(authUserIdRef.current);

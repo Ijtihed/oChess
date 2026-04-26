@@ -109,6 +109,13 @@ function AppShell() {
 
   return (
     <div className="min-h-screen min-h-[100dvh] bg-surface text-on-surface overflow-x-hidden">
+      {/* Skip link — only visible on keyboard focus, but lets screen
+          reader / tab users jump past the persistent nav and social
+          rail straight to the page body. */}
+      <a href="#main"
+         className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[10000] focus:px-3 focus:py-2 focus:bg-primary focus:text-on-primary focus:font-headline focus:text-xs focus:font-bold focus:uppercase focus:tracking-wide">
+        Skip to main content
+      </a>
       <CustomCursor />
       {!isGameScreen && (
         <Navbar
@@ -125,7 +132,7 @@ function AppShell() {
         onLogin={handleLogin}
       />
 
-      <main className={isGameScreen ? "" : "pt-16"}>
+      <main id="main" className={isGameScreen ? "" : "pt-16"}>
         <div className="page-enter">
           <Routes>
             <Route

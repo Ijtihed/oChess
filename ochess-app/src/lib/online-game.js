@@ -195,17 +195,34 @@ export async function fetchGame(gameId) {
 // ── Subscribe to a game row (Postgres Changes) ──
 // Returns a channel handle with an unsubscribe method.
 // `onChange(row)` fires every time the row is UPDATEd in the DB.
+//
+// On (re)connect we also fetch the current row once so any UPDATEs
+// that the realtime stream may have missed during a network blip
+// are reconciled. This is what keeps a game's state correct when a
+// laptop wakes from sleep mid-match.
 
 export function subscribeToGameRow(gameId, onChange) {
   if (!supabase || !gameId) return null;
   log("subscribeToGameRow:", gameId);
+  let lastStatus = null;
   const channel = supabase
     .channel(`db-game:${gameId}`)
     .on("postgres_changes",
       { event: "UPDATE", schema: "public", table: "games", filter: `id=eq.${gameId}` },
       (payload) => { log("game row UPDATE received:", payload.new?.status, "moves:", payload.new?.moves_count); onChange(payload.new); }
     )
-    .subscribe((status) => { log("subscribeToGameRow status:", status); });
+    .subscribe((status) => {
+      log("subscribeToGameRow status:", status);
+      // Initial subscribe AND every later resubscribe — refetch.
+      if (status === "SUBSCRIBED") {
+        const reconnect = lastStatus !== null && lastStatus !== "SUBSCRIBED";
+        if (reconnect) log("subscribeToGameRow reconnected — refetching row");
+        supabase.from("games").select("*").eq("id", gameId).maybeSingle()
+          .then(({ data }) => { if (data) onChange(data); })
+          .catch(() => {});
+      }
+      lastStatus = status;
+    });
   return {
     unsubscribe() { supabase.removeChannel(channel); },
   };
@@ -239,24 +256,22 @@ export async function cancelAllMySeeks(userId) {
   else log("cancelAllMySeeks OK");
 }
 
-// ── Create rematch game ──
+// ── Create rematch game (atomic, idempotent) ──
+// Calls the `create_rematch` RPC, which locks the source row and
+// either creates the rematch + stamps `rematch_game_id` in one
+// transaction, or returns the already-linked rematch when the
+// other client got there first. That way two simultaneous Accepts
+// always converge to the same new game row.
 
-export async function createRematchGame(currentGame, myId, opponentId, myName, opponentName, myRating, opponentRating) {
+export async function createRematchGame(sourceGameId, userId) {
   if (!supabase) return null;
-  const { data, error } = await supabase.from("games").insert({
-    white_id: opponentId,
-    black_id: myId,
-    white_name: opponentName,
-    black_name: myName,
-    white_rating: opponentRating,
-    black_rating: myRating,
-    pgn: "",
-    time_control: currentGame.time_control,
-    category: currentGame.category || "blitz",
-    variant: "standard",
-    is_rated: currentGame.is_rated || false,
-    status: "active",
-  }).select().single();
-  if (error || !data) return null;
+  log("createRematchGame:", { sourceGameId, userId });
+  const { data, error } = await supabase.rpc("create_rematch", {
+    p_source_game_id: sourceGameId,
+    p_user_id: userId,
+  });
+  if (error) { logErr("createRematchGame error:", error.message); return null; }
+  if (data?.error) { logErr("createRematchGame server error:", data.error); return null; }
+  log("createRematchGame OK — game:", data?.id);
   return data;
 }
