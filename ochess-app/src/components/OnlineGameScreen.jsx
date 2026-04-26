@@ -986,8 +986,10 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         {/* ── Post-game sidebar ── */}
         {gameOver && (
           <div className="w-full xl:w-[340px] shrink-0 flex flex-col gap-3">
-            {/* Result panel */}
-            <div className="anim-fade-up p-4 bg-surface-container border border-white/[0.06]">
+            {/* Result panel — role=status + aria-live so screen
+                readers announce the result when the game ends. */}
+            <div className="anim-fade-up p-4 bg-surface-container border border-white/[0.06]"
+              role="status" aria-live="polite">
               <span className="font-headline text-2xl font-extrabold text-primary block mb-0.5">
                 {gameOver.won === true ? "You win!" : gameOver.won === false ? "You lost" : "Draw"}
               </span>
@@ -1103,7 +1105,11 @@ function PlayerBar({ name, rating, avatar, captured = [], advantage = 0, pieceCo
             </span>
           )}
           {online != null && (
-            <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-surface ${online ? "bg-emerald-500" : "bg-on-surface-variant/20"}`} />
+            <>
+              <span aria-hidden="true"
+                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-surface ${online ? "bg-emerald-500" : "bg-on-surface-variant/20"}`} />
+              <span className="sr-only">{online ? "online" : "offline"}</span>
+            </>
           )}
         </div>
         <div className="flex items-center gap-2.5 min-w-0">

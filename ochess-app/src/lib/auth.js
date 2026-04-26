@@ -4,6 +4,9 @@
  */
 
 import { supabase } from "./supabase";
+import { makeLogger } from "./log";
+
+const { log: alog, error: aerr } = makeLogger("auth");
 
 export async function signUp(email, password, username) {
   if (!supabase) throw new Error("Online features not configured");
@@ -74,7 +77,7 @@ export async function updateProfile(userId, updates) {
     .select()
     .single();
   if (error) {
-    console.error("updateProfile error:", error);
+    aerr("updateProfile error:", error);
     throw new Error(error.message || "Failed to save profile");
   }
   return data;
@@ -118,10 +121,10 @@ export async function getRatings(userId) {
   if (!supabase) return [];
   try {
     const { data, error } = await supabase.from("ratings").select("*").eq("user_id", userId);
-    if (error) { console.error("[auth] getRatings error:", error.message, error.code, error.details); return []; }
-    console.log("[auth] getRatings:", data?.length || 0, "ratings for", userId);
+    if (error) { aerr("getRatings error:", error.message, error.code, error.details); return []; }
+    alog("getRatings:", data?.length || 0, "ratings for", userId);
     return data || [];
-  } catch (e) { console.error("[auth] getRatings exception:", e); return []; }
+  } catch (e) { aerr("getRatings exception:", e); return []; }
 }
 
 export async function getRecentGames(userId, limit = 20) {

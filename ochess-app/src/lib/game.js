@@ -1,12 +1,19 @@
 /**
  * Game session manager — wraps chess.js for oChess game lifecycle.
  *
- * Handles: move validation, game state, PGN export, position snapshots.
- * This is used both client-side and (eventually) server-side for validation.
+ * STATUS (as of phase-9 audit): not currently imported anywhere in
+ * the app. The screens (`GameScreen`, `OnlineGameScreen`,
+ * `VariantGameScreen`) talk to `chess.js` directly today.
  *
- * Storage model: moves live in chess.js memory during a game.
- * When the game ends, call toPgn() once and write that single string to the DB.
- * No per-move DB writes. PGN is ~2–5 KB per game.
+ * Reserved for: a future shared module that exposes the same
+ * lifecycle to (eventually) a server-side validator. Until that
+ * server lands, treat this file as a planned scaffold rather than
+ * production code — change with care, but feel free to delete or
+ * rewrite if the design shifts.
+ *
+ * Handles: move validation, game state, PGN export, position
+ * snapshots. PGN is ~2–5 KB per game; we write once on game end
+ * rather than per move.
  */
 
 import { Chess } from "chess.js";

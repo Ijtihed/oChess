@@ -899,8 +899,10 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
         {/* ── Analysis sidebar (post-game) — result + controls column ── */}
         {gameOver && (
           <div className="w-full xl:w-[280px] shrink-0 flex flex-col gap-3">
-            {/* Result */}
-            <div className="anim-fade-up p-4 bg-surface-container border border-white/[0.06]">
+            {/* Result — role=status + aria-live so screen readers
+                announce the outcome when the game ends. */}
+            <div className="anim-fade-up p-4 bg-surface-container border border-white/[0.06]"
+              role="status" aria-live="polite">
               <span className="font-headline text-2xl font-extrabold text-primary block mb-0.5">
                 {gameOver.won === true ? "You win!" : gameOver.won === false ? "You lost" : "Draw"}
               </span>

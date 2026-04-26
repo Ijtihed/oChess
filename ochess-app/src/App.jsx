@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, useNavigate, useLocation, useParams } from "react-router-dom";
 import AuthProvider, { useAuth } from "./components/AuthProvider";
 import Navbar from "./components/Navbar";
@@ -8,8 +8,6 @@ import CustomCursor from "./components/CustomCursor";
 import LandingPage from "./components/LandingPage";
 import Dashboard from "./components/Dashboard";
 import PlayPage from "./components/PlayPage";
-import PuzzlesPage from "./components/PuzzlesPage";
-import AnalysisPage from "./components/AnalysisPage";
 import StudyPage from "./components/StudyPage";
 import BotsPage from "./components/BotsPage";
 import VariantsPage from "./components/VariantsPage";
@@ -17,19 +15,31 @@ import ReviewPage from "./components/ReviewPage";
 import Profile from "./components/Profile";
 import PublicProfile from "./components/PublicProfile";
 import GameScreen, { getSavedGame, clearSavedGame } from "./components/GameScreen";
-import VariantGameScreen from "./components/VariantGameScreen";
-import OnlineGameScreen from "./components/OnlineGameScreen";
 import { CreateChallenge, JoinChallenge } from "./components/ChallengePage";
 import ComingSoon from "./components/ComingSoon";
 import BoardStylePicker from "./components/BoardStylePicker";
+import LoadingScreen from "./components/LoadingScreen";
+import ErrorBoundary from "./components/ErrorBoundary";
+
+// Code-split the heaviest routes. Each pulls in chess.js + the
+// engine UI / game flow / coach / Stockfish glue, so loading them on
+// demand keeps the initial bundle under the threshold for slow
+// connections. Suspense falls back to LoadingScreen while the chunk
+// streams in.
+const AnalysisPage = lazy(() => import("./components/AnalysisPage"));
+const PuzzlesPage = lazy(() => import("./components/PuzzlesPage"));
+const OnlineGameScreen = lazy(() => import("./components/OnlineGameScreen"));
+const VariantGameScreen = lazy(() => import("./components/VariantGameScreen"));
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <AppShell />
-      </AuthProvider>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <AuthProvider>
+          <AppShell />
+        </AuthProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
 
@@ -157,6 +167,7 @@ function AppShell() {
 
       <main id="main" className={isGameScreen ? "" : "pt-16"}>
         <div className="page-enter">
+          <Suspense fallback={<LoadingScreen />}>
           <Routes>
             <Route
               path="/"
@@ -189,6 +200,7 @@ function AppShell() {
             <Route path="/logout" element={<LogoutPage />} />
             <Route path="*" element={<ComingSoon page="unknown" onBack={() => handleNavigate("home")} />} />
           </Routes>
+          </Suspense>
         </div>
       </main>
 
