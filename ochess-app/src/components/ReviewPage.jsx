@@ -2,7 +2,9 @@ import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
 import SocialPanel from "./SocialPanel";
+import StudyPlanPanel from "./StudyPlanPanel";
 import { playVictory, playError } from "../lib/sounds";
+import { filterCardsByQuery, COMMON_WEAKNESS_CHIPS } from "../lib/study-plan";
 import {
   cardId,
   loadCards,
@@ -67,6 +69,15 @@ export default function ReviewPage() {
   const [highlight, setHighlight] = useState({});
   const [reviewed, setReviewed] = useState(0);
   const [deckFilter, setDeckFilter] = useState("all");
+  // Top-level tab: "today" runs the standard SM-2 flow you've always
+  // had; "plan" surfaces the new pulled-from-your-games study plan
+  // (StudyPlanPanel handles its own state + persistence).
+  const [topTab, setTopTab] = useState("today");
+  // Optional plan-driven filter — set when the user clicks "Start
+  // session" from the Plan tab. We narrow the SM-2 queue to the same
+  // chip / free-text filter so the session matches what they picked.
+  const [planQuery, setPlanQuery] = useState("");
+  const [planChipId, setPlanChipId] = useState(null);
   const gameRef = useRef(null);
 
   // Per-deck breakdown of the FULL collection (not just due cards) so
@@ -85,14 +96,38 @@ export default function ReviewPage() {
   const activeFilter = DECK_FILTERS.find((f) => f.id === deckFilter) || DECK_FILTERS[0];
 
   // Recompute the due queue on every render — cheap, ~tens of cards.
-  const dueIds = useMemo(
-    () => cards.filter((c) => activeFilter.match(c) && isCardDue(schedules, cardId(c))).map(cardId),
-    [cards, schedules, activeFilter]
-  );
+  // The deck-chip filter (puzzle / game / analysis) gates first; the
+  // plan-driven filter (set by Plan tab's "Start session") narrows
+  // further if present. The two compose so a Plan-tab session can
+  // still show the deck chips for context.
+  const dueIds = useMemo(() => {
+    let pool = cards.filter((c) => activeFilter.match(c) && isCardDue(schedules, cardId(c)));
+    if (planChipId) {
+      const chip = COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId);
+      if (chip) pool = pool.filter(chip.match);
+    }
+    if (planQuery) pool = filterCardsByQuery(pool, planQuery);
+    return pool.map(cardId);
+  }, [cards, schedules, activeFilter, planChipId, planQuery]);
   const card = useMemo(
     () => cards.find((c) => cardId(c) === dueIds[0]) || null,
     [cards, dueIds]
   );
+
+  const startPlanSession = useCallback(({ query, chipId }) => {
+    setPlanQuery(query || "");
+    setPlanChipId(chipId || null);
+    setDeckFilter("all"); // Don't double-narrow; Plan filter takes over.
+    setTopTab("today");
+    setPhase("prompt");
+    setHighlight({});
+    setReviewed(0);
+  }, []);
+
+  const clearPlanSession = useCallback(() => {
+    setPlanQuery("");
+    setPlanChipId(null);
+  }, []);
 
   // If localStorage is mutated by another page (e.g. user adds a card
   // from the analysis board in another tab), refresh on focus or
@@ -204,15 +239,57 @@ export default function ReviewPage() {
   const totalCards = cards.length;
   const remaining = dueIds.length;
 
+  // Top-level tab strip is shared across every state — the Plan tab is
+  // useful even before the user has any cards (so they can build the
+  // initial deck), and useful after they've reviewed everything (so
+  // they can pull more games).
+  const TopTabs = (
+    <div className="anim-fade-up flex gap-1 mb-5 border-b border-white/[0.04]" style={{ "--delay": "0.04s" }}>
+      {[
+        { id: "today", label: "Today" },
+        { id: "plan",  label: "Plan"  },
+      ].map((t) => (
+        <button key={t.id} onClick={() => setTopTab(t.id)}
+          className={`px-4 py-2 font-headline text-[12px] font-bold uppercase tracking-wide transition-colors ${
+            topTab === t.id ? "text-primary border-b-2 border-primary -mb-px" : "text-on-surface-variant/40 hover:text-primary"
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (topTab === "plan") {
+    return (
+      <div className="flex">
+        <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+          <h1 className="anim-fade-up font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1" style={{ "--delay": "0.05s" }}>Review</h1>
+          <p className="anim-fade-up text-sm text-on-surface-variant/40 mb-6" style={{ "--delay": "0.06s" }}>
+            Drill the positions where you keep slipping up.
+          </p>
+          {TopTabs}
+          <StudyPlanPanel onStartSession={startPlanSession} />
+        </div>
+        <SocialPanel />
+      </div>
+    );
+  }
+
   if (totalCards === 0) {
     return (
       <div className="flex">
-        <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-12 text-center">
-          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-3">Review</h1>
-          <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed">
-            No cards yet. Save positions from the Analysis board, your bot games, or failed puzzles
-            and they will appear here for spaced-repetition review.
-          </p>
+        <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+          <h1 className="anim-fade-up font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1" style={{ "--delay": "0.05s" }}>Review</h1>
+          {TopTabs}
+          <div className="text-center py-10">
+            <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">No cards yet</h2>
+            <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-5">
+              Save positions from the Analysis board, your bot games, or failed puzzles — or open the{" "}
+              <button onClick={() => setTopTab("plan")} className="text-primary hover:underline font-bold">Plan tab</button>{" "}
+              to import your chess.com / Lichess games and auto-extract mistake cards.
+            </p>
+          </div>
         </div>
         <SocialPanel />
       </div>
@@ -228,26 +305,47 @@ export default function ReviewPage() {
     const otherDecksWithDue = DECK_FILTERS
       .filter((f) => f.id !== deckFilter && f.id !== "all")
       .filter((f) => cards.some((c) => f.match(c) && isCardDue(schedules, cardId(c))));
+    const inPlanSession = !!(planChipId || planQuery);
     return (
       <div className="flex">
-        <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-12 text-center">
-          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-3">
-            {deckFilter === "all" ? "All caught up" : `No ${activeFilter.label.toLowerCase()} due`}
-          </h1>
-          <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-6">
-            {deckFilter === "all"
-              ? "You've reviewed every card that's due right now. Come back tomorrow, or save more positions from the Analysis board."
-              : `No ${activeFilter.label.toLowerCase()} cards are due in this filter right now.`}
-          </p>
-          {deckFilter !== "all" && otherDecksWithDue.length > 0 && (
-            <button onClick={() => setDeckFilter("all")}
-              className="btn btn-primary px-5 py-2 text-xs mb-6">
-              See all due cards
-            </button>
-          )}
-          <p className="text-[11px] uppercase tracking-widest text-on-surface-variant/25">
-            {totalCards} card{totalCards === 1 ? "" : "s"} in your deck
-          </p>
+        <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+          <h1 className="anim-fade-up font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1" style={{ "--delay": "0.05s" }}>Review</h1>
+          {TopTabs}
+          <div className="text-center py-6">
+            <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">
+              {inPlanSession
+                ? "Done with this drill"
+                : deckFilter === "all" ? "All caught up" : `No ${activeFilter.label.toLowerCase()} due`}
+            </h2>
+            <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-6">
+              {inPlanSession
+                ? "Every card matching this filter is reviewed. Try a different filter or come back tomorrow."
+                : deckFilter === "all"
+                  ? "You've reviewed every card that's due right now. Come back tomorrow, or save more positions from the Analysis board."
+                  : `No ${activeFilter.label.toLowerCase()} cards are due in this filter right now.`}
+            </p>
+            <div className="flex flex-wrap gap-2 justify-center mb-6">
+              {inPlanSession && (
+                <button onClick={clearPlanSession}
+                  className="btn btn-primary px-5 py-2 text-xs">
+                  Show all cards
+                </button>
+              )}
+              {!inPlanSession && deckFilter !== "all" && otherDecksWithDue.length > 0 && (
+                <button onClick={() => setDeckFilter("all")}
+                  className="btn btn-primary px-5 py-2 text-xs">
+                  See all due cards
+                </button>
+              )}
+              <button onClick={() => setTopTab("plan")}
+                className="btn btn-secondary px-5 py-2 text-xs">
+                Open Plan
+              </button>
+            </div>
+            <p className="text-[11px] uppercase tracking-widest text-on-surface-variant/25">
+              {totalCards} card{totalCards === 1 ? "" : "s"} in your deck
+            </p>
+          </div>
         </div>
         <SocialPanel />
       </div>
@@ -257,9 +355,33 @@ export default function ReviewPage() {
   const fen = phase === "correct" && gameRef.current ? gameRef.current.fen() : card.fen;
   const orientation = orientationFor(card);
 
+  const inPlanSession = !!(planChipId || planQuery);
+
   return (
     <div className="flex">
       <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+        {TopTabs}
+
+        {/* If a Plan-driven filter is active, show a chip describing
+            it with a clear way out. Helps the user remember they're
+            in a focused drill, not the full deck. */}
+        {inPlanSession && (
+          <div className="anim-fade-up flex items-center justify-between gap-3 mb-4 px-3 py-2 bg-primary/5 border border-primary/15">
+            <span className="text-[12px] text-on-surface-variant/65">
+              Drilling{" "}
+              <span className="font-bold text-primary">
+                {planChipId
+                  ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
+                  : `"${planQuery}"`}
+              </span>
+            </span>
+            <button onClick={clearPlanSession}
+              className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+              Clear filter
+            </button>
+          </div>
+        )}
+
         {/* Deck filter chips. Click cycles the active filter; the
             queue rebuilds on the next render. Counts are pulled from
             `deckCounts` so the user knows what's available before
