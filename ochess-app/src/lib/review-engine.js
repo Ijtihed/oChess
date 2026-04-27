@@ -41,6 +41,11 @@
 const DEFAULT_EASE = 2.5;
 const MIN_EASE = 1.3;
 const MAX_INTERVAL_DAYS = 365 * 5;
+// "Mature" threshold mirrors Anki's stock value (21 days). Used by
+// summarizeSchedule + the UI to distinguish young from mature
+// cards in stats - mature cards are the ones you've genuinely
+// learned and Anki users care about that proportion.
+const MATURE_INTERVAL_DAYS = 21;
 
 const LEARNING_STEPS_MIN = [1, 10];
 const RELEARNING_STEPS_MIN = [10];
@@ -53,6 +58,36 @@ const EASE_DELTA_AGAIN = -0.20;
 const EASE_DELTA_HARD = -0.15;
 const EASE_DELTA_GOOD = 0;
 const EASE_DELTA_EASY = +0.15;
+
+// Lapse handling. When the user clicks Again on a REVIEW card, the
+// card lapses to RELEARNING. When it graduates back, the new
+// interval is `previous_interval * LAPSE_NEW_INTERVAL_PCT`, with a
+// floor of LAPSE_MIN_INTERVAL_DAYS. Anki's default new-interval
+// pct is 0% (full reset to learning), but that's punishing for
+// chess: a card you've been reviewing for a year shouldn't go all
+// the way back to 1 day after one slip. 30% strikes a balance the
+// chess Anki community generally agrees on.
+const LAPSE_NEW_INTERVAL_PCT = 0.30;
+const LAPSE_MIN_INTERVAL_DAYS = 1;
+
+// Fuzz: Anki adds a small randomization to interval deltas so that
+// a batch of cards reviewed on the same day doesn't all come due
+// the same future day. The bands match Anki's stock policy:
+//   intervals < 7 d           -> ±1 day capped at the bounds
+//   7 d ≤ interval < 30 d      -> ±15% (max ±2 days)
+//   30 d ≤ interval < 180 d    -> ±5%
+//   interval ≥ 180 d          -> ±2.5%
+function applyFuzz(intervalDays) {
+  if (!Number.isFinite(intervalDays) || intervalDays < 1) return Math.max(1, Math.round(intervalDays || 1));
+  if (intervalDays < 7) return intervalDays; // No fuzz on short intervals - they're already imprecise.
+  let deltaMax;
+  if (intervalDays < 30) deltaMax = Math.max(1, Math.round(intervalDays * 0.15));
+  else if (intervalDays < 180) deltaMax = Math.max(1, Math.round(intervalDays * 0.05));
+  else deltaMax = Math.max(1, Math.round(intervalDays * 0.025));
+  // Symmetric uniform fuzz in [-deltaMax, +deltaMax].
+  const delta = Math.round((Math.random() * 2 - 1) * deltaMax);
+  return Math.max(1, intervalDays + delta);
+}
 
 const RATING = Object.freeze({
   AGAIN: 1,
@@ -198,21 +233,21 @@ function transitionReview(s, r) {
   }
   if (r === RATING.HARD) {
     s.easeFactor = clampEase(s.easeFactor + EASE_DELTA_HARD);
-    s.intervalDays = clampInterval(s.intervalDays * HARD_INTERVAL_FACTOR);
+    s.intervalDays = clampInterval(applyFuzz(s.intervalDays * HARD_INTERVAL_FACTOR));
     s.repetitions += 1;
     s.dueAt = dateInDays(s.intervalDays);
     return;
   }
   if (r === RATING.GOOD) {
     s.easeFactor = clampEase(s.easeFactor + EASE_DELTA_GOOD);
-    s.intervalDays = clampInterval(s.intervalDays * s.easeFactor);
+    s.intervalDays = clampInterval(applyFuzz(s.intervalDays * s.easeFactor));
     s.repetitions += 1;
     s.dueAt = dateInDays(s.intervalDays);
     return;
   }
   if (r === RATING.EASY) {
     s.easeFactor = clampEase(s.easeFactor + EASE_DELTA_EASY);
-    s.intervalDays = clampInterval(s.intervalDays * s.easeFactor * EASY_BONUS);
+    s.intervalDays = clampInterval(applyFuzz(s.intervalDays * s.easeFactor * EASY_BONUS));
     s.repetitions += 1;
     s.dueAt = dateInDays(s.intervalDays);
   }
@@ -235,15 +270,17 @@ function transitionRelearning(s, r) {
   if (r === RATING.GOOD) {
     const next = s.step + 1;
     if (next >= RELEARNING_STEPS_MIN.length) {
-      // Graduate back to review. Use a short interval (1d) to
-      // re-bridge the user toward their previous schedule.
+      // Graduate back to review. Anki's lapse policy: the new
+      // interval is the previous interval × LAPSE_NEW_INTERVAL_PCT
+      // (default 30% here for chess; Anki stock is 0%), with a
+      // floor of LAPSE_MIN_INTERVAL_DAYS. This keeps a year-old
+      // card from collapsing straight back to 1 day after a single
+      // slip while still meaningfully re-shrinking the schedule.
       s.state = STATE.REVIEW;
       s.step = 0;
-      // Take the smaller of the previous interval (lightly punished)
-      // and the standard graduating interval, so a card that was
-      // previously at 30d doesn't snap straight back to 30d.
-      const punished = Math.max(1, Math.round((s.intervalDays || 1) * 0.5));
-      s.intervalDays = clampInterval(Math.min(punished, GRADUATING_INTERVAL_DAYS));
+      const lapsedFrom = Math.max(1, s.intervalDays || 1);
+      const punished = Math.max(LAPSE_MIN_INTERVAL_DAYS, Math.round(lapsedFrom * LAPSE_NEW_INTERVAL_PCT));
+      s.intervalDays = clampInterval(applyFuzz(punished));
       s.intervalMs = 0;
       s.repetitions += 1;
       s.dueAt = dateInDays(s.intervalDays);
@@ -256,11 +293,14 @@ function transitionRelearning(s, r) {
   }
   if (r === RATING.EASY) {
     // Easy on a relearning card → graduate immediately, with a
-    // mid-sized interval (don't fully restore to pre-lapse).
+    // mid-sized interval. Roughly 2x the Good-on-relearning value
+    // so Easy is meaningfully more rewarding than Good without
+    // restoring the full pre-lapse schedule.
     s.state = STATE.REVIEW;
     s.step = 0;
-    const restore = Math.max(1, Math.round((s.intervalDays || 1) * 1.0));
-    s.intervalDays = clampInterval(Math.max(GRADUATING_INTERVAL_DAYS, restore));
+    const lapsedFrom = Math.max(1, s.intervalDays || 1);
+    const restored = Math.max(EASY_GRADUATING_INTERVAL_DAYS, Math.round(lapsedFrom * LAPSE_NEW_INTERVAL_PCT * 2));
+    s.intervalDays = clampInterval(applyFuzz(restored));
     s.intervalMs = 0;
     s.repetitions += 1;
     s.dueAt = dateInDays(s.intervalDays);
@@ -341,13 +381,123 @@ function formatInterval(schedule) {
   return `${years.toFixed(1)}y`;
 }
 
+/**
+ * Summarize an entire deck schedule map into the counts the UI
+ * needs to render the Anki-style "X new / Y learning / Z review"
+ * status line above the queue.
+ *
+ * @param {Array<{id: string}>} cards   Full card collection
+ * @param {Record<string, object>} map  schedule map
+ * @returns {{
+ *   total: number,
+ *   new: number,
+ *   learning: number,
+ *   review: number,
+ *   relearning: number,
+ *   mature: number,
+ *   young: number,
+ *   lapsed: number,
+ *   dueNow: number,
+ *   dueToday: number,
+ * }}
+ *   - new = no schedule entry yet OR state === NEW
+ *   - learning = sub-day card making its way to graduation
+ *   - review = graduated card waiting on its interval
+ *   - relearning = lapsed card making its way back to review
+ *   - mature = REVIEW state with intervalDays >= 21 (Anki convention)
+ *   - young = REVIEW state with intervalDays < 21
+ *   - lapsed = lapseCount > 0 (lifetime, not currently relearning)
+ *   - dueNow = anything where dueAt <= now
+ *   - dueToday = cards coming due before midnight local
+ */
+function summarizeSchedule(cards, map) {
+  const out = {
+    total: 0, new: 0, learning: 0, review: 0, relearning: 0,
+    mature: 0, young: 0, lapsed: 0, dueNow: 0, dueToday: 0,
+  };
+  if (!Array.isArray(cards)) return out;
+  const now = Date.now();
+  const endOfDay = (() => {
+    const d = new Date();
+    d.setHours(23, 59, 59, 999);
+    return d.getTime();
+  })();
+  for (const c of cards) {
+    if (!c || (c.type !== "puzzle" && c.type !== "mistake" && c.type !== "analysis"
+              && c.type !== "game" && c.type !== "shared" && c.type !== "tactic"
+              && c.type !== "opening" && c.type !== "endgame")) {
+      continue;
+    }
+    out.total += 1;
+    const id = c.id || `${c.type}|${c.fen}|${c.ts}`;
+    const s = map?.[id] ? sanitize(map[id]) : null;
+    const state = s?.state || STATE.NEW;
+    const due = s?.dueAt ? new Date(s.dueAt).getTime() : 0;
+    if (state === STATE.NEW || !s) out.new += 1;
+    else if (state === STATE.LEARNING) out.learning += 1;
+    else if (state === STATE.RELEARNING) out.relearning += 1;
+    else if (state === STATE.REVIEW) {
+      out.review += 1;
+      if ((s?.intervalDays || 0) >= MATURE_INTERVAL_DAYS) out.mature += 1;
+      else out.young += 1;
+    }
+    if ((s?.lapseCount || 0) > 0) out.lapsed += 1;
+    if (!s || due <= now) out.dueNow += 1;
+    if (!s || due <= endOfDay) out.dueToday += 1;
+  }
+  return out;
+}
+
+/**
+ * Forecast the number of cards coming due each day for the next
+ * `days` days. Used by the Plan tab's "what's coming up" strip.
+ * Returns an array length=days, each entry { date, count }.
+ *
+ * Cards with sub-day intervals (LEARNING / RELEARNING) all roll up
+ * into "today" since they'll already be due before midnight.
+ */
+function forecastNextDays(cards, map, days = 7) {
+  const out = [];
+  const now = new Date();
+  now.setHours(0, 0, 0, 0); // start of today
+  for (let i = 0; i < Math.max(1, days); i++) {
+    const dayStart = new Date(now);
+    dayStart.setDate(dayStart.getDate() + i);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+    out.push({ date: new Date(dayStart), count: 0 });
+  }
+  if (!Array.isArray(cards)) return out;
+  const horizon = new Date(now);
+  horizon.setDate(horizon.getDate() + days);
+  for (const c of cards) {
+    if (!c) continue;
+    if (c.type !== "puzzle" && c.type !== "mistake" && c.type !== "analysis"
+        && c.type !== "game" && c.type !== "shared" && c.type !== "tactic"
+        && c.type !== "opening" && c.type !== "endgame") continue;
+    const id = c.id || `${c.type}|${c.fen}|${c.ts}`;
+    const s = map?.[id] ? sanitize(map[id]) : null;
+    const due = s?.dueAt ? new Date(s.dueAt) : new Date();
+    if (Number.isNaN(due.getTime())) continue;
+    if (due >= horizon) continue;
+    // Anything due before today or right now collapses into the
+    // first bucket (today's queue).
+    const idx = due < now ? 0 : Math.floor((due.getTime() - now.getTime()) / (24 * 3600_000));
+    if (idx >= 0 && idx < out.length) out[idx].count += 1;
+  }
+  return out;
+}
+
 export {
   RATING,
   STATE,
+  MATURE_INTERVAL_DAYS,
   createScheduleState,
   computeNextReview,
   isDue,
   predictNextIntervals,
   formatInterval,
   sanitize,
+  summarizeSchedule,
+  forecastNextDays,
 };

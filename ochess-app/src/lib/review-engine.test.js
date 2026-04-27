@@ -2,12 +2,15 @@ import { describe, it, expect } from "vitest";
 import {
   RATING,
   STATE,
+  MATURE_INTERVAL_DAYS,
   createScheduleState,
   computeNextReview,
   isDue,
   predictNextIntervals,
   formatInterval,
   sanitize,
+  summarizeSchedule,
+  forecastNextDays,
 } from "./review-engine";
 
 describe("createScheduleState", () => {
@@ -245,6 +248,103 @@ describe("sanitize - migration of legacy schedules", () => {
     expect(out.easeFactor).toBe(2.5);
     expect(out.intervalDays).toBe(0);
     expect(out.repetitions).toBe(0);
+  });
+});
+
+describe("summarizeSchedule", () => {
+  it("returns zero counts for an empty deck", () => {
+    expect(summarizeSchedule([], {})).toEqual({
+      total: 0, new: 0, learning: 0, review: 0, relearning: 0,
+      mature: 0, young: 0, lapsed: 0, dueNow: 0, dueToday: 0,
+    });
+  });
+
+  it("counts cards without a schedule entry as NEW + dueNow", () => {
+    const cards = [
+      { id: "a", type: "puzzle", fen: "x" },
+      { id: "b", type: "mistake", fen: "y" },
+    ];
+    const out = summarizeSchedule(cards, {});
+    expect(out.total).toBe(2);
+    expect(out.new).toBe(2);
+    expect(out.learning).toBe(0);
+    expect(out.review).toBe(0);
+    expect(out.dueNow).toBe(2);
+  });
+
+  it("buckets cards into the right state based on the schedule map", () => {
+    const cards = [
+      { id: "n", type: "puzzle" },
+      { id: "l", type: "puzzle" },
+      { id: "r-young", type: "puzzle" },
+      { id: "r-mature", type: "puzzle" },
+      { id: "rl", type: "puzzle" },
+    ];
+    const map = {
+      n: { state: "new", dueAt: new Date() },
+      l: { state: "learning", step: 0, intervalDays: 0, dueAt: new Date() },
+      "r-young":  { state: "review", intervalDays: 5,  dueAt: new Date(Date.now() + 5 * 86400_000) },
+      "r-mature": { state: "review", intervalDays: 90, dueAt: new Date(Date.now() + 90 * 86400_000) },
+      rl: { state: "relearning", step: 0, intervalDays: 4, lapseCount: 1, dueAt: new Date() },
+    };
+    const out = summarizeSchedule(cards, map);
+    expect(out.total).toBe(5);
+    expect(out.new).toBe(1);
+    expect(out.learning).toBe(1);
+    expect(out.review).toBe(2);
+    expect(out.relearning).toBe(1);
+    expect(out.mature).toBe(1);
+    expect(out.young).toBe(1);
+    expect(out.lapsed).toBe(1);
+  });
+
+  it("ignores non-card entries (drill metadata, junk)", () => {
+    const cards = [
+      { id: "p", type: "puzzle" },
+      { id: "j", type: "not-a-real-card" },
+      null,
+    ];
+    expect(summarizeSchedule(cards, {}).total).toBe(1);
+  });
+});
+
+describe("forecastNextDays", () => {
+  it("returns a fixed-length array (= days) of date+count entries", () => {
+    const out = forecastNextDays([], {}, 7);
+    expect(out).toHaveLength(7);
+    expect(out[0]).toHaveProperty("date");
+    expect(out[0]).toHaveProperty("count");
+  });
+
+  it("rolls all overdue + new cards into the today bucket", () => {
+    const cards = [
+      { id: "a", type: "puzzle" }, // no schedule -> new -> today
+      { id: "b", type: "puzzle" }, // overdue
+    ];
+    const map = {
+      b: { state: "review", intervalDays: 1, dueAt: new Date(Date.now() - 86400_000 * 5) },
+    };
+    const out = forecastNextDays(cards, map, 7);
+    expect(out[0].count).toBe(2);
+    expect(out.slice(1).every((d) => d.count === 0)).toBe(true);
+  });
+
+  it("places a card scheduled 3 days from now in bucket index 3", () => {
+    const cards = [{ id: "x", type: "puzzle" }];
+    const due = new Date();
+    due.setHours(0, 0, 0, 0);
+    due.setDate(due.getDate() + 3);
+    due.setHours(12); // mid-day so it's clearly inside that day's bucket
+    const map = { x: { state: "review", intervalDays: 3, dueAt: due } };
+    const out = forecastNextDays(cards, map, 7);
+    expect(out[3].count).toBe(1);
+    expect(out[2].count).toBe(0);
+  });
+});
+
+describe("MATURE_INTERVAL_DAYS", () => {
+  it("matches Anki's stock 21-day threshold", () => {
+    expect(MATURE_INTERVAL_DAYS).toBe(21);
   });
 });
 

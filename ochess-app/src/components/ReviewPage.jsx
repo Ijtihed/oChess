@@ -19,7 +19,10 @@ import {
   deserializeSharedCard,
   addCardIfNew,
   predictIntervalsFor,
+  summarizeDeck,
+  forecastDeckNextDays,
 } from "../lib/review-cards";
+import { getCardType, TONE_CLASSES } from "../lib/card-types";
 
 // Convert a 4/5-character UCI string ("e2e4" / "e7e8q") to a chess.js
 // move object. Centralized here so review and the puzzle replay
@@ -40,30 +43,46 @@ const RATING_BUTTONS = [
   { label: "Easy",  value: RATING.EASY,  key: "EASY",  color: "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/10" },
 ];
 
-function deckLabel(card) {
-  switch (card?.type) {
-    case "puzzle":   return "Puzzle";
-    case "analysis": return "Analysis position";
-    case "game":     return "From a game";
-    case "tactic":   return "Tactic";
-    case "opening":  return "Opening";
-    case "endgame":  return "Endgame";
-    case "mistake":  return "My Mistakes";
-    default:         return "Saved position";
-  }
-}
-
-function promptText(card) {
-  const fen = card?.fen || "";
-  const turn = fen.includes(" b ") ? "Black" : "White";
-  if (card?.type === "puzzle") return `${turn} to move. Find the best move.`;
-  if (card?.type === "analysis") return `${turn} to move. Recall the position.`;
-  if (card?.type === "game") return `${turn} to move. What did you play here?`;
-  return `${turn} to move.`;
-}
-
 function orientationFor(card) {
   return (card?.fen || "").includes(" b ") ? "black" : "white";
+}
+
+/** Card-type chip rendered above the prompt - icon + label in
+ *  the type's tone color. The icon comes straight from the registry
+ *  (a single SVG path string for a 24x24 outlined glyph). */
+function CardTypeChip({ card }) {
+  const type = getCardType(card);
+  const tone = TONE_CLASSES[type.color] || TONE_CLASSES.blue;
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2 py-1 ${tone.bg} ${tone.border} border`}>
+      <svg className={`w-3 h-3 ${tone.text}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d={type.iconPath} />
+      </svg>
+      <span className={`font-headline text-[10px] font-bold uppercase tracking-widest ${tone.text}`}>
+        {type.label}
+      </span>
+    </span>
+  );
+}
+
+/** Tone-color SM-2 state pill. Mirrors what real Anki shows next
+ *  to a card in study mode: NEW (blue) / LEARNING (orange) /
+ *  REVIEW (green) / RELEARNING (red). */
+function StatePill({ state, intervalDays }) {
+  const tone = (() => {
+    switch (state) {
+      case "new":         return { bg: "bg-blue-500/15",    text: "text-blue-300",    label: "New" };
+      case "learning":    return { bg: "bg-amber-500/15",   text: "text-amber-300",   label: "Learning" };
+      case "review":      return { bg: "bg-emerald-500/15", text: "text-emerald-300", label: intervalDays >= 21 ? "Mature" : "Young" };
+      case "relearning":  return { bg: "bg-error/15",       text: "text-error",       label: "Relearning" };
+      default:            return { bg: "bg-surface-high",   text: "text-on-surface-variant/50", label: state || "" };
+    }
+  })();
+  return (
+    <span className={`inline-block px-2 py-0.5 ${tone.bg} font-headline text-[9px] font-bold uppercase tracking-widest ${tone.text}`}>
+      {tone.label}
+    </span>
+  );
 }
 
 // Deck filters mirror the card `type` field that PuzzlesPage /
@@ -454,6 +473,11 @@ export default function ReviewPage() {
 
   const totalCards = cards.length;
   const remaining = dueIds.length;
+  // Anki-style deck summary - drives the queue-breakdown widget
+  // and the still-due counter on the sidebar.
+  const deckSummary = useMemo(() => summarizeDeck(cards, schedules), [cards, schedules]);
+  // 7-day forecast for the upcoming-reviews chart.
+  const deckForecast = useMemo(() => forecastDeckNextDays(cards, schedules, 7), [cards, schedules]);
 
   // Top-level tab strip is shared across every state - the Plan tab is
   // useful even before the user has any cards (so they can build the
@@ -656,23 +680,27 @@ export default function ReviewPage() {
         <div className="flex flex-col xl:flex-row gap-6 xl:gap-8">
           {/* Board column */}
           <div className="flex-1 flex flex-col items-center xl:items-start max-w-[700px]">
-            <div className="w-full mb-3">
-              <span className="text-[9px] font-label uppercase tracking-widest text-on-surface-variant/30 block mb-1">
-                {deckLabel(card)} · {reviewed + 1} of {reviewed + remaining}
-                {/* Surface card-source metadata if the writer attached
-                    any. Puzzle cards carry a numeric rating + tags;
-                    game cards carry the SAN that was played. Showing
-                    them gives the user useful context without taking
-                    up a whole sidebar block. */}
-                {card.rating ? ` · Rating ${card.rating}` : ""}
-                {card.san ? ` · ${card.san}` : ""}
-                {Array.isArray(card.themes) && card.themes.length > 0 && (
-                  ` · ${card.themes.slice(0, 3).join(", ")}`
-                )}
-              </span>
-              <h1 className="font-headline text-lg sm:text-xl font-extrabold tracking-tighter text-primary">
-                {promptText(card)}
+            <div className="w-full mb-4">
+              {/* Type chip + SM-2 state pill side-by-side. Replaces the
+                  old plain-text "Puzzle · Rating 1500 · fork" line with
+                  a colour-coded affordance the user can scan in a
+                  second. */}
+              <div className="flex items-center gap-2 flex-wrap mb-2">
+                <CardTypeChip card={card} />
+                <StatePill
+                  state={schedules[cardId(card)]?.state || "new"}
+                  intervalDays={schedules[cardId(card)]?.intervalDays || 0}
+                />
+                <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30">
+                  {reviewed + 1} of {reviewed + remaining}
+                </span>
+              </div>
+              <h1 className="font-headline text-xl sm:text-2xl font-extrabold tracking-tighter text-primary leading-tight">
+                {getCardType(card).prompt(card)}
               </h1>
+              <p className="text-[12px] text-on-surface-variant/45 mt-0.5 leading-snug">
+                {getCardType(card).instruction(card)}
+              </p>
             </div>
 
             <InteractiveBoard
@@ -784,38 +812,219 @@ export default function ReviewPage() {
             </div>
           </div>
 
-          {/* Sidebar */}
-          <div className="w-full xl:w-[280px] shrink-0 space-y-6">
-            <div>
-              <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Review</h3>
-              <h2 className="font-headline text-3xl font-extrabold text-primary mb-1">{remaining}</h2>
-              <span className="text-[10px] text-on-surface-variant/25 uppercase tracking-widest">cards due</span>
-            </div>
+          {/* Sidebar - rich card metadata + Anki-style queue
+              breakdown + 7-day forecast. Replaces the old plain
+              "cards due / total" block. */}
+          <div className="w-full xl:w-[300px] shrink-0 space-y-4">
+            {/* Card metadata - rating, themes, opening, source link.
+                All optional. Skipped if the card carries none. */}
+            <CardMetadata card={card} />
 
-            <div>
-              <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Session</h3>
-              <div className="grid grid-cols-2 gap-1.5">
-                <div className="p-3 bg-surface-low border border-white/[0.03] text-center">
-                  <span className="font-headline text-xl font-extrabold text-primary block">{reviewed}</span>
-                  <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25">Reviewed</span>
-                </div>
-                <div className="p-3 bg-surface-low border border-white/[0.03] text-center">
-                  <span className="font-headline text-xl font-extrabold text-on-surface-variant/40 block">{totalCards}</span>
-                  <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25">Total</span>
-                </div>
+            {/* Anki queue breakdown - Today's queue grouped by state
+                so the user knows whether they're seeing new cards
+                vs. learning steps vs. reviews. */}
+            <QueueBreakdown summary={deckSummary} />
+
+            {/* 7-day forecast bars. Same data Anki shows on its
+                deck page. Lets the user see the upcoming load
+                before they get there. */}
+            <Forecast forecast={deckForecast} />
+
+            {/* Session counter - kept compact so the rest of the
+                sidebar can breathe. */}
+            <div className="p-3 bg-surface-container border border-white/[0.04] grid grid-cols-2 gap-1.5">
+              <div className="text-center">
+                <span className="font-headline text-2xl font-extrabold text-primary block leading-none">{reviewed}</span>
+                <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25 mt-1 block">Done today</span>
               </div>
-            </div>
-
-            <div className="p-4 bg-surface-container border border-white/[0.04]">
-              <p className="text-[10px] text-on-surface-variant/25 leading-relaxed">
-                Save positions from analysis, games, or failed puzzles to add them here. Rate each
-                card to schedule the next review with SM-2 spaced repetition.
-              </p>
+              <div className="text-center">
+                <span className="font-headline text-2xl font-extrabold text-on-surface-variant/45 block leading-none">{deckSummary.dueNow}</span>
+                <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25 mt-1 block">Still due</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
       <SocialPanel />
+    </div>
+  );
+}
+
+// ── Sidebar widgets ───────────────────────────────────────────────
+
+/**
+ * Card metadata strip. Pulls together everything the writer side
+ * may have attached: puzzle rating, theme tags, opening name, eval
+ * loss, source link, played-vs-best SAN. Each row only renders
+ * when the underlying field is present.
+ */
+function CardMetadata({ card }) {
+  if (!card) return null;
+  const themes = Array.isArray(card.themes) ? card.themes.slice(0, 5) : [];
+  const evalLoss = Number.isFinite(card.eval_loss_cp) ? card.eval_loss_cp : null;
+  const hasAny = card.rating || card.opening || card.played_san || card.best_san
+    || themes.length > 0 || evalLoss != null || card.source_url || card.source;
+  if (!hasAny) return null;
+
+  // Eval-loss bar shown for AI-detected mistake cards. Mapped onto
+  // a 0..600 cp scale (a "blunder" is ~300+ cp, so 600 is the
+  // visual saturation point).
+  const lossPct = evalLoss != null ? Math.min(100, Math.round((evalLoss / 600) * 100)) : null;
+  const lossTone = evalLoss == null ? "" : evalLoss >= 300 ? "bg-error" : evalLoss >= 100 ? "bg-amber-400" : "bg-on-surface-variant/40";
+
+  return (
+    <div className="p-4 bg-surface-low border border-white/[0.04] space-y-3">
+      <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+        Card details
+      </h3>
+
+      {(card.played_san || card.best_san) && (
+        <div className="grid grid-cols-2 gap-2">
+          {card.played_san && (
+            <div>
+              <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30 block mb-0.5">You played</span>
+              <span className="font-mono text-sm text-error/80">{card.played_san}</span>
+            </div>
+          )}
+          {card.best_san && (
+            <div>
+              <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30 block mb-0.5">Engine line</span>
+              <span className="font-mono text-sm text-emerald-400">{card.best_san}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {evalLoss != null && (
+        <div>
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30">Eval loss</span>
+            <span className="font-mono text-[11px] text-on-surface-variant/65">-{(evalLoss / 100).toFixed(1)} pawns</span>
+          </div>
+          <div className="h-1 bg-surface-high overflow-hidden">
+            <div className={`h-full ${lossTone}`} style={{ width: `${lossPct}%` }} />
+          </div>
+        </div>
+      )}
+
+      {card.rating && (
+        <div className="flex items-baseline justify-between">
+          <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30">Puzzle rating</span>
+          <span className="font-mono text-[12px] text-on-surface-variant/70">{card.rating}</span>
+        </div>
+      )}
+
+      {card.opening && (
+        <div>
+          <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30 block mb-0.5">Opening</span>
+          <span className="text-[12px] text-on-surface-variant/65">{card.opening}</span>
+        </div>
+      )}
+
+      {themes.length > 0 && (
+        <div>
+          <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30 block mb-1.5">Themes</span>
+          <div className="flex flex-wrap gap-1">
+            {themes.map((t) => (
+              <span key={t} className="px-1.5 py-0.5 bg-surface-container border border-white/[0.04] text-[10px] text-on-surface-variant/60">
+                {t.replace(/_/g, " ")}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(card.source_url || card.source) && (
+        <div className="pt-2 border-t border-white/[0.04]">
+          {card.source_url ? (
+            <a href={card.source_url} target="_blank" rel="noopener noreferrer"
+              className="text-[10px] text-on-surface-variant/45 hover:text-primary transition-colors inline-flex items-center gap-1">
+              View on {card.source || "source"}
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14 3h7v7M10 14L21 3M19 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h6" />
+              </svg>
+            </a>
+          ) : (
+            <span className="text-[10px] text-on-surface-variant/30 uppercase tracking-widest">
+              From {card.source}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Anki-style queue breakdown showing how many cards are in each
+ * state today. Mirrors the New / Learning / Review counts you'd
+ * see at the top of an Anki study session.
+ */
+function QueueBreakdown({ summary }) {
+  if (!summary || summary.total === 0) return null;
+  const rows = [
+    { label: "New", count: summary.new, dot: "bg-blue-400" },
+    { label: "Learning", count: summary.learning, dot: "bg-amber-400" },
+    { label: "Review", count: summary.review, dot: "bg-emerald-400" },
+    { label: "Relearning", count: summary.relearning, dot: "bg-error" },
+  ];
+  return (
+    <div className="p-4 bg-surface-low border border-white/[0.04]">
+      <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-3">
+        Queue
+      </h3>
+      <div className="space-y-1.5">
+        {rows.map((r) => (
+          <div key={r.label} className="flex items-center gap-2">
+            <span className={`w-1.5 h-1.5 ${r.dot}`} />
+            <span className="text-[12px] text-on-surface-variant/70 flex-1">{r.label}</span>
+            <span className="font-mono text-[12px] text-on-surface-variant/50 tabular-nums">{r.count}</span>
+          </div>
+        ))}
+      </div>
+      {summary.mature > 0 && (
+        <div className="mt-3 pt-3 border-t border-white/[0.04] flex items-baseline justify-between">
+          <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30">Mature</span>
+          <span className="font-mono text-[11px] text-emerald-400/70">{summary.mature}/{summary.review}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Compact 7-day forecast bar chart - shows tomorrow + 6 more days
+ * worth of upcoming reviews. The first bar (today) is highlighted
+ * because that's what the user is working through right now.
+ */
+function Forecast({ forecast }) {
+  if (!Array.isArray(forecast) || forecast.length === 0) return null;
+  const max = Math.max(1, ...forecast.map((d) => d.count));
+  const dayLabel = (d, i) => {
+    if (i === 0) return "Today";
+    return d.date.toLocaleDateString(undefined, { weekday: "short" });
+  };
+  return (
+    <div className="p-4 bg-surface-low border border-white/[0.04]">
+      <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-3">
+        Next 7 days
+      </h3>
+      <div className="flex items-end gap-1 h-16">
+        {forecast.map((d, i) => {
+          const h = Math.max(2, Math.round((d.count / max) * 100));
+          const tone = i === 0 ? "bg-primary" : "bg-on-surface-variant/25";
+          return (
+            <div key={i} className="flex-1 flex flex-col items-center gap-1">
+              <div className="w-full flex items-end justify-center" style={{ height: "44px" }}>
+                <div className={`w-full ${tone} transition-all`} style={{ height: `${h}%` }} title={`${d.count} cards`} />
+              </div>
+              <span className="text-[8px] text-on-surface-variant/30 uppercase tracking-wide">
+                {dayLabel(d, i)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

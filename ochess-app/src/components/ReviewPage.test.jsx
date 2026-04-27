@@ -48,9 +48,10 @@ describe("ReviewPage", () => {
       </MemoryRouter>
     );
     expect(screen.getAllByText(/Puzzle/).length).toBeGreaterThan(0);
-    // The "Recall \u2014 then rate yourself" hint shows when there's no
-    // explicit answerMove on the card.
-    expect(screen.getByText(/Recall|Make your move/i)).toBeDefined();
+    // The new instruction line + the legacy hint can both contain
+    // "Make your move" - we just want to verify *something* shows
+    // a prompt to the user about what to do.
+    expect(screen.getAllByText(/Make your move|Recall|Reveal/i).length).toBeGreaterThan(0);
   });
 
   it("renders deck filter chips with counts pulled from the card collection", () => {

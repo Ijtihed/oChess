@@ -16,8 +16,11 @@ import {
   computeNextReview,
   isDue,
   RATING,
+  STATE,
   sanitize as sanitizeSchedule,
   predictNextIntervals,
+  summarizeSchedule,
+  forecastNextDays,
 } from "./review-engine";
 
 const CARDS_KEY = "ochess_review_cards";
@@ -111,7 +114,21 @@ export function predictIntervalsFor(map, id) {
   return predictNextIntervals(getSchedule(map, id));
 }
 
-export { RATING };
+/**
+ * Summarize the deck for the UI's status header. Returns counts by
+ * state (new / learning / review / relearning / mature / young /
+ * lapsed) plus dueNow / dueToday.
+ */
+export function summarizeDeck(cards, map) {
+  return summarizeSchedule(cards, map);
+}
+
+/** 7-day forecast strip data for the Plan tab. */
+export function forecastDeckNextDays(cards, map, days = 7) {
+  return forecastNextDays(cards, map, days);
+}
+
+export { RATING, STATE };
 
 // ─────────────────────────────────────────────────────────────────────
 // Card sharing — encode a card to a URL fragment, decode on the
