@@ -13,8 +13,9 @@
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
     "supabase": "supabase --workdir ..",
-    "cron:deploy": "supabase --workdir .. functions deploy cleanup-stale-seeks --schedule \"*/5 * * * *\"",
-    "cron:logs": "supabase --workdir .. functions logs cleanup-stale-seeks --tail"
+    "fn:deploy": "supabase --workdir .. functions deploy cleanup-stale-seeks",
+    "fn:invoke": "supabase --workdir .. functions invoke cleanup-stale-seeks --no-verify-jwt",
+    "fn:logs": "supabase --workdir .. functions logs cleanup-stale-seeks"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

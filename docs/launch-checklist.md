@@ -99,17 +99,20 @@ Build command: `cd ochess-app && npm ci && npm run build`. Publish directory: `o
 
 `schema.sql` defines `cleanup_stale_seeks()` that deletes matchmaking seeks older than 15 minutes. It's restricted to the `service_role` so it can't be called from the client.
 
-The repo ships a ready-to-deploy Edge Function at `supabase/functions/cleanup-stale-seeks/`. Deploy it with:
+**Recommended path (pg_cron, no Edge Function needed).** The bottom of `schema.sql` contains a `pg_cron` block that schedules the RPC every 5 minutes. If you ran the schema once, you're already done — verify in `Database → Cron Jobs` that `ochess-cleanup-stale-seeks` exists. To re-run only the cron block, paste its last ~15 lines into the SQL editor.
+
+**Optional Edge Function** at `supabase/functions/cleanup-stale-seeks/` is shipped as a manual-invoke fallback. Deploy with:
 
 ```bash
-supabase login
-supabase link --project-ref <your-project-ref>
-supabase functions deploy cleanup-stale-seeks --schedule "*/5 * * * *"
+cd ochess-app
+npx supabase --workdir .. login
+npx supabase --workdir .. link --project-ref <your-project-ref>
+npm run fn:deploy   # supabase functions deploy cleanup-stale-seeks
+npm run fn:invoke   # one-off run; verify it returns { ok: true }
+npm run fn:logs     # paginated log viewer
 ```
 
-Verify with `supabase functions logs cleanup-stale-seeks --tail` — you should see a successful invocation every 5 minutes.
-
-Alternatives if you prefer not to use Edge Functions: any external scheduler (GitHub Actions cron, Cloudflare Workers Cron, etc.) calling the RPC with the service role key, or `pg_cron` if it's enabled on your project.
+Note: Supabase CLI v2.95+ dropped the `--schedule` flag from `functions deploy`; that's why scheduling lives in `pg_cron` now.
 
 ### 10. Lock down the `main` branch
 

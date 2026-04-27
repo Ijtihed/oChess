@@ -2,51 +2,52 @@
 
 Periodic job that deletes matchmaking seeks older than 15 minutes.
 
-`schema.sql` ships the `cleanup_stale_seeks()` Postgres RPC and restricts it to the `service_role`. Without a scheduled caller, the `seeks` table grows forever and the open-seeks list pollutes with stale rows. This function is the recommended way to call it.
+`schema.sql` ships the `cleanup_stale_seeks()` Postgres RPC and restricts it to the `service_role`. Without a scheduled caller, the `seeks` table grows forever and the open-seeks list pollutes with stale rows.
 
-## Why this and not `pg_cron`
+## Recommended: schedule via `pg_cron` in `schema.sql` (no function needed)
 
-`pg_cron` works too if you have it enabled and prefer to keep cleanup inside the database. The Edge Function approach is preferred because:
+Since Supabase CLI v2.95 dropped `--schedule` from `functions deploy`, the simplest path is to skip Edge Functions entirely and let Postgres call the RPC directly. The bottom of [`../schema.sql`](../../schema.sql) contains a `pg_cron` block that does exactly this:
 
-- It's visible in the Supabase dashboard logs (`Functions → cleanup-stale-seeks → Logs`).
-- It works on Supabase free / pro projects without enabling extra extensions.
-- The schedule is part of the function manifest — re-deploying redeploys the cron.
-
-## Deploy
-
-You only need to do this once.
-
-```bash
-# 1. Authenticate the Supabase CLI with your account.
-supabase login
-
-# 2. Link this folder to your project.
-#    Project ref is the slug part of your Supabase URL,
-#    e.g. https://abcdefghijkl.supabase.co  →  abcdefghijkl
-supabase link --project-ref <your-project-ref>
-
-# 3. Deploy with a 5-minute cron schedule.
-supabase functions deploy cleanup-stale-seeks --schedule "*/5 * * * *"
+```sql
+create extension if not exists pg_cron with schema extensions;
+select cron.schedule(
+  'ochess-cleanup-stale-seeks',
+  '*/5 * * * *',
+  $cron$select cleanup_stale_seeks()$cron$
+);
 ```
 
-The CLI uploads `index.ts`, registers the schedule, and wires up `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` automatically.
+Re-running `schema.sql` in the SQL Editor sets up the schedule idempotently. Verify in `Database → Cron Jobs`.
 
-## Verify
+That is the launch path. The Edge Function below is optional.
 
-```bash
-supabase functions logs cleanup-stale-seeks --tail
-```
+## Optional: deploy this Edge Function for ad-hoc invocation
 
-You should see a `{ ok: true, elapsedMs: ..., ranAt: ... }` line every 5 minutes after deploy.
-
-You can also invoke it on-demand to confirm correctness:
+Useful if you want a one-off HTTP-callable cleanup endpoint (e.g. to trigger from a CI job, a webhook, or a manual `curl` during incident response).
 
 ```bash
-supabase functions invoke cleanup-stale-seeks --no-verify-jwt
+# from ochess-app/
+npx supabase --workdir .. login
+npx supabase --workdir .. link --project-ref <your-project-ref>
+npx supabase --workdir .. functions deploy cleanup-stale-seeks
 ```
+
+To run on demand:
+
+```bash
+npx supabase --workdir .. functions invoke cleanup-stale-seeks --no-verify-jwt
+```
+
+To inspect logs:
+
+```bash
+npx supabase --workdir .. functions logs cleanup-stale-seeks
+```
+
+(Newer CLI versions render a paginated log table; there is no `--tail` flag any more — `Ctrl+R` in the table refreshes.)
 
 ## Security
 
 - `SUPABASE_SERVICE_ROLE_KEY` is injected by the Supabase platform — never hardcoded.
-- The RPC itself is `SECURITY DEFINER` and `revoke execute ... from public, authenticated, anon`, so even if this function were misconfigured, no client-side caller can run it.
-- The function does not accept any input from the request body, so there is no injection surface.
+- The RPC itself is `SECURITY DEFINER` and `revoke execute ... from public, authenticated, anon`, so even a misconfigured function can't be used by the client.
+- The function does not accept request body input — no injection surface.

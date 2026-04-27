@@ -925,3 +925,31 @@ create policy "Users can delete their own avatar" on storage.objects
     bucket_id = 'avatars'
     and auth.uid()::text = (storage.foldername(name))[1]
   );
+
+-- ─────────────────────────────────────────────────────────────────────
+-- Scheduled job: drain stale matchmaking seeks every 5 minutes.
+--
+-- `cleanup_stale_seeks()` is restricted to the service_role for client
+-- safety, but pg_cron runs jobs as the `postgres` superuser, which can
+-- call it regardless of grants. This block:
+--   1. Enables pg_cron (no-op if already enabled).
+--   2. Idempotently re-creates a 5-minute schedule named
+--      `ochess-cleanup-stale-seeks`.
+--
+-- After running this in the Supabase SQL editor once, no further
+-- scheduling action is needed. Verify in `Database → Cron Jobs`.
+-- ─────────────────────────────────────────────────────────────────────
+
+create extension if not exists pg_cron with schema extensions;
+
+do $$ begin
+  if exists (select 1 from cron.job where jobname = 'ochess-cleanup-stale-seeks') then
+    perform cron.unschedule('ochess-cleanup-stale-seeks');
+  end if;
+end $$;
+
+select cron.schedule(
+  'ochess-cleanup-stale-seeks',
+  '*/5 * * * *',
+  $cron$select cleanup_stale_seeks()$cron$
+);
