@@ -139,6 +139,21 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   const [drawIncoming, setDrawIncoming] = useState(false);
   const [myDrawOffers, setMyDrawOffers] = useState(0);
   const MAX_DRAW_OFFERS = 3;
+  // One-line transient feedback for offer outcomes the user wouldn't
+  // otherwise notice (their rematch was declined; their draw was
+  // declined; the opponent canceled their incoming rematch). Lives
+  // for ~4 s then auto-clears. Using a single notice slot is fine -
+  // these events don't fire concurrently.
+  const [offerNotice, setOfferNotice] = useState(null);
+  const offerNoticeTimerRef = useRef(null);
+  const showOfferNotice = useCallback((text) => {
+    if (offerNoticeTimerRef.current) clearTimeout(offerNoticeTimerRef.current);
+    setOfferNotice(text);
+    offerNoticeTimerRef.current = setTimeout(() => setOfferNotice(null), 4000);
+  }, []);
+  useEffect(() => () => {
+    if (offerNoticeTimerRef.current) clearTimeout(offerNoticeTimerRef.current);
+  }, []);
   const [connected, setConnected] = useState(false);
   const [connectionDegraded, setConnectionDegraded] = useState(false);
   // The 8s degraded-connection timer in the mount effect closes over
@@ -490,6 +505,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
           return next;
         });
         setConfirmDraw(false);
+        showOfferNotice("Opponent declined your draw offer.");
       },
       onGameOver: (data) => {
         if (data?.userId && !validPlayers.has(data.userId)) return;
@@ -520,7 +536,21 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       onRematchAccept: (newGameData) => {
         if (newGameData?.id) navigate(`/game/online/${newGameData.id}`);
       },
-      onRematchDecline: () => { setRematchOffered(false); },
+      // Opponent declined OUR rematch. Flip the offered flag and
+      // surface a transient banner - the silent revert from the
+      // previous version made users think the click didn't register.
+      onRematchDecline: () => {
+        setRematchOffered(false);
+        showOfferNotice("Opponent declined the rematch.");
+      },
+      // Opponent canceled their incoming rematch (they clicked
+      // Cancel on their side). Mirrors onRematchDecline from the
+      // other direction so our "they want a rematch!" banner clears
+      // immediately instead of waiting for the slower DB sync.
+      onRematchCancel: () => {
+        setRematchIncoming(false);
+        showOfferNotice("Opponent canceled the rematch offer.");
+      },
       onConnected: () => {
         setConnected(true);
         setConnectionDegraded(false);
@@ -623,6 +653,10 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   }, [gameOver, playerColor, saveGameState, clock, hasTime, checkEnd, previewPly]);
 
   const handleResign = useCallback(() => {
+    // Belt-and-suspenders: the resign button is gated on !gameOver in
+    // render, but a stale click queued before the row arrives as
+    // completed could still re-enter here. Bail silently in that case.
+    if (gameOverRef.current) return;
     if (!confirmResign) { setConfirmResign(true); return; }
     channelRef.current?.sendResign(authUserIdRef.current);
     endGame(playerColor === "w" ? "0-1" : "1-0", "resignation");
@@ -630,6 +664,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   }, [playerColor, endGame, confirmResign]);
 
   const handleDrawOffer = useCallback(() => {
+    if (gameOverRef.current) return;
     if (myDrawOffers >= MAX_DRAW_OFFERS) return;
     if (!confirmDraw) { setConfirmDraw(true); return; }
     channelRef.current?.sendDrawOffer(authUserIdRef.current);
@@ -641,17 +676,23 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   }, [confirmDraw, myDrawOffers, playerColor, saveGameState]);
 
   const handleDrawAccept = useCallback(() => {
+    if (gameOverRef.current) return;
     channelRef.current?.sendDrawAccept(authUserIdRef.current);
     endGame("1/2-1/2", "draw by agreement");
     setDrawIncoming(false);
   }, [endGame]);
 
   const handleDrawDecline = useCallback(() => {
+    // Decline is safe to send even after the game ends (it just
+    // clears the offer banner on both sides), but skip the redundant
+    // broadcast once we're sure the game is over.
+    if (gameOverRef.current) { setDrawIncoming(false); return; }
     channelRef.current?.sendDrawDecline(authUserIdRef.current);
     setDrawIncoming(false);
   }, []);
 
   const handleAbort = useCallback(async () => {
+    if (gameOverRef.current) return;
     if (!confirmAbort) { setConfirmAbort(true); return; }
     channelRef.current?.sendGameOver({ result: "*", reason: "aborted", userId: authUserIdRef.current });
     setConfirmAbort(false);
@@ -659,15 +700,25 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   }, [endGame, confirmAbort]);
 
   const handleRematchOffer = useCallback(async () => {
+    // Rematch flows are only meaningful AFTER the game ends. If the
+    // user somehow clicks before gameOver flips (e.g. a queued click
+    // during the result-row arrival), silently bail.
+    if (!gameOverRef.current) return;
+    if (rematchOffered || rematchIncoming) return; // already mid-flow
     if (!confirmRematch) { setConfirmRematch(true); return; }
     setConfirmRematch(false);
     setRematchOffered(true);
     saveGameState({ rematch_offered_by: authUserIdRef.current });
     channelRef.current?.sendRematchOffer(authUserIdRef.current);
-  }, [confirmRematch, saveGameState]);
+  }, [confirmRematch, saveGameState, rematchOffered, rematchIncoming]);
 
   const handleRematchCancel = useCallback(() => {
     setRematchOffered(false);
+    // Send the broadcast first so the opponent's banner clears
+    // instantly. Then persist the cancel to the DB so a refresh by
+    // either side reflects the same state. Order matters - if the
+    // DB write fails, we still want the opponent to see the cancel.
+    channelRef.current?.sendRematchCancel(authUserIdRef.current);
     saveGameState({ rematch_offered_by: null });
   }, [saveGameState]);
 
@@ -679,13 +730,27 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       // The RPC handles the race: if the opponent already accepted,
       // we get back the same rematch row instead of creating a new one.
       const newGame = await createRematchGame(gameData.id, authUserIdRef.current);
-      if (!newGame) return;
+      if (!newGame) {
+        // RPC returned nothing (network blip / RLS denial / opponent
+        // already canceled). Surface a notice so the user isn't
+        // staring at a frozen "Accept" button.
+        showOfferNotice("Couldn't accept the rematch. Please try again.");
+        setRematchIncoming(false);
+        return;
+      }
       channelRef.current?.sendRematchAccept(newGame);
       navigate(`/game/online/${newGame.id}`);
+    } catch (err) {
+      // createRematchGame can throw on a stale offer (opponent
+      // canceled between offer and accept). Show a notice instead of
+      // bubbling the unhandled rejection.
+      console.error("[OnlineGameScreen] rematch accept failed:", err);
+      showOfferNotice("Couldn't accept the rematch. Please try again.");
+      setRematchIncoming(false);
     } finally {
       rematchAcceptingRef.current = false;
     }
-  }, [gameData, navigate]);
+  }, [gameData, navigate, showOfferNotice]);
 
   const handleRematchDecline = useCallback(() => {
     channelRef.current?.sendRematchDecline(authUserIdRef.current);
@@ -822,6 +887,21 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
 
   return (
     <div className="min-h-screen min-h-[100dvh] bg-surface flex flex-col">
+      {/* Floating one-line feedback for offer-declined / cancelled
+          events. Lives above everything so it renders in both
+          active-game and post-game states (draw decline can fire
+          mid-game; rematch decline / cancel only fires post-game).
+          Placed just below the top bar (top-14) so it doesn't
+          collide with the navbar or the resign/draw confirm dialogs. */}
+      {offerNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="anim-fade-up fixed left-1/2 -translate-x-1/2 top-14 z-30 px-4 py-2 bg-surface-low border border-on-surface-variant/20 text-[12px] text-on-surface-variant/85 shadow-lg max-w-[90vw] text-center"
+        >
+          {offerNotice}
+        </div>
+      )}
       {/* ── Top bar ── */}
       <div className="w-full bg-surface-lowest/80 backdrop-blur-xl border-b border-white/[0.04] px-4 sm:px-6 h-12 flex items-center justify-between shrink-0 z-10">
         <button onClick={() => navigate("/")} className="flex items-center gap-2 text-on-surface-variant/50 hover:text-primary transition-colors py-2 pr-3">

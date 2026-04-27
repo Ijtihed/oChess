@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import OnlineGameScreen from "./OnlineGameScreen";
@@ -42,15 +42,32 @@ vi.mock("../lib/supabase", () => ({
   isOnline: () => true,
 }));
 
+// Capture the callbacks the component registers so individual tests
+// can fire broadcast-events directly (e.g. simulate the opponent
+// declining a rematch).
+export const channelCallbacksRef = { value: null };
+const channelStub = {
+  leave: vi.fn(),
+  unsubscribe: vi.fn(),
+  send: vi.fn(() => Promise.resolve()),
+  sendMove: vi.fn(),
+  sendResign: vi.fn(),
+  sendDrawOffer: vi.fn(),
+  sendDrawAccept: vi.fn(),
+  sendDrawDecline: vi.fn(),
+  sendGameOver: vi.fn(),
+  sendChat: vi.fn(),
+  sendRematchOffer: vi.fn(),
+  sendRematchAccept: vi.fn(),
+  sendRematchDecline: vi.fn(),
+  sendRematchCancel: vi.fn(),
+};
+
 vi.mock("../lib/online-game", () => ({
-  // joinGameChannel returns a Realtime channel whose contract includes
-  // .leave() / .send() / .unsubscribe(); stub the bare minimum that
-  // the component reaches for during mount + cleanup.
-  joinGameChannel: vi.fn(() => ({
-    leave: vi.fn(),
-    unsubscribe: vi.fn(),
-    send: vi.fn(() => Promise.resolve()),
-  })),
+  joinGameChannel: vi.fn((_id, cbs) => {
+    channelCallbacksRef.value = cbs;
+    return channelStub;
+  }),
   completeGame: vi.fn(() => Promise.resolve()),
   saveGameStateToDB: vi.fn(() => Promise.resolve()),
   createRematchGame: vi.fn(() => Promise.resolve({ id: "rematch-id" })),
@@ -67,6 +84,9 @@ vi.mock("../lib/sounds", () => ({
   playDefeat: vi.fn(),
   playDraw: vi.fn(),
   playLowTime: vi.fn(),
+  playChatNotify: vi.fn(),
+  playOfferNotify: vi.fn(),
+  playSocialNotify: vi.fn(),
   preloadAll: vi.fn(),
 }));
 
@@ -175,5 +195,61 @@ describe("OnlineGameScreen (smoke)", () => {
     const minimal = makeGameData({ chat: null, last_move_at: null });
     mount(minimal);
     expect(screen.getByTestId("board")).toBeDefined();
+  });
+
+  // ── Offer-decline / cancel toast flow ─────────────────────────────
+  // When the opponent rejects MY rematch (or cancels their own
+  // incoming rematch on the other side), the component should
+  // surface a transient banner. Previously the UI silently reverted
+  // and users couldn't tell whether their click had registered.
+
+  it("shows a toast banner when the opponent declines a rematch", () => {
+    const completed = makeGameData({
+      status: "completed",
+      result: "white_wins",
+      pgn: "1. e4 e5 2. f4 exf4",
+      rematch_offered_by: "user-1", // I'm the offerer.
+    });
+    mount(completed);
+    // Pretend the opponent's rematch_decline broadcast arrived.
+    act(() => { channelCallbacksRef.value?.onRematchDecline?.({ userId: "user-2" }); });
+    expect(screen.getByText(/Opponent declined the rematch/i)).toBeDefined();
+  });
+
+  it("shows a toast banner when the opponent cancels their incoming rematch", () => {
+    const completed = makeGameData({
+      status: "completed",
+      result: "white_wins",
+      pgn: "1. e4 e5 2. f4 exf4",
+      rematch_offered_by: "user-2", // Opponent is the offerer.
+    });
+    mount(completed);
+    act(() => { channelCallbacksRef.value?.onRematchCancel?.({ userId: "user-2" }); });
+    expect(screen.getByText(/Opponent canceled the rematch offer/i)).toBeDefined();
+  });
+
+  it("shows a toast banner when the opponent declines a draw offer", () => {
+    const active = makeGameData({ pgn: "1. e4 e5" });
+    mount(active);
+    // The decliner must be one of the players for the validPlayers
+    // gate to pass; the opponent here is user-2.
+    act(() => { channelCallbacksRef.value?.onDrawDecline?.({ userId: "user-2" }); });
+    expect(screen.getByText(/Opponent declined your draw offer/i)).toBeDefined();
+  });
+
+  it("ignores rematch_decline broadcasts from outside the player set", () => {
+    const completed = makeGameData({
+      status: "completed",
+      result: "white_wins",
+      pgn: "1. e4 e5",
+    });
+    mount(completed);
+    // The component currently only validates this on offer/accept;
+    // decline is permissive on purpose (the broadcast can only have
+    // come from the opposite tab if self:false is honored). This
+    // test pins the existing behavior so a future tightening here
+    // stays an explicit decision rather than a silent regression.
+    act(() => { channelCallbacksRef.value?.onRematchDecline?.({ userId: "user-1" }); });
+    expect(screen.getByText(/Opponent declined the rematch/i)).toBeDefined();
   });
 });

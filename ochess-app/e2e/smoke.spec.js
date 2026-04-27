@@ -35,7 +35,7 @@ test.describe("oChess smoke", () => {
   });
 
   test("guest mode persists across reload and shows the dashboard", async ({ page }) => {
-    // We don't drive the modal click here — the modal flow is unit-
+    // We don't drive the modal click here - the modal flow is unit-
     // tested in AuthModal.test.jsx and is animation-flaky in headless
     // browsers. Instead we set the same localStorage flag the modal
     // would set, then verify the resulting end-to-end behavior:
@@ -44,11 +44,18 @@ test.describe("oChess smoke", () => {
       try { window.localStorage.setItem("ochess_guest_session", "1"); } catch { /* ok */ }
     });
     await page.goto("/");
+    // The AppShell shows a brief "oChess" + spinner loading screen
+    // while AuthProvider hydrates the session. Wait for the actual
+    // guest dashboard heading ("Welcome") to land before asserting
+    // body content - reading innerText too early just catches the
+    // spinner shell (6 chars of "oChess").
+    await expect(page.getByRole("heading", { name: /welcome/i })).toBeVisible({ timeout: 10_000 });
     const bodyText = await page.locator("body").innerText();
     expect(bodyText.length).toBeGreaterThan(20);
     await page.reload();
     const guest = await page.evaluate(() => window.localStorage.getItem("ochess_guest_session"));
     expect(guest).toBe("1");
+    await expect(page.getByRole("heading", { name: /welcome/i })).toBeVisible({ timeout: 10_000 });
     const bodyAfter = await page.locator("body").innerText();
     expect(bodyAfter.length).toBeGreaterThan(20);
   });

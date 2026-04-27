@@ -134,6 +134,10 @@ export function joinGameChannel(gameId, callbacks) {
     .on("broadcast", { event: "rematch_offer" }, (payload) => { callbacks.onRematchOffer?.(payload.payload); })
     .on("broadcast", { event: "rematch_accept" }, (payload) => { callbacks.onRematchAccept?.(payload.payload); })
     .on("broadcast", { event: "rematch_decline" }, (payload) => { callbacks.onRematchDecline?.(payload.payload); })
+    // The offerer canceling their own rematch needs a fast cue too,
+    // otherwise the opponent's "they want a rematch!" banner sits
+    // there until the slower postgres-changes feed arrives.
+    .on("broadcast", { event: "rematch_cancel" }, (payload) => { callbacks.onRematchCancel?.(payload.payload); })
     .on("presence", { event: "sync" }, () => { callbacks.onPresenceSync?.(channel.presenceState()); })
     .subscribe(async (status) => {
       log("joinGameChannel status:", status);
@@ -155,6 +159,7 @@ export function joinGameChannel(gameId, callbacks) {
     sendRematchOffer(userId) { channel.send({ type: "broadcast", event: "rematch_offer", payload: { userId } }); },
     sendRematchAccept(gameData) { channel.send({ type: "broadcast", event: "rematch_accept", payload: gameData }); },
     sendRematchDecline(userId) { channel.send({ type: "broadcast", event: "rematch_decline", payload: { userId } }); },
+    sendRematchCancel(userId) { channel.send({ type: "broadcast", event: "rematch_cancel", payload: { userId } }); },
     leave() { try { channel.untrack(); client.removeChannel(channel); } catch {} },
   };
 }
