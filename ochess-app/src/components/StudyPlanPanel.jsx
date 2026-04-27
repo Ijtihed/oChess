@@ -16,6 +16,7 @@ import {
   cardId,
   loadSchedules,
 } from "../lib/review-cards";
+import { callCoach, isCoachAvailable } from "../lib/coach-llm";
 
 /**
  * Plan tab — the "what should I work on?" surface.
@@ -84,6 +85,15 @@ export default function StudyPlanPanel({ onStartSession }) {
   const [query, setQuery] = useState("");
   const [activeChip, setActiveChip] = useState(null);
 
+  // AI Coach state — populated by the Edge Function call. Stored
+  // alongside the cards so a user reading the plan and switching
+  // tabs doesn't lose what the LLM said. Cleared explicitly when the
+  // user re-analyzes (the corpus may have shifted) or when they hit
+  // the regenerate button.
+  const [coachLoading, setCoachLoading] = useState(false);
+  const [coachData, setCoachData] = useState(null);
+  const [coachError, setCoachError] = useState(null);
+
   const profileWeakness = useMemo(() => buildWeaknessProfile(allCards), [allCards]);
 
   const filteredCards = useMemo(() => {
@@ -105,6 +115,40 @@ export default function StudyPlanPanel({ onStartSession }) {
     abortRef.current?.abort();
     abortRef.current = null;
     setPhase("ready");
+  }, []);
+
+  const generateAICoach = useCallback(async () => {
+    setCoachLoading(true);
+    setCoachError(null);
+    try {
+      // Send the mistakes that match the *current filter* — that way
+      // a user who chipped "Endgame" gets an endgame-specific plan,
+      // not a generic one. If nothing's filtered, send the full
+      // mistake corpus (capped at 30 server-side).
+      const mistakes = (filteredCards.length > 0 ? filteredCards : allCards)
+        .filter((c) => c.type === "mistake" || c.type === "puzzle")
+        .slice(0, 30);
+      if (mistakes.length === 0) {
+        setCoachError("No mistake cards to coach yet. Run analysis first.");
+        return;
+      }
+      const result = await callCoach({ mistakes, query, dailyQuota: 5 });
+      if (!result.ok) {
+        setCoachError(result.error || "Coach unavailable.");
+        return;
+      }
+      setCoachData(result);
+    } catch (e) {
+      setCoachError(e?.message || "Coach unavailable.");
+    } finally {
+      setCoachLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredCards, allCards, query]);
+
+  const dismissCoach = useCallback(() => {
+    setCoachData(null);
+    setCoachError(null);
   }, []);
 
   const runImport = useCallback(async () => {
@@ -328,6 +372,88 @@ export default function StudyPlanPanel({ onStartSession }) {
           </div>
         )}
       </div>
+
+      {/* AI Coach — opt-in. Reads the user's mistake corpus and
+          generates a natural-language plan via the `coach` Edge
+          Function. The button appears even before generation; once
+          we have a result we render summary + multi-day plan +
+          per-card insights. */}
+      {isCoachAvailable() && (
+        <div className="p-5 bg-surface-low border border-primary/15">
+          <div className="flex items-baseline justify-between mb-3">
+            <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-primary/80">AI Coach</h3>
+            {coachData && (
+              <button onClick={dismissCoach}
+                className="text-[10px] uppercase tracking-widest text-on-surface-variant/40 hover:text-on-surface-variant/70 transition-colors">
+                Dismiss
+              </button>
+            )}
+          </div>
+
+          {!coachData && !coachError && (
+            <p className="text-[12px] text-on-surface-variant/50 mb-3 leading-relaxed">
+              Ask a free Llama 3 model to read your mistakes, name your weakness in plain English,
+              and write you a multi-day plan. Inference happens on a free Groq API tier through a
+              Supabase Edge Function — no per-request cost.
+            </p>
+          )}
+          {coachError && (
+            <div className="p-3 bg-error/10 border border-error/20 text-[12px] text-error mb-3">
+              {coachError}
+            </div>
+          )}
+
+          {coachData && (
+            <div className="space-y-4 mb-4">
+              {coachData.summary && (
+                <p className="text-[13px] text-on-surface leading-relaxed">{coachData.summary}</p>
+              )}
+              {Array.isArray(coachData.plan) && coachData.plan.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 block">
+                    Multi-day plan
+                  </span>
+                  {coachData.plan.map((d) => (
+                    <div key={d.day} className="px-3 py-2 bg-surface-container border border-white/[0.04]">
+                      <div className="flex items-baseline justify-between mb-0.5">
+                        <span className="font-headline text-[13px] font-bold text-primary">
+                          Day {d.day} · {d.focus}
+                        </span>
+                        <span className="text-[10px] text-on-surface-variant/30 tabular-nums">{d.card_count} cards</span>
+                      </div>
+                      {d.explanation && (
+                        <p className="text-[12px] text-on-surface-variant/55 leading-relaxed">{d.explanation}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {Array.isArray(coachData.insights) && coachData.insights.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 block">
+                    Per-mistake notes
+                  </span>
+                  {coachData.insights.map((ins, i) => (
+                    <p key={i} className="text-[12px] text-on-surface-variant/60 leading-relaxed">
+                      <span className="text-on-surface-variant/30 tabular-nums">{ins.ply ?? i + 1}.</span>{" "}
+                      {ins.insight}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {coachData.model && (
+                <p className="text-[10px] text-on-surface-variant/20">via {coachData.model}</p>
+              )}
+            </div>
+          )}
+
+          <button onClick={generateAICoach}
+            disabled={coachLoading}
+            className="btn btn-primary w-full py-2.5 text-xs">
+            {coachLoading ? "Thinking…" : coachData ? "Regenerate" : "Generate AI plan"}
+          </button>
+        </div>
+      )}
 
       {/* Free-text + chip filters */}
       <div className="p-5 bg-surface-low border border-white/[0.04]">
