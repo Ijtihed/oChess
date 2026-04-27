@@ -125,6 +125,7 @@ export async function analyzeGameForMistakes(pgn, userColor, opts = {}) {
     const afterChess = new Chess(fen);
     try { afterChess.move({ from: move.from, to: move.to, promotion: move.promotion }); } catch { continue; }
     const after = await evaluate(afterChess.fen(), depth);
+    if (signal?.aborted) break;
 
     analyzed++;
     onProgress?.(analyzed, userMoves.length);

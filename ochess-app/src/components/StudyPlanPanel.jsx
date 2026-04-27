@@ -137,7 +137,22 @@ export default function StudyPlanPanel({ onStartSession }) {
   const [phase, setPhase] = useState("ready"); // ready | importing | analyzing | built | error
   const [progress, setProgress] = useState({ source: "", fetched: 0, total: 0, analyzed: 0, totalMoves: 0, gameIdx: 0, gameCount: 0 });
   const [err, setErr] = useState(null);
+  // `cancelling` toggles after the user clicks Cancel so the button
+  // can flip to "Stopping..." while we wait for the in-flight
+  // Stockfish call to wind down. The actual abort signal is what
+  // does the work; this state is just UI feedback.
+  const [cancelling, setCancelling] = useState(false);
   const abortRef = useRef(null);
+
+  // If the user navigates away mid-analysis, abort the in-flight
+  // work so we don't keep Stockfish chewing CPU after the component
+  // is gone. fetchLichessGames / fetchChesscomGames already respect
+  // the signal via fetch(), and analyzeGameForMistakes checks it
+  // between every move pair.
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
 
   // Card store - re-read on every build/refresh so the Today tab and
   // this tab stay in lockstep.
@@ -175,9 +190,13 @@ export default function StudyPlanPanel({ onStartSession }) {
   );
 
   const cancelImport = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setPhase("ready");
+    if (!abortRef.current) return;
+    setCancelling(true);
+    abortRef.current.abort();
+    // Phase transition is handled inside runImport's terminal block
+    // - it knows whether any partial cards survived. Setting phase
+    // here would race with that block and either show "ready" when
+    // we have partial cards or flicker between states.
   }, []);
 
   const generateAICoach = useCallback(async () => {
@@ -220,10 +239,16 @@ export default function StudyPlanPanel({ onStartSession }) {
       return;
     }
     setErr(null);
+    setCancelling(false);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setPhase("importing");
     setProgress({ source: useChesscom ? "chess.com" : "lichess", fetched: 0, total: 0, analyzed: 0, totalMoves: 0, gameIdx: 0, gameCount: 0 });
+
+    // Pre-existing card count so we can decide the terminal phase
+    // even if `newCards` ends up empty due to a fast cancel.
+    const preExistingMistakes = allCards.filter((c) => c.type === "mistake" || c.type === "puzzle").length;
+    const newCards = [];
 
     try {
       const games = [];
@@ -245,58 +270,74 @@ export default function StudyPlanPanel({ onStartSession }) {
         });
         games.push(...liGames);
       }
-      if (ctrl.signal.aborted) return;
 
-      // Move into analysis phase. We process games sequentially so
-      // Stockfish doesn't fight itself for CPU.
-      setPhase("analyzing");
-      setProgress((p) => ({ ...p, gameCount: games.length, gameIdx: 0 }));
+      if (!ctrl.signal.aborted) {
+        // Move into analysis phase. We process games sequentially so
+        // Stockfish doesn't fight itself for CPU.
+        setPhase("analyzing");
+        setProgress((p) => ({ ...p, gameCount: games.length, gameIdx: 0 }));
 
-      const newCards = [];
-      const seen = new Set(allCards.map((c) => c.id).filter(Boolean));
+        const seen = new Set(allCards.map((c) => c.id).filter(Boolean));
 
-      for (let i = 0; i < games.length; i++) {
-        if (ctrl.signal.aborted) break;
-        const g = games[i];
-        const userColor = detectUserColor(g.pgn, cc, li);
-        if (!userColor) continue;
+        for (let i = 0; i < games.length; i++) {
+          if (ctrl.signal.aborted) break;
+          const g = games[i];
+          const userColor = detectUserColor(g.pgn, cc, li);
+          if (!userColor) continue;
 
-        setProgress((p) => ({ ...p, gameIdx: i + 1, analyzed: 0, totalMoves: 0 }));
+          setProgress((p) => ({ ...p, gameIdx: i + 1, analyzed: 0, totalMoves: 0 }));
 
-        const mistakes = await analyzeGameForMistakes(g.pgn, userColor, {
-          signal: ctrl.signal,
-          onProgress: (n, total) => setProgress((p) => ({ ...p, analyzed: n, totalMoves: total })),
-          gameMeta: {
-            source: g.source,
-            id: g.id,
-            gameId: g.id,
-            opening: g.opening,
-            url: g.url,
-          },
-        });
-        for (const m of mistakes) {
-          if (!seen.has(m.id)) {
-            newCards.push(m);
-            seen.add(m.id);
+          const mistakes = await analyzeGameForMistakes(g.pgn, userColor, {
+            signal: ctrl.signal,
+            onProgress: (n, total) => setProgress((p) => ({ ...p, analyzed: n, totalMoves: total })),
+            gameMeta: {
+              source: g.source,
+              id: g.id,
+              gameId: g.id,
+              opening: g.opening,
+              url: g.url,
+            },
+          });
+          for (const m of mistakes) {
+            if (!seen.has(m.id)) {
+              newCards.push(m);
+              seen.add(m.id);
+            }
           }
         }
       }
 
+      // Persist whatever we got - including partial work after a
+      // cancel. The user's effort isn't wasted by clicking Stop.
       if (newCards.length > 0) {
         const merged = [...allCards, ...newCards];
         saveCards(merged);
         setAllCards(merged);
-      } else {
-        setAllCards(loadCards());
       }
 
-      setPhase("built");
+      // Terminal phase: built if we have cards (existing or just
+      // imported), ready otherwise. This is deliberately the only
+      // place that decides the post-import phase, so a Cancel never
+      // races with us.
+      const finalCount = preExistingMistakes + newCards.length;
+      setPhase(finalCount > 0 ? "built" : "ready");
     } catch (e) {
-      if (e?.name === "AbortError") return;
+      if (e?.name === "AbortError") {
+        // Persist any partial work before bowing out.
+        if (newCards.length > 0) {
+          const merged = [...allCards, ...newCards];
+          saveCards(merged);
+          setAllCards(merged);
+        }
+        const finalCount = preExistingMistakes + newCards.length;
+        setPhase(finalCount > 0 ? "built" : "ready");
+        return;
+      }
       setErr(e?.message || "Something went wrong while building your plan.");
       setPhase("error");
     } finally {
       abortRef.current = null;
+      setCancelling(false);
     }
   }, [useChesscom, useLichess, cc, li, allCards, gameLimit]);
 
@@ -319,11 +360,11 @@ export default function StudyPlanPanel({ onStartSession }) {
     return (
       <div className="anim-fade-up p-6 bg-surface-low border border-white/[0.04]">
         <h3 className="font-headline text-sm font-bold uppercase tracking-widest text-primary mb-3">
-          {phase === "importing" ? "Fetching games" : "Finding your mistakes"}
+          {cancelling ? "Stopping..." : phase === "importing" ? "Fetching games" : "Finding your mistakes"}
         </h3>
         {phase === "importing" ? (
           <p className="text-[13px] text-on-surface-variant/55 mb-4">
-            Pulling from {progress.source}… <span className="text-on-surface-variant/80 font-bold">{progress.fetched}</span> games loaded.
+            Pulling from {progress.source}... <span className="text-on-surface-variant/80 font-bold">{progress.fetched}</span> games loaded.
           </p>
         ) : (
           <>
@@ -335,15 +376,21 @@ export default function StudyPlanPanel({ onStartSession }) {
             </p>
           </>
         )}
-        <div className="h-1.5 bg-surface-high overflow-hidden mb-4">
+        <div className="h-1.5 bg-surface-high overflow-hidden mb-2">
           <div
-            className="h-full bg-primary transition-all duration-150"
+            className={`h-full transition-all duration-150 ${cancelling ? "bg-on-surface-variant/30" : "bg-primary"}`}
             style={{ width: `${pctAnalyze || pctImport || 5}%` }}
           />
         </div>
+        <p className="text-[10px] text-on-surface-variant/30 mb-4">
+          {cancelling
+            ? "Waiting for the current move to finish... your partial mistakes will be saved."
+            : "Stop any time. Mistakes found so far will be kept."}
+        </p>
         <button onClick={cancelImport}
-          className="btn btn-secondary px-4 py-2 text-xs">
-          Cancel
+          disabled={cancelling}
+          className="btn btn-secondary w-full py-2.5 text-xs">
+          {cancelling ? "Stopping..." : "Stop analysis"}
         </button>
       </div>
     );
