@@ -124,8 +124,13 @@ describe("createChallenge", () => {
 
 describe("getChallenge expiry", () => {
   it("returns the row when it's fresh", async () => {
+    // The library compares created_at against the real Date.now(),
+    // and the mock seeds created_at from state.nowMs (a fixed past
+    // timestamp). Freeze the system clock to that timestamp so the
+    // "0 elapsed" branch holds regardless of when the suite runs.
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(new Date(state.nowMs));
     const created = await createChallenge("u1", "A", 1500, { timeControl: "5+0" });
-    // nowFn is the same -> 0 elapsed -> not expired
     const out = await getChallenge(created.code);
     expect(out).toBeTruthy();
     expect(out.code).toBe(created.code);

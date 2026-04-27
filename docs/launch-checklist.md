@@ -99,10 +99,17 @@ Build command: `cd ochess-app && npm ci && npm run build`. Publish directory: `o
 
 `schema.sql` defines `cleanup_stale_seeks()` that deletes matchmaking seeks older than 15 minutes. It's restricted to the `service_role` so it can't be called from the client.
 
-Pick one:
+The repo ships a ready-to-deploy Edge Function at `supabase/functions/cleanup-stale-seeks/`. Deploy it with:
 
-- **Supabase Edge Function + cron**: create a small function that runs `await supabase.rpc("cleanup_stale_seeks")` with the service role key and schedule it every 5 minutes via `cron: "*/5 * * * *"` in `supabase/functions/<name>/index.ts`.
-- **External cron**: any platform with cron (GitHub Actions on a schedule, Cloudflare Workers Cron, etc.) calling the RPC with the service role key.
+```bash
+supabase login
+supabase link --project-ref <your-project-ref>
+supabase functions deploy cleanup-stale-seeks --schedule "*/5 * * * *"
+```
+
+Verify with `supabase functions logs cleanup-stale-seeks --tail` — you should see a successful invocation every 5 minutes.
+
+Alternatives if you prefer not to use Edge Functions: any external scheduler (GitHub Actions cron, Cloudflare Workers Cron, etc.) calling the RPC with the service role key, or `pg_cron` if it's enabled on your project.
 
 ### 10. Lock down the `main` branch
 
@@ -163,9 +170,28 @@ The post-launch loop (per the product context) needs retention data. Pick a priv
 
 ---
 
-## Pre-launch test pass
+## Pre-launch sanity checks
 
-Once everything above is done, walk through these flows on the deployed app:
+The repo ships two automated harnesses you should run before the manual pass:
+
+```bash
+# Verifies your Supabase project has the tables, RPCs, bucket, and
+# realtime endpoint the app expects. Reads VITE_SUPABASE_URL +
+# VITE_SUPABASE_ANON_KEY from ochess-app/.env.
+cd ochess-app && npm run check:supabase
+
+# End-to-end smoke covering the flows that don't need a second user
+# or real email: landing, guest mode, bot game route, puzzles,
+# analysis, public profile 404, signed-out profile, mobile viewport.
+# Boots the dev server automatically.
+cd ochess-app && npx playwright install chromium && npm run e2e
+```
+
+Both must pass before you start the manual flow walkthrough.
+
+## Pre-launch test pass (manual)
+
+Once the automated checks above are green, walk through these flows on the deployed app — they cover the integrations the smoke can't simulate (real Realtime latency, OAuth round-trip, two real users):
 
 1. **Cold load `/`** — landing page renders, "Sign In" works, "Play as Guest" actually puts you in guest mode and shows the dashboard.
 2. **Sign up with email** — after submit you see "Check your inbox", click the email link, return, sign in.

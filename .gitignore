@@ -23,3 +23,9 @@ stitch-exports/
 *.swp
 *.swo
 *~
+
+# Playwright
+ochess-app/test-results/
+ochess-app/playwright-report/
+ochess-app/blob-report/
+ochess-app/playwright/.cache/
