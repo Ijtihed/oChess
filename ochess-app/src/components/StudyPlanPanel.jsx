@@ -193,6 +193,21 @@ export default function StudyPlanPanel({ onStartSession }) {
   const [coachLoading, setCoachLoading] = useState(false);
   const [coachData, setCoachData] = useState(null);
   const [coachError, setCoachError] = useState(null);
+  // Per-user rate-limit cooldown surfaced from the Edge Function.
+  // When the server returns a 429, we capture `retryAfterSeconds`
+  // and tick down once per second until it hits 0. The Generate
+  // button is disabled + relabeled while the countdown is active
+  // so the user never has to retry-and-fail to learn the cap.
+  const [coachCooldownSec, setCoachCooldownSec] = useState(0);
+  // Last-known usage from a successful call: { callsInWindow,
+  // maxCalls, windowSeconds }. Lets us render "2/3 used" next to
+  // the button without an extra round-trip.
+  const [coachUsage, setCoachUsage] = useState(null);
+  useEffect(() => {
+    if (coachCooldownSec <= 0) return;
+    const t = setTimeout(() => setCoachCooldownSec((n) => Math.max(0, n - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [coachCooldownSec]);
 
   const profileWeakness = useMemo(() => buildWeaknessProfile(allCards), [allCards]);
 
@@ -336,6 +351,10 @@ export default function StudyPlanPanel({ onStartSession }) {
   }, []);
 
   const generateAICoach = useCallback(async () => {
+    // Pre-flight: respect the cooldown the server told us about
+    // last time. Avoids an unnecessary round-trip and matches the
+    // disabled-button UX.
+    if (coachCooldownSec > 0) return;
     setCoachLoading(true);
     setCoachError(null);
     try {
@@ -352,17 +371,33 @@ export default function StudyPlanPanel({ onStartSession }) {
       }
       const result = await callCoach({ mistakes, query, dailyQuota: 5 });
       if (!result.ok) {
+        // Special-case the 429: arm the cooldown countdown and surface
+        // a friendly inline notice. Don't toss it on the generic
+        // error pile because the user CAN retry just not yet.
+        if (result.rateLimited) {
+          setCoachCooldownSec(Math.max(1, result.retryAfterSeconds || 0));
+          setCoachUsage({
+            callsInWindow: result.callsInWindow || 0,
+            maxCalls: result.maxCalls || 0,
+            windowSeconds: result.windowSeconds || 0,
+          });
+          setCoachError(null);
+          return;
+        }
         setCoachError(result.error || "Coach unavailable.");
         return;
       }
       setCoachData(result);
+      // Refresh the usage badge from the success response so the
+      // next "x/y used" chip is accurate.
+      if (result.rateLimit) setCoachUsage(result.rateLimit);
     } catch (e) {
       setCoachError(e?.message || "Coach unavailable.");
     } finally {
       setCoachLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredCards, allCards, query]);
+  }, [filteredCards, allCards, query, coachCooldownSec]);
 
   const dismissCoach = useCallback(() => {
     setCoachData(null);
@@ -859,11 +894,38 @@ export default function StudyPlanPanel({ onStartSession }) {
             </div>
           )}
 
+          {/* Cooldown notice - server-driven. When the user hits
+              the per-account rate limit, the Edge Function returns
+              a 429 with `retry_after_seconds`; we tick that down
+              once per second and disable the button until 0. */}
+          {coachCooldownSec > 0 && (
+            <div className="anim-fade-up mb-3 px-3 py-2 bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400">
+              You're using the AI coach a lot. Try again in {coachCooldownSec}s.
+              {coachUsage?.maxCalls
+                ? ` (Limit ${coachUsage.maxCalls} per ${Math.round(coachUsage.windowSeconds / 60)} min.)`
+                : ""}
+            </div>
+          )}
           <button onClick={generateAICoach}
-            disabled={coachLoading}
+            disabled={coachLoading || coachCooldownSec > 0}
             className="btn btn-primary w-full py-2.5 text-xs">
-            {coachLoading ? "Thinking…" : coachData ? "Regenerate" : "Generate AI plan"}
+            {coachLoading
+              ? "Thinking..."
+              : coachCooldownSec > 0
+                ? `Wait ${coachCooldownSec}s`
+                : coachData
+                  ? "Regenerate"
+                  : "Generate AI plan"}
           </button>
+          {/* Usage badge - keeps the user informed without us having
+              to surface the cap only when they hit it. Renders only
+              after at least one successful call so we have real
+              numbers to show. */}
+          {coachUsage?.maxCalls > 0 && coachCooldownSec === 0 && (
+            <p className="text-[10px] text-on-surface-variant/30 mt-2 text-center">
+              {coachUsage.callsInWindow}/{coachUsage.maxCalls} calls in the last {Math.round(coachUsage.windowSeconds / 60)} min
+            </p>
+          )}
         </div>
       )}
 

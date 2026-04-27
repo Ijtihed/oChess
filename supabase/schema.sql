@@ -228,6 +228,21 @@ drop index if exists idx_unique_friendship_pair;
 create unique index idx_unique_friendship_pair
   on friendships (normalize_friendship_pair(user_id, friend_id));
 
+-- ── coach_calls (AI rate-limit log) ──
+-- Each successful call to the `coach` Edge Function inserts a row
+-- here. The `record_coach_call` RPC reads recent rows to enforce a
+-- per-user rolling-window cap before forwarding to Groq, so a
+-- single user can't drain the whole LLM budget. RLS keeps the
+-- table opaque to clients - only the SECURITY DEFINER RPC and the
+-- service role can touch it.
+create table if not exists coach_calls (
+  id bigserial primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_coach_calls_user_created
+  on coach_calls(user_id, created_at desc);
+
 -- ────────────────────────────────────────────────────────────────
 -- INDEXES
 -- ────────────────────────────────────────────────────────────────
@@ -269,6 +284,11 @@ alter table puzzle_progress enable row level security;
 alter table puzzle_attempts enable row level security;
 alter table review_cards enable row level security;
 alter table friendships enable row level security;
+-- coach_calls deliberately gets no policies. The only allowed
+-- access path is the SECURITY DEFINER `record_coach_call` RPC,
+-- which checks auth.uid() internally before writing. RLS-on +
+-- no-policies = nobody reads/writes directly with the anon key.
+alter table coach_calls enable row level security;
 
 -- ── profiles ──
 drop policy if exists "Public profiles are viewable by everyone" on profiles;
@@ -855,6 +875,73 @@ begin
 end;
 $$ language plpgsql security definer;
 grant execute on function create_rematch(uuid, uuid) to authenticated;
+
+-- ── record_coach_call: per-user rolling-window rate limit ──
+-- Counts the user's recent successful coach calls; if they're under
+-- the cap, inserts a fresh row and returns allowed=true. If over,
+-- returns allowed=false plus the seconds until the oldest in-window
+-- call falls off (so the client can render an exact countdown).
+--
+-- Defaults to 3 calls per 300 s (5 min). Clients can request a
+-- tighter cap via parameters but cannot loosen it - the Edge
+-- Function is the only authorized caller and pins the limits in code.
+--
+-- SECURITY DEFINER + auth.uid() check: the table itself is locked
+-- behind RLS-no-policies, so this RPC is the only sanctioned
+-- read/write path.
+create or replace function record_coach_call(
+  p_window_seconds int default 300,
+  p_max_calls int default 3
+)
+returns table (
+  allowed boolean,
+  retry_after_seconds int,
+  calls_in_window int,
+  window_seconds int,
+  max_calls int
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_count int;
+  v_oldest timestamptz;
+  v_retry int;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    return query select false, p_window_seconds, 0, p_window_seconds, p_max_calls;
+    return;
+  end if;
+
+  -- Trim very old rows so the table doesn't grow unboundedly. Anything
+  -- older than 1 day is irrelevant for any reasonable window.
+  delete from coach_calls where created_at < now() - interval '1 day';
+
+  -- Count + find the oldest call inside the current window.
+  select count(*), min(created_at)
+    into v_count, v_oldest
+    from coach_calls
+   where user_id = v_uid
+     and created_at > now() - (p_window_seconds || ' seconds')::interval;
+
+  if v_count >= p_max_calls then
+    -- Time until the oldest in-window call ages out. ceil so a
+    -- sub-second remainder still surfaces as 1 second to the user.
+    v_retry := greatest(1, ceil(extract(epoch from
+      (v_oldest + (p_window_seconds || ' seconds')::interval - now())))::int);
+    return query select false, v_retry, v_count, p_window_seconds, p_max_calls;
+    return;
+  end if;
+
+  insert into coach_calls(user_id) values (v_uid);
+  return query select true, 0, v_count + 1, p_window_seconds, p_max_calls;
+end;
+$$;
+revoke all on function record_coach_call(int, int) from public, anon;
+grant execute on function record_coach_call(int, int) to authenticated, service_role;
 
 -- ── cleanup_stale_seeks: housekeeping (call from a cron job) ──
 -- Restricted to the service_role so a logged-in user can't grief

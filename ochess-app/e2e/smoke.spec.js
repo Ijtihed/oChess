@@ -24,14 +24,13 @@ test.describe("oChess smoke", () => {
     // The landing page has multiple "Play" CTAs; assert the headline
     // is present plus at least one obvious entry button.
     await expect(page.getByText(/oChess/i).first()).toBeVisible();
-    // Either "Play as Guest" or "Sign In" must be reachable for any
-    // unauthenticated visitor. Use a tolerant matcher.
-    const hasEntry = await page
-      .getByRole("button", { name: /play|sign in|get started/i })
-      .first()
-      .isVisible()
-      .catch(() => false);
-    expect(hasEntry).toBe(true);
+    // The action cards animate in via opacity transitions; on the
+    // mobile viewport the stagger delay can outlast a synchronous
+    // isVisible check. Use Playwright's auto-waiting toBeVisible
+    // with a generous timeout instead.
+    await expect(
+      page.getByRole("button", { name: /play|sign in|get started/i }).first()
+    ).toBeVisible({ timeout: 10_000 });
   });
 
   test("guest mode persists across reload and shows the dashboard", async ({ page }) => {

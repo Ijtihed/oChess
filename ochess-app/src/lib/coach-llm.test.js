@@ -108,4 +108,68 @@ describe("callCoach", () => {
     expect(out.ok).toBe(false);
     expect(out.error).toMatch(/GROQ_API_KEY/);
   });
+
+  // ── Server-side rate-limit handling ──
+  // The Edge Function returns 429 with a structured body when the
+  // user has spent their quota. The client wrapper detects this and
+  // surfaces all the fields the UI countdown needs.
+
+  it("flags rate-limit responses with retryAfterSeconds + usage counters", async () => {
+    invokeMock.fn = vi.fn().mockResolvedValue({
+      data: {
+        ok: false,
+        error: "You're using the AI coach a lot. Try again in 42s.",
+        retry_after_seconds: 42,
+        calls_in_window: 3,
+        max_calls: 3,
+        window_seconds: 300,
+      },
+      error: { context: { status: 429 }, message: "rate limited" },
+    });
+    const out = await callCoach({ mistakes: [{ played_san: "e4" }] });
+    expect(out.ok).toBe(false);
+    expect(out.rateLimited).toBe(true);
+    expect(out.retryAfterSeconds).toBe(42);
+    expect(out.callsInWindow).toBe(3);
+    expect(out.maxCalls).toBe(3);
+    expect(out.windowSeconds).toBe(300);
+    expect(out.error).toMatch(/Try again in 42s/);
+  });
+
+  it("propagates rate-limit fields even when supabase-js wraps the error differently", async () => {
+    // Some supabase-js versions surface 429s as a successful invoke
+    // with the structured 4xx body in `data`. Make sure we still
+    // detect it.
+    invokeMock.fn = vi.fn().mockResolvedValue({
+      data: {
+        ok: false,
+        error: "Try again in 7s.",
+        retry_after_seconds: 7,
+        calls_in_window: 3,
+        max_calls: 3,
+        window_seconds: 300,
+      },
+      error: null,
+    });
+    const out = await callCoach({ mistakes: [{ played_san: "e4" }] });
+    expect(out.rateLimited).toBe(true);
+    expect(out.retryAfterSeconds).toBe(7);
+  });
+
+  it("surfaces rate_limit usage on a successful response", async () => {
+    invokeMock.fn = vi.fn().mockResolvedValue({
+      data: {
+        ok: true,
+        summary: "...",
+        plan: [],
+        insights: [],
+        model: "llama-3.3-70b",
+        rate_limit: { calls_in_window: 2, max_calls: 3, window_seconds: 300 },
+      },
+      error: null,
+    });
+    const out = await callCoach({ mistakes: [{ played_san: "e4" }] });
+    expect(out.ok).toBe(true);
+    expect(out.rateLimit).toEqual({ callsInWindow: 2, maxCalls: 3, windowSeconds: 300 });
+  });
 });

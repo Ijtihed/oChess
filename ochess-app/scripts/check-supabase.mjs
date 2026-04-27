@@ -88,6 +88,11 @@ const RPCS = [
   { name: "claim_seek", args: { p_seek_id: ZERO_UUID, p_claimer_id: ZERO_UUID, p_claimer_name: "", p_claimer_rating: 0 } },
   { name: "accept_challenge", args: { p_challenge_id: ZERO_UUID, p_joiner_id: ZERO_UUID, p_joiner_name: "", p_joiner_rating: 0 } },
   { name: "create_rematch", args: { p_source_game_id: ZERO_UUID, p_user_id: ZERO_UUID } },
+  // record_coach_call is SECURITY DEFINER + auth.uid() guarded.
+  // Calling it from the anon key returns a "not authenticated"
+  // sentinel row, which we accept the same way as a present-but-
+  // RLS-rejected RPC. Confirms the function exists in the DB.
+  { name: "record_coach_call", args: { p_window_seconds: 300, p_max_calls: 3 } },
 ];
 
 // Storage buckets we expect to exist.

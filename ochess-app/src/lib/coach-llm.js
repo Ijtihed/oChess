@@ -74,10 +74,30 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
       return { ok: false, error: "Coach took too long. Try again in a moment." };
     }
     const { data, error } = result;
+    // Rate-limit detection. Edge Function returns 429 with a
+    // structured body when the user hits the cap; supabase-js
+    // surfaces that as `error.context.status === 429` with the
+    // body still parseable in `data`. We pull the structured
+    // retry-after fields off either side and pass them up so the
+    // UI can render an exact countdown.
+    const rateData = data && typeof data === "object" && Number.isFinite(data.retry_after_seconds)
+      ? data
+      : null;
+    const isRateLimited = error?.context?.status === 429 || (rateData && rateData.ok === false && rateData.retry_after_seconds);
+    if (isRateLimited && rateData) {
+      return {
+        ok: false,
+        error: rateData.error || `Rate limit reached. Try again in ${rateData.retry_after_seconds}s.`,
+        rateLimited: true,
+        retryAfterSeconds: Number(rateData.retry_after_seconds) || 0,
+        callsInWindow: Number(rateData.calls_in_window) || 0,
+        maxCalls: Number(rateData.max_calls) || 0,
+        windowSeconds: Number(rateData.window_seconds) || 0,
+      };
+    }
     if (error) {
-      // The function can also return a structured error in `data` even
-      // on a non-2xx response from the underlying fetch; fall back to
-      // the error.message in that case.
+      // Generic error path. Falls back to error.message when no
+      // structured body is present.
       const msg = data?.error || error.message || "Coach unavailable";
       return { ok: false, error: msg };
     }
@@ -106,6 +126,13 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
         : [],
       insights: Array.isArray(data.insights) ? data.insights : [],
       model: data.model || null,
+      rateLimit: data.rate_limit && typeof data.rate_limit === "object"
+        ? {
+            callsInWindow: Number(data.rate_limit.calls_in_window) || 0,
+            maxCalls: Number(data.rate_limit.max_calls) || 0,
+            windowSeconds: Number(data.rate_limit.window_seconds) || 0,
+          }
+        : null,
     };
   } catch (e) {
     return { ok: false, error: e?.message || "Coach unavailable" };

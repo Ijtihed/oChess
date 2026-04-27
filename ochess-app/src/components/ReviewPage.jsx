@@ -272,6 +272,27 @@ export default function ReviewPage() {
     }
   }, [card, schedules]);
 
+  // Tracker for outstanding setTimeouts so the cleanup effect can
+  // cancel them on unmount. Without this, a user who navigates
+  // away mid-line would still trigger an opponent move animation
+  // 450 ms later (or, more importantly, mutate gameRef.current
+  // after the next card was already loaded).
+  const timeoutsRef = useRef(new Set());
+
+  useEffect(() => {
+    const set = timeoutsRef.current;
+    return () => { for (const id of set) clearTimeout(id); set.clear(); };
+  }, []);
+
+  const scheduleTimeout = useCallback((fn, delay) => {
+    const id = setTimeout(() => {
+      timeoutsRef.current.delete(id);
+      fn();
+    }, delay);
+    timeoutsRef.current.add(id);
+    return id;
+  }, []);
+
   // Auto-play the opponent's reply (the next entry in lineMoves
   // after a player move). Brief delay so the user sees the move
   // animate in instead of teleporting. Returns whether a reply was
@@ -283,7 +304,7 @@ export default function ReviewPage() {
     if (!replyUci) return false;
     const reply = uciToMove(replyUci);
     if (!reply) return false;
-    setTimeout(() => {
+    scheduleTimeout(() => {
       try {
         const g = gameRef.current;
         if (!g) return;
@@ -299,10 +320,15 @@ export default function ReviewPage() {
       } catch { /* ignore - line corrupted */ }
     }, 450);
     return true;
-  }, [card]);
+  }, [card, scheduleTimeout]);
 
   const handleMove = useCallback((move) => {
-    if (!card || phase === "rate" || phase === "revealed") return false;
+    // Only accept moves while we're showing the prompt. The line-
+    // complete handoff briefly stays in "prompt" phase before
+    // flipping to "correct" via a 300 ms setTimeout, but the board
+    // is already non-interactive in that window because the
+    // expected-move resolver returns null when the line is done.
+    if (!card || phase !== "prompt") return false;
 
     // Resolve the expected next move. Prefer the multi-move line
     // (puzzles), fall back to the single answerMove (analysis cards).
@@ -361,10 +387,10 @@ export default function ReviewPage() {
 
       // Line complete. Brief flourish, then rating prompt.
       playVictory();
-      setTimeout(() => enterRatePhase("correct"), 300);
+      scheduleTimeout(() => enterRatePhase("correct"), 300);
       return true;
     } catch { return false; }
-  }, [card, phase, lineIndex, enterRatePhase, playOpponentReply]);
+  }, [card, phase, lineIndex, enterRatePhase, playOpponentReply, scheduleTimeout]);
 
   const dismissWrongAttempt = useCallback(() => {
     setWrongAttempt(null);

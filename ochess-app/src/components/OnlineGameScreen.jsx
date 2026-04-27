@@ -758,9 +758,19 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
     saveGameState({ rematch_offered_by: null });
   }, [saveGameState]);
 
+  // Anti-spam throttle for chat. The realtime channel itself caps
+  // events at ~100/sec, but we still don't want one player to fire
+  // a wall of messages at the opponent in the meantime. Soft cap at
+  // ~2 messages per second from this client; over the cap, drop the
+  // send silently and let the user notice their input cleared.
+  const lastChatSentRef = useRef(0);
+
   const handleSendChat = useCallback(() => {
     const text = moderateChat(chatInput.trim());
     if (!text) { setChatInput(""); return; }
+    const now = Date.now();
+    if (now - lastChatSentRef.current < 500) { setChatInput(""); return; }
+    lastChatSentRef.current = now;
     channelRef.current?.sendChat(authUserIdRef.current, text, myDisplayName);
     const newMsg = { fromId: authUserIdRef.current, text, name: myDisplayName };
     setChatMessages((prev) => {

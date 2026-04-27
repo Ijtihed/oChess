@@ -79,23 +79,81 @@ interface CoachResponse {
   insights?: { game_id: string | null; ply: number | null; insight: string }[];
   error?: string;
   model?: string;
+  // Surfaced on every successful response so the client UI can
+  // display "2/3 calls in this window" without having to track it
+  // separately.
+  rate_limit?: {
+    calls_in_window: number;
+    max_calls: number;
+    window_seconds: number;
+  };
 }
 
-// ── Auth gate ──
+// ── Rate limit ──
+// Per-user rolling-window cap, enforced server-side. The defaults
+// here MUST stay in sync with the schema RPC (3 calls / 300 s) so a
+// stale Edge Function deployment can't loosen the limit.
+const RATE_LIMIT_WINDOW_SECONDS = 300;
+const RATE_LIMIT_MAX_CALLS = 3;
 
-async function getAuthedUserId(req: Request): Promise<string | null> {
+interface RateLimitResult {
+  ok: boolean;
+  allowed: boolean;
+  retryAfterSeconds: number;
+  callsInWindow: number;
+  maxCalls: number;
+  windowSeconds: number;
+  error?: string;
+}
+
+// ── Auth + RPC client ──
+
+function makeAuthedClient(req: Request) {
   const auth = req.headers.get("Authorization");
   if (!auth?.startsWith("Bearer ")) return null;
   const url = Deno.env.get("SUPABASE_URL");
   const anon = Deno.env.get("SUPABASE_ANON_KEY");
   if (!url || !anon) return null;
-  const supabase = createClient(url, anon, {
+  return createClient(url, anon, {
     global: { headers: { Authorization: auth } },
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+async function getAuthedUserId(req: Request): Promise<string | null> {
+  const supabase = makeAuthedClient(req);
+  if (!supabase) return null;
   const { data, error } = await supabase.auth.getUser();
   if (error || !data?.user?.id) return null;
   return data.user.id;
+}
+
+async function recordRateLimitedCall(req: Request): Promise<RateLimitResult> {
+  const supabase = makeAuthedClient(req);
+  if (!supabase) {
+    return { ok: false, allowed: false, retryAfterSeconds: 0, callsInWindow: 0, maxCalls: RATE_LIMIT_MAX_CALLS, windowSeconds: RATE_LIMIT_WINDOW_SECONDS, error: "Supabase client unavailable" };
+  }
+  const { data, error } = await supabase.rpc("record_coach_call", {
+    p_window_seconds: RATE_LIMIT_WINDOW_SECONDS,
+    p_max_calls: RATE_LIMIT_MAX_CALLS,
+  });
+  if (error) {
+    return { ok: false, allowed: false, retryAfterSeconds: 0, callsInWindow: 0, maxCalls: RATE_LIMIT_MAX_CALLS, windowSeconds: RATE_LIMIT_WINDOW_SECONDS, error: error.message };
+  }
+  // The RPC returns a SETOF result; supabase-js gives us either an
+  // array or the first row depending on version. Normalize both.
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) {
+    return { ok: false, allowed: false, retryAfterSeconds: 0, callsInWindow: 0, maxCalls: RATE_LIMIT_MAX_CALLS, windowSeconds: RATE_LIMIT_WINDOW_SECONDS, error: "Empty rate-limit response" };
+  }
+  return {
+    ok: true,
+    allowed: !!row.allowed,
+    retryAfterSeconds: Number(row.retry_after_seconds) || 0,
+    callsInWindow: Number(row.calls_in_window) || 0,
+    maxCalls: Number(row.max_calls) || RATE_LIMIT_MAX_CALLS,
+    windowSeconds: Number(row.window_seconds) || RATE_LIMIT_WINDOW_SECONDS,
+  };
 }
 
 // ── Prompt construction ──
@@ -265,6 +323,27 @@ Deno.serve(async (req) => {
   const userId = await getAuthedUserId(req);
   if (!userId) return jsonErr("Not authenticated", 401);
 
+  // Per-user rate limit. Records the call in `coach_calls` and
+  // returns the rolling-window status. We deliberately gate BEFORE
+  // request body parsing / Groq dispatch so an abusive client
+  // can't burn through the LLM budget by spamming malformed
+  // requests that would otherwise be rejected later.
+  //
+  // `record_coach_call` only records when the call is allowed - a
+  // blocked attempt does NOT consume a slot. That keeps the
+  // surfaced "retry in Ns" countdown stable from one click to the
+  // next instead of shifting forward with every blocked retry.
+  const rate = await recordRateLimitedCall(req);
+  if (!rate.ok) {
+    return jsonErr(rate.error || "Rate-limit check failed", 500);
+  }
+  if (!rate.allowed) {
+    return jsonRateLimited(
+      `You're using the AI coach a lot. Try again in ${rate.retryAfterSeconds}s.`,
+      rate
+    );
+  }
+
   let body: CoachRequest;
   try {
     body = await req.json();
@@ -292,7 +371,11 @@ Deno.serve(async (req) => {
   const parsed = parseCoachJson(groq.content!);
   if (!parsed) return jsonErr("Coach returned malformed JSON", 502);
 
-  return jsonOk({ ...parsed, model: modelUsed });
+  return jsonOk({ ...parsed, model: modelUsed, rate_limit: {
+    calls_in_window: rate.callsInWindow,
+    max_calls: rate.maxCalls,
+    window_seconds: rate.windowSeconds,
+  }});
 });
 
 function jsonOk(payload: CoachResponse): Response {
@@ -306,4 +389,30 @@ function jsonErr(error: string, status = 400): Response {
     status,
     headers: { "Content-Type": "application/json", ...CORS_HEADERS },
   });
+}
+
+// Dedicated 429 response carrying the retry-after metadata the
+// client UI needs to render an exact countdown. We surface BOTH a
+// standard `Retry-After` HTTP header (in seconds, per RFC 7231) and
+// a structured JSON body so generic intermediaries and our own
+// client both have what they need.
+function jsonRateLimited(message: string, rate: RateLimitResult): Response {
+  return new Response(
+    JSON.stringify({
+      ok: false,
+      error: message,
+      retry_after_seconds: rate.retryAfterSeconds,
+      calls_in_window: rate.callsInWindow,
+      max_calls: rate.maxCalls,
+      window_seconds: rate.windowSeconds,
+    }),
+    {
+      status: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "Retry-After": String(rate.retryAfterSeconds),
+        ...CORS_HEADERS,
+      },
+    }
+  );
 }
