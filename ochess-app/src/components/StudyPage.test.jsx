@@ -6,30 +6,24 @@ vi.mock("react-router-dom", () => ({
   useNavigate: () => navigate,
 }));
 
-vi.mock("./ChessBoard", () => ({ default: () => <div data-testid="board" /> }));
-vi.mock("./SocialPanel", () => ({ default: () => null }));
-
 import StudyPage from "./StudyPage";
 
 describe("StudyPage", () => {
-  it("shows the preview banner and a 'Coming soon' badge", () => {
+  it("renders the Coming Soon shell with the Study title", () => {
     navigate.mockClear();
     render(<StudyPage />);
-    expect(screen.getByText(/Studies aren't fully wired up yet/i)).toBeDefined();
-    expect(screen.getByText(/Coming soon/i)).toBeDefined();
+    // ComingSoon renders the page name as the h2 title plus the
+    // generic "under construction" copy. Don't lock in the exact
+    // wording — just assert the user sees Study + the Coming Soon
+    // affordance.
+    expect(screen.getByRole("heading", { name: /Study/i })).toBeDefined();
+    expect(screen.getByText(/Coming Soon/i)).toBeDefined();
   });
 
-  it("the Open Analysis button navigates to /analysis", () => {
+  it("the back button navigates to home", () => {
     navigate.mockClear();
     render(<StudyPage />);
-    fireEvent.click(screen.getByText(/Open Analysis/i));
-    expect(navigate).toHaveBeenCalledWith("/analysis");
-  });
-
-  it("the inline Anki link navigates to /review", () => {
-    navigate.mockClear();
-    render(<StudyPage />);
-    fireEvent.click(screen.getByText(/^Anki$/));
-    expect(navigate).toHaveBeenCalledWith("/review");
+    fireEvent.click(screen.getByText(/Back to Home/i));
+    expect(navigate).toHaveBeenCalledWith("/");
   });
 });
