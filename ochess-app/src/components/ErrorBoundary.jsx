@@ -1,4 +1,5 @@
 import { Component } from "react";
+import { captureError } from "../lib/monitoring";
 
 /**
  * Top-level error boundary.
@@ -25,10 +26,13 @@ export default class ErrorBoundary extends Component {
 
   componentDidCatch(error, info) {
     // Always log render errors to the console so prod crash reports
-    // (and any future Sentry-style integration) can pick them up.
-    // Intentionally not gated by makeLogger - these are real errors.
+    // can pick them up. Intentionally not gated by makeLogger -
+    // these are real errors.
     // eslint-disable-next-line no-console
     console.error("[oChess] render error:", error, info?.componentStack);
+    // Forward to the monitoring stack. captureError is a safe no-op
+    // when Sentry isn't configured, so we don't have to guard.
+    captureError(error, { componentStack: info?.componentStack });
   }
 
   reset = () => {

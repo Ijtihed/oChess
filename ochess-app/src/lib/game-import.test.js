@@ -1,10 +1,49 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchLichessGames, fetchChesscomGames, MAX_IMPORT_GAMES, parsePgnFile } from "./game-import";
+import { fetchLichessGames, fetchChesscomGames, MAX_IMPORT_GAMES, parsePgnFile, checkImportThrottle } from "./game-import";
+
+// Throttle state lives in localStorage. Without this beforeEach,
+// importing in one test would consume the budget for the next.
+beforeEach(() => {
+  localStorage.removeItem("ochess_import_throttle");
+});
 
 describe("MAX_IMPORT_GAMES", () => {
   it("is a sane positive number", () => {
     expect(MAX_IMPORT_GAMES).toBeGreaterThan(100);
     expect(MAX_IMPORT_GAMES).toBeLessThan(50_000);
+  });
+});
+
+describe("checkImportThrottle", () => {
+  it("allows up to 8 calls per source per hour", () => {
+    for (let i = 0; i < 8; i++) {
+      expect(() => checkImportThrottle("lichess")).not.toThrow();
+    }
+    expect(() => checkImportThrottle("lichess")).toThrow(/Slow down/);
+  });
+
+  it("counts each source independently", () => {
+    for (let i = 0; i < 8; i++) checkImportThrottle("lichess");
+    // chesscom budget is untouched.
+    expect(() => checkImportThrottle("chesscom")).not.toThrow();
+  });
+
+  it("forgets calls older than 1 hour", () => {
+    const oneHourAgo = Date.now() - 61 * 60 * 1000;
+    for (let i = 0; i < 8; i++) checkImportThrottle("lichess", oneHourAgo);
+    // Now is well beyond all of them - the next call should pass.
+    expect(() => checkImportThrottle("lichess")).not.toThrow();
+  });
+
+  it("surfaces a RateLimitError name on the thrown error", () => {
+    for (let i = 0; i < 8; i++) checkImportThrottle("lichess");
+    try {
+      checkImportThrottle("lichess");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e.name).toBe("RateLimitError");
+      expect(e.message).toMatch(/8\/hour/);
+    }
   });
 });
 

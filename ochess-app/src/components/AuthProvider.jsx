@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 import { getProfile } from "../lib/auth";
 import { syncPuzzleProgressFromServer } from "../lib/puzzle-sync";
 import { makeLogger } from "../lib/log";
+import { identify, track } from "../lib/monitoring";
 
 const { log: alog, warn: awarn } = makeLogger("auth");
 
@@ -94,6 +95,9 @@ export default function AuthProvider({ children }) {
           // Profile + puzzle sync happen in the background; we don't
           // hold up the loading gate for them.
           hydrateProfile(u.id);
+          // Restore the monitoring identity on a hard refresh so the
+          // user isn't briefly anonymous in the analytics stream.
+          identify(u.id);
         } else {
           alog("bootstrap: no stored session");
         }
@@ -126,8 +130,17 @@ export default function AuthProvider({ children }) {
 
         if ((event === "INITIAL_SESSION" || event === "SIGNED_IN") && u) {
           hydrateProfile(u.id);
+          // Tie monitoring + analytics to the signed-in user so
+          // crash reports + product events are attributable. Both
+          // are no-ops when the providers aren't configured.
+          identify(u.id);
+          if (event === "SIGNED_IN") track("auth.signed_in");
         } else if (event === "SIGNED_OUT") {
           setProfile(null);
+          // Reset analytics identity so subsequent events are
+          // recorded as anonymous, not against the previous user.
+          identify(null);
+          track("auth.signed_out");
         } else if (event === "USER_UPDATED" && u) {
           hydrateProfile(u.id);
         }

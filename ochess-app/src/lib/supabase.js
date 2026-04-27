@@ -10,7 +10,18 @@ if (!supabaseUrl || !supabaseAnonKey) {
 export const supabase = (supabaseUrl && supabaseAnonKey)
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
-        flowType: "implicit",
+        // PKCE is the recommended SPA auth flow today. It exchanges
+        // an authorization code (NOT a token) at the redirect URL,
+        // which means tokens never appear in the browser history,
+        // server logs, or referrer headers - a real upgrade over
+        // the previous "implicit" flow which embedded tokens
+        // directly in the URL fragment.
+        //
+        // PKCE requires `detectSessionInUrl: true` so supabase-js
+        // can run the code -> token exchange when the user lands
+        // back on /. Both Google OAuth and the email-link / magic-
+        // link flows use the same redirect handler.
+        flowType: "pkce",
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: true,

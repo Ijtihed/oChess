@@ -6,11 +6,59 @@
  * (10k+ games) doesn't OOM the browser tab. The cap is exposed on
  * the result object so the UI can surface a "showing the most
  * recent N games" notice when it kicks in.
+ *
+ * Per-source client-side throttle: each source can be hit at most
+ * MAX_CALLS_PER_HOUR times in a rolling hour from the same browser.
+ * This is a courtesy to Lichess / chess.com (whose terms ask
+ * downstream apps not to flood their public APIs) and a guard
+ * against an accidental tight loop in our own UI. State lives in
+ * localStorage so a refresh can't reset the counter trivially.
+ *
+ * NOTE: this is NOT a security boundary - a determined user can
+ * clear localStorage. A real backend rate-limit (Edge Function
+ * proxy + postgres counters) would be the next step at scale.
  */
 
 export const MAX_IMPORT_GAMES = 5000;
+const MAX_CALLS_PER_HOUR = 8;
+const THROTTLE_KEY = "ochess_import_throttle";
+
+function readThrottleLog() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(THROTTLE_KEY) || "{}");
+    return raw && typeof raw === "object" ? raw : {};
+  } catch { return {}; }
+}
+
+function writeThrottleLog(log) {
+  try { localStorage.setItem(THROTTLE_KEY, JSON.stringify(log)); } catch {}
+}
+
+/**
+ * Throws a friendly error if the caller has already hit the
+ * per-hour cap for this source. Otherwise records the call and
+ * returns. Exported for tests; callers normally just call the
+ * fetch* functions which invoke this internally.
+ */
+export function checkImportThrottle(source, now = Date.now()) {
+  const log = readThrottleLog();
+  const cutoff = now - 60 * 60 * 1000;
+  const prior = (log[source] || []).filter((ts) => Number.isFinite(ts) && ts > cutoff);
+  if (prior.length >= MAX_CALLS_PER_HOUR) {
+    const oldest = prior[0];
+    const minutes = Math.max(1, Math.ceil((oldest + 60 * 60 * 1000 - now) / 60_000));
+    const err = new Error(
+      `Slow down - ${source} import limit is ${MAX_CALLS_PER_HOUR}/hour from this browser. Try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`
+    );
+    err.name = "RateLimitError";
+    throw err;
+  }
+  prior.push(now);
+  writeThrottleLog({ ...log, [source]: prior });
+}
 
 export async function fetchLichessGames(username, { signal, onProgress, max = MAX_IMPORT_GAMES } = {}) {
+  checkImportThrottle("lichess");
   const url = `https://lichess.org/api/games/user/${encodeURIComponent(username)}?pgnInJson=true&clocks=false&evals=false&opening=true&max=${Math.max(1, max)}`;
   const res = await fetch(url, {
     headers: { Accept: "application/x-ndjson" },
@@ -76,6 +124,7 @@ function pushLichessGame(games, obj) {
 }
 
 export async function fetchChesscomGames(username, { signal, onProgress, max = MAX_IMPORT_GAMES } = {}) {
+  checkImportThrottle("chesscom");
   const archivesRes = await fetch(
     `https://api.chess.com/pub/player/${encodeURIComponent(username.toLowerCase())}/games/archives`,
     { signal }
