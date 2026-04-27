@@ -17,8 +17,9 @@ import { useParams, Link } from "react-router-dom";
  */
 
 const EFFECTIVE_DATE = "April 27, 2026";
-const CONTACT_EMAIL = "support@ochess.example.com"; // <-- replace with your real address before launch
-const JURISDICTION = "the jurisdiction of the operator";
+const CONTACT_EMAIL = "ijtihedk@gmail.com";
+const JURISDICTION = "Finland";
+const VENUE = "the courts of Helsinki, Finland";
 
 const PAGES = {
   privacy: { title: "Privacy", slug: "privacy" },
@@ -406,7 +407,7 @@ function TermsContent() {
       <H2>Governing law</H2>
       <p>
         These terms are governed by the laws of {JURISDICTION}. Disputes
-        will be resolved in the courts located there.
+        will be resolved in {VENUE}.
       </p>
 
       <H2>Changes</H2>
