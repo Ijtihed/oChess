@@ -39,6 +39,24 @@ describe("CreateChallenge", () => {
     // Time control buttons render the TIME_CONTROLS list — pick one to assert.
     expect(screen.getByText("5+0")).toBeDefined();
   });
+
+  it("exposes a 'Back to Play' affordance pointing at /play", () => {
+    render(
+      <MemoryRouter initialEntries={["/create-challenge"]}>
+        <CreateChallenge />
+      </MemoryRouter>
+    );
+    expect(screen.getByText(/Back to Play/i)).toBeDefined();
+  });
+
+  it("describes the page so the user knows what it does", () => {
+    render(
+      <MemoryRouter initialEntries={["/create-challenge"]}>
+        <CreateChallenge />
+      </MemoryRouter>
+    );
+    expect(screen.getByText(/private game link/i)).toBeDefined();
+  });
 });
 
 describe("JoinChallenge", () => {

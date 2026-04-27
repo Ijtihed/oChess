@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import { isOnline, supabase } from "../lib/supabase";
 import { getChallenge, acceptChallengeRPC, createChallenge, deleteChallenge, watchChallenge, pollChallenge } from "../lib/challenges";
@@ -7,7 +7,20 @@ import { getRatings } from "../lib/auth";
 import { categoryFromTimeControl } from "../lib/glicko2";
 import SocialPanel from "./SocialPanel";
 
-const TIME_CONTROLS = ["1+0", "3+0", "3+2", "5+0", "5+3", "10+0", "10+5", "15+10", "30+0"];
+// Match PlayPage's PRESETS so a user moving between Quick-match and
+// Create-challenge sees the same time-control buttons in the same
+// order. Casual-only here — challenge links are always unrated.
+const TIME_CONTROLS = [
+  { label: "1+0", cat: "Bullet" },
+  { label: "3+0", cat: "Blitz" },
+  { label: "3+2", cat: "Blitz" },
+  { label: "5+0", cat: "Blitz" },
+  { label: "5+3", cat: "Blitz" },
+  { label: "10+0", cat: "Rapid" },
+  { label: "10+5", cat: "Rapid" },
+  { label: "15+10", cat: "Rapid" },
+  { label: "30+0", cat: "Classical" },
+];
 
 export function CreateChallenge() {
   const navigate = useNavigate();
@@ -99,55 +112,95 @@ export function CreateChallenge() {
 
   const link = challenge ? `${window.location.origin}/challenge/${challenge.code}` : null;
 
+  // Tear down everything (subscription, expiry timer, poll) and
+  // delete the row so the opponent doesn't land on a stale link.
+  // Used by the explicit Cancel button and by the back navigation
+  // when there's a live challenge in flight.
+  const teardownAndExit = useCallback(() => {
+    watchRef.current?.unsubscribe();
+    if (expiryRef.current) clearTimeout(expiryRef.current);
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (challenge) deleteChallenge(challenge.id).catch(() => {});
+    navigate("/play");
+  }, [challenge, navigate]);
+
   return (
-    <div className="flex min-h-[calc(100dvh-4rem)]">
-      <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-6 sm:py-10">
-        <h1 className="font-headline text-3xl font-extrabold tracking-tighter text-primary mb-6">Create Challenge</h1>
+    <div className="flex">
+      <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+        {/* Back affordance — sub-pages need a way out. Leaving early
+            with a live challenge tears the row down so a half-shared
+            link can't trap an opponent. */}
+        <button
+          onClick={challenge ? teardownAndExit : () => navigate("/play")}
+          className="anim-fade-up inline-flex items-center gap-1.5 mb-4 text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors active:scale-[0.97]"
+          style={{ "--delay": "0.04s" }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+          Back to Play
+        </button>
+
+        <div className="anim-fade-up mb-6" style={{ "--delay": "0.05s" }}>
+          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1">
+            Create Challenge
+          </h1>
+          <p className="text-sm text-on-surface-variant/40">
+            Generate a private game link to share with a friend.
+          </p>
+        </div>
 
         {!isLoggedIn && (
-          <div className="p-4 bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400 mb-6">Sign in to create game links.</div>
+          <div className="anim-fade-up max-w-md p-4 bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400 mb-6" style={{ "--delay": "0.07s" }}>
+            Sign in to create game links.
+          </div>
         )}
         {expired && (
-          <div className="max-w-md p-4 bg-error/10 border border-error/20 text-[12px] text-error mb-4">Challenge expired. Create a new one.</div>
+          <div className="anim-fade-up max-w-md p-4 bg-error/10 border border-error/20 text-[12px] text-error mb-4" style={{ "--delay": "0.07s" }}>
+            Challenge expired. Create a new one.
+          </div>
         )}
         {error && (
-          <div className="max-w-md p-4 bg-error/10 border border-error/20 text-[12px] text-error mb-4">{error}</div>
+          <div className="anim-fade-up max-w-md p-4 bg-error/10 border border-error/20 text-[12px] text-error mb-4" style={{ "--delay": "0.07s" }}>
+            {error}
+          </div>
         )}
 
         {!challenge ? (
-          <div className="max-w-md space-y-5">
+          <div className="anim-fade-up max-w-md space-y-6" style={{ "--delay": "0.1s" }}>
             <div>
-              <label className="text-[11px] text-on-surface-variant/30 block mb-2">Time Control</label>
+              <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Time control</h2>
               <div className="grid grid-cols-3 gap-1.5">
                 {TIME_CONTROLS.map((t) => (
-                  <button key={t} onClick={() => setTc(t)}
-                    className={`py-2.5 font-headline text-sm font-bold transition-colors ${tc === t ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>
-                    {t}
+                  <button key={t.label} onClick={() => setTc(t.label)}
+                    className={`flex flex-col items-center justify-center py-3 transition-all duration-150 active:scale-[0.95] ${tc === t.label ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] hover:bg-surface-high"}`}>
+                    <span className="font-headline text-sm font-extrabold">{t.label}</span>
+                    <span className={`text-[9px] uppercase tracking-wide mt-0.5 ${tc === t.label ? "text-on-primary/60" : "text-on-surface-variant/30"}`}>{t.cat}</span>
                   </button>
                 ))}
               </div>
             </div>
             <div>
-              <label className="text-[11px] text-on-surface-variant/30 block mb-2">Play as</label>
+              <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Play as</h2>
               <div className="flex gap-1.5">
                 {[{ id: "random", label: "Random" }, { id: "white", label: "White" }, { id: "black", label: "Black" }].map((c) => (
                   <button key={c.id} onClick={() => setColorPref(c.id)}
-                    className={`flex-1 py-2.5 font-headline text-[11px] font-bold uppercase transition-colors ${colorPref === c.id ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>
+                    className={`flex-1 py-3 font-headline text-sm font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${colorPref === c.id ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"}`}>
                     {c.label}
                   </button>
                 ))}
               </div>
             </div>
-            <div className="p-3 bg-surface-low border border-white/[0.04] text-[11px] text-on-surface-variant/30">
-              Challenge links are always <span className="text-on-surface-variant/50 font-bold">casual</span> (unrated).
+            <div className="p-3 bg-surface-low border border-white/[0.04] text-[11px] text-on-surface-variant/55">
+              Challenge links are always <span className="text-on-surface-variant font-bold">casual</span> (unrated).
             </div>
             <button onClick={handleCreate} disabled={!isLoggedIn || creating}
-              className="w-full py-3 bg-primary text-on-primary font-headline text-sm font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors active:scale-[0.97] disabled:opacity-50">
+              className="btn btn-primary w-full py-4 text-sm">
               {creating ? "Creating..." : "Create Link"}
             </button>
           </div>
         ) : (
-          <div className="max-w-md space-y-4">
+          <div className="anim-fade-up max-w-md space-y-4" style={{ "--delay": "0.05s" }}>
             <div className="p-5 bg-surface-container border border-primary/20 text-center">
               <p className="text-[13px] text-on-surface-variant/50 mb-3">Share this link with your opponent:</p>
               <div className="bg-surface-low border border-white/[0.06] px-3 py-2 mb-3">
@@ -163,13 +216,7 @@ export function CreateChallenge() {
               <span className="text-[12px] text-on-surface-variant/40">Waiting for opponent to join...</span>
             </div>
             <p className="text-[11px] text-on-surface-variant/25 text-center">{tc} · Casual · Expires in 15 min</p>
-            <button onClick={() => {
-                watchRef.current?.unsubscribe();
-                if (expiryRef.current) clearTimeout(expiryRef.current);
-                if (pollRef.current) clearInterval(pollRef.current);
-                if (challenge) deleteChallenge(challenge.id).catch(() => {});
-                navigate("/play");
-              }}
+            <button onClick={teardownAndExit}
               className="btn btn-secondary w-full py-2 text-[10px] hover:!text-error">
               Cancel
             </button>
@@ -252,8 +299,18 @@ export function JoinChallenge() {
 
   return (
     <div className="flex min-h-[calc(100dvh-4rem)]">
-      <div className="flex-1 flex items-center justify-center">
-        <div className="max-w-sm w-full p-6 bg-surface-container border border-white/[0.06] text-center">
+      <div className="flex-1 flex flex-col items-center justify-center px-4">
+        <button
+          onClick={() => navigate("/play")}
+          className="anim-fade-up self-start max-w-sm w-full mb-3 text-left inline-flex items-center gap-1.5 text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors active:scale-[0.97]"
+          style={{ "--delay": "0.04s" }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+          Back to Play
+        </button>
+        <div className="anim-fade-up max-w-sm w-full p-6 bg-surface-container border border-white/[0.06] text-center" style={{ "--delay": "0.07s" }}>
           <h2 className="font-headline text-xl font-extrabold tracking-tighter text-primary mb-2">Game Challenge</h2>
           <p className="text-[13px] text-on-surface-variant/50 mb-4">
             <span className="font-bold text-on-surface-variant/70">{challenge.creator_name}</span> wants to play!
