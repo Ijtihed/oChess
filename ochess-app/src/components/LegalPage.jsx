@@ -18,8 +18,10 @@ import { useParams, Link } from "react-router-dom";
 
 const EFFECTIVE_DATE = "April 27, 2026";
 const CONTACT_EMAIL = "ijtihedk@gmail.com";
+// oChess is run by a single individual based in Helsinki, Finland.
+// Finnish law governs use of the service.
 const JURISDICTION = "Finland";
-const VENUE = "the courts of Helsinki, Finland";
+const OPERATOR = "an individual operator based in Helsinki, Finland";
 
 const PAGES = {
   privacy: { title: "Privacy", slug: "privacy" },
@@ -307,6 +309,14 @@ function TermsContent() {
         not agree, do not use the service.
       </p>
 
+      <H2>Who runs oChess</H2>
+      <p>
+        oChess is a free, open-source hobby project run by {OPERATOR}. There
+        is no company, no employees, no paid support staff, and no revenue.
+        The service is offered as-is, on a best-effort basis, in the
+        operator&apos;s spare time. Treat it accordingly.
+      </p>
+
       <H2>Eligibility</H2>
       <p>
         You must be at least 13 years old to use oChess. You are responsible
@@ -371,29 +381,67 @@ function TermsContent() {
 
       <H2>Service availability</H2>
       <p>
-        oChess is provided on an &quot;AS IS&quot; basis. There is no service
-        level agreement, no uptime guarantee, and no warranty of any kind.
-        We may change, suspend, or discontinue any part of the service at
-        any time, including features, pricing (if any), and the entire
-        platform itself.
+        oChess is provided on an &quot;AS IS&quot; and &quot;AS AVAILABLE&quot;
+        basis. There is no service level agreement, no uptime guarantee, no
+        backup guarantee, and no warranty of any kind. The operator may
+        change, suspend, or discontinue any part of the service at any time
+        — including features, accounts, stored games, ratings, and the
+        entire platform — without notice and without liability.
+      </p>
+
+      <H2>You assume all risk</H2>
+      <p>
+        Use of oChess is entirely at your own risk. The operator does not
+        promise that the service will work, that data you store will be
+        preserved, that ratings will remain stable across schema changes,
+        that opponents will behave fairly, or that the service will be
+        available at any particular time. If any of these things matter to
+        you, do not rely on oChess; use a paid platform instead.
       </p>
 
       <H2>Disclaimer of warranties</H2>
       <p>
-        To the maximum extent permitted by law, oChess and its operators
-        disclaim all express and implied warranties — including but not
-        limited to merchantability, fitness for a particular purpose, and
-        non-infringement.
+        To the maximum extent permitted by Finnish law and any other
+        applicable law, the operator disclaims all express and implied
+        warranties of any kind — including but not limited to merchantability,
+        fitness for a particular purpose, accuracy, reliability, security,
+        non-infringement, and quiet enjoyment. No advice or information
+        obtained from the service creates any warranty not expressly stated
+        in these terms.
       </p>
 
       <H2>Limitation of liability</H2>
       <p>
-        To the maximum extent permitted by law, oChess and its operators
-        will not be liable for any indirect, incidental, consequential,
-        special, exemplary, or punitive damages arising from your use of
-        the service. Direct damages are capped at the amount you have paid
-        oChess in the past 12 months, which for the current free service is
-        zero.
+        <strong>To the maximum extent permitted by law, the operator of
+        oChess will not be liable to you for any damages of any kind arising
+        from or related to your use of the service.</strong> This includes,
+        without limitation, direct, indirect, incidental, consequential,
+        special, exemplary, punitive, or other damages — whether based on
+        warranty, contract, tort (including negligence), product liability,
+        statute, or any other legal theory — and whether or not the operator
+        has been advised of the possibility of such damages.
+      </p>
+      <p>
+        Because oChess is offered to you free of charge, you and the
+        operator agree that any aggregate liability the operator may have
+        under any theory is capped at <strong>EUR 0</strong>, equal to the
+        amount you have paid for the service.
+      </p>
+      <p>
+        Some jurisdictions do not allow the exclusion of certain warranties
+        or the limitation of liability for incidental or consequential
+        damages. To the extent that any of the limitations above are not
+        permitted in your jurisdiction, they apply to the maximum extent
+        permitted by law in that jurisdiction.
+      </p>
+
+      <H2>Indemnification</H2>
+      <p>
+        You agree to indemnify, defend, and hold harmless the operator from
+        any claims, damages, losses, liabilities, and expenses (including
+        reasonable attorney fees) arising from or related to your use of
+        the service, your violation of these terms, your violation of any
+        rights of another party, or content you submit through the service.
       </p>
 
       <H2>Termination</H2>
@@ -406,8 +454,11 @@ function TermsContent() {
 
       <H2>Governing law</H2>
       <p>
-        These terms are governed by the laws of {JURISDICTION}. Disputes
-        will be resolved in {VENUE}.
+        These terms, and any dispute arising from your use of oChess, are
+        governed by the laws of {JURISDICTION}, without regard to its
+        conflict-of-laws rules. The exclusive forum and venue for any such
+        dispute is the courts of Helsinki, Finland, and you consent to the
+        personal jurisdiction of those courts.
       </p>
 
       <H2>Changes</H2>

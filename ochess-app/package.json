@@ -19,27 +19,27 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
-    "@tailwindcss/vite": "^4.2.2",
+    "@tailwindcss/vite": "^4.2.4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^6.0.1",
-    "jsdom": "^29.0.1",
+    "jsdom": "^29.1.0",
     "supabase": "^2.95.3",
-    "tailwindcss": "^4.2.2",
-    "typescript": "~6.0.2",
-    "vite": "^8.0.1",
-    "vitest": "^4.1.2"
+    "tailwindcss": "^4.2.4",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.5"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",
     "chess.js": "^1.4.0",
     "howler": "^2.2.4",
     "js-chess-engine": "^1.0.2",
-    "react": "^19.2.4",
+    "react": "^19.2.5",
     "react-chessboard": "^5.10.0",
-    "react-dom": "^19.2.4",
-    "react-router-dom": "^7.14.0",
+    "react-dom": "^19.2.5",
+    "react-router-dom": "^7.14.2",
     "stockfish": "^18.0.7"
   }
 }
