@@ -119,6 +119,16 @@ export default function ReviewPage() {
   const [planChipId, setPlanChipId] = useState(null);
   const [planSetName, setPlanSetName] = useState("");
   const gameRef = useRef(null);
+  // Mutex flipped on while the opponent's auto-reply is queued
+  // (the 450 ms gap after the user makes a correct move in a
+  // multi-move puzzle). Without this, a user dragging another
+  // piece during that window would have their move compared
+  // against `lineMoves[lineIndex]` - which at that point is the
+  // opponent's expected move, not theirs - and incorrectly trip
+  // a wrong-attempt flash. Declared up here with the other refs
+  // so every callback / effect that needs to clear it has access
+  // without ref-ordering ambiguity.
+  const awaitingOpponentRef = useRef(false);
 
   // Card share import - if the URL has `?import=<base64>`, decode the
   // shared card, dedupe against the existing deck, and append. Then
@@ -215,6 +225,10 @@ export default function ReviewPage() {
     setPlayedSan([]);
     setWrongAttempt(null);
     setIntervalHints(null);
+    // The opponent-reply lock can survive card transitions (a
+    // mid-line navigation away leaves it true) - reset it here
+    // so the new card's first move isn't silently rejected.
+    awaitingOpponentRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardKey]);
 
@@ -277,14 +291,20 @@ export default function ReviewPage() {
     setPlayedSan([]);
     setWrongAttempt(null);
     setIntervalHints(null);
+    awaitingOpponentRef.current = false;
     gameRef.current = null;
   }, []);
 
   // Advance the displayed FEN to whatever's currently in gameRef
   // and surface the predicted intervals. Called after the line is
   // fully played out (or revealed), at the rating-prompt phase.
+  // Clears any leftover wrong-attempt flash so the rate UI doesn't
+  // render the red "Not quite" banner alongside the rating buttons
+  // (the banner is supposed to be a transient prompt-phase
+  // affordance only).
   const enterRatePhase = useCallback((nextPhase) => {
     setPhase(nextPhase);
+    setWrongAttempt(null);
     if (card) {
       const id = cardId(card);
       setIntervalHints(predictIntervalsFor(schedules, id));
@@ -323,7 +343,9 @@ export default function ReviewPage() {
     if (!replyUci) return false;
     const reply = uciToMove(replyUci);
     if (!reply) return false;
+    awaitingOpponentRef.current = true;
     scheduleTimeout(() => {
+      awaitingOpponentRef.current = false;
       try {
         const g = gameRef.current;
         if (!g) return;
@@ -342,12 +364,14 @@ export default function ReviewPage() {
   }, [card, scheduleTimeout]);
 
   const handleMove = useCallback((move) => {
-    // Only accept moves while we're showing the prompt. The line-
-    // complete handoff briefly stays in "prompt" phase before
-    // flipping to "correct" via a 300 ms setTimeout, but the board
-    // is already non-interactive in that window because the
-    // expected-move resolver returns null when the line is done.
+    // Only accept moves while we're showing the prompt and not
+    // mid-opponent-reply. The line-complete handoff briefly stays
+    // in "prompt" phase before flipping to "correct" via a 300 ms
+    // setTimeout, but the board is already non-interactive in that
+    // window because the expected-move resolver returns null when
+    // the line is done.
     if (!card || phase !== "prompt") return false;
+    if (awaitingOpponentRef.current) return false;
 
     // Resolve the expected next move. Prefer the multi-move line
     // (puzzles), fall back to the single answerMove (analysis cards).
@@ -861,7 +885,12 @@ export default function ReviewPage() {
 function CardMetadata({ card }) {
   if (!card) return null;
   const themes = Array.isArray(card.themes) ? card.themes.slice(0, 5) : [];
-  const evalLoss = Number.isFinite(card.eval_loss_cp) ? card.eval_loss_cp : null;
+  // Treat 0 (or negative) eval-loss as "no real loss to show" for
+  // visibility purposes - rendering an empty bar is more confusing
+  // than just hiding it.
+  const evalLoss = Number.isFinite(card.eval_loss_cp) && card.eval_loss_cp > 0
+    ? card.eval_loss_cp
+    : null;
   const hasAny = card.rating || card.opening || card.played_san || card.best_san
     || themes.length > 0 || evalLoss != null || card.source_url || card.source;
   if (!hasAny) return null;
@@ -879,7 +908,7 @@ function CardMetadata({ card }) {
       </h3>
 
       {(card.played_san || card.best_san) && (
-        <div className="grid grid-cols-2 gap-2">
+        <div className={`grid gap-2 ${card.played_san && card.best_san ? "grid-cols-2" : "grid-cols-1"}`}>
           {card.played_san && (
             <div>
               <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30 block mb-0.5">You played</span>
@@ -895,7 +924,7 @@ function CardMetadata({ card }) {
         </div>
       )}
 
-      {evalLoss != null && (
+      {evalLoss != null && evalLoss > 0 && (
         <div>
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30">Eval loss</span>

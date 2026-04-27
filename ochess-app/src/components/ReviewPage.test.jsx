@@ -78,4 +78,49 @@ describe("ReviewPage", () => {
     const analysisBtn = screen.getByText("Analysis").closest("button");
     expect(analysisBtn?.textContent).toMatch(/Analysis\s*1/);
   });
+
+  it("renders the rich Anki sidebar (queue breakdown + 7-day forecast + state pill)", () => {
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "p1", type: "puzzle", fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
+      { id: "p2", type: "puzzle", fen: "8/8/8/8/8/8/8/8 w - - 0 2", ts: 2 },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    // Queue widget: section heading + state rows. Several of the
+    // labels also appear in the prompt-header state pill, so we
+    // use getAllByText for those.
+    expect(screen.getByText(/^Queue$/)).toBeDefined();
+    expect(screen.getAllByText(/^New$/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/^Learning$/)).toBeDefined();
+    expect(screen.getByText(/^Review$/)).toBeDefined();
+    expect(screen.getByText(/^Relearning$/)).toBeDefined();
+    // Forecast strip is present.
+    expect(screen.getByText(/Next 7 days/i)).toBeDefined();
+  });
+
+  it("hides the eval-loss bar when eval_loss_cp is 0 (no real loss to show)", () => {
+    // Regression: a card with eval_loss_cp === 0 used to render an
+    // empty progress bar in CardMetadata, which looked like a UI
+    // bug. The hasAny / show-bar guards now require a positive
+    // value before rendering.
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      {
+        id: "z1",
+        type: "mistake",
+        fen: "8/8/8/8/8/8/8/8 w - - 0 1",
+        eval_loss_cp: 0,
+        ts: 1,
+      },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    // No "Eval loss" label should appear since loss is 0.
+    expect(screen.queryByText(/Eval loss/i)).toBeNull();
+  });
 });

@@ -348,6 +348,108 @@ describe("MATURE_INTERVAL_DAYS", () => {
   });
 });
 
+describe("interval fuzz", () => {
+  // The fuzz is randomized, so we drive it by running the same
+  // computation repeatedly and asserting the outputs land in the
+  // expected band.
+  it("never returns an interval below 1 day after fuzz", () => {
+    let s = createScheduleState();
+    s = computeNextReview(s, RATING.GOOD); // -> learning
+    s = computeNextReview(s, RATING.GOOD); // -> review @ 1d
+    for (let i = 0; i < 200; i++) {
+      const next = computeNextReview(s, RATING.HARD);
+      expect(next.intervalDays).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("does NOT fuzz short intervals (under 7 days)", () => {
+    // A card that's been reviewed twice (1d -> 6d after Good#2)
+    // sits below the 7d fuzz threshold. The third-review interval
+    // SHOULD therefore be deterministic at the rounded value.
+    let s = createScheduleState();
+    s = computeNextReview(s, RATING.GOOD); // step 1
+    s = computeNextReview(s, RATING.GOOD); // graduate -> 1d, REVIEW
+    // 1d * 2.5 = 2.5 -> rounded to 3. Below 7d -> no fuzz.
+    const out1 = computeNextReview(s, RATING.GOOD).intervalDays;
+    const out2 = computeNextReview(s, RATING.GOOD).intervalDays;
+    expect(out1).toBe(out2);
+    expect(out1).toBeLessThan(7);
+  });
+
+  it("fuzzes intervals >= 7 days within the documented ±15% band", () => {
+    // Build a card with a substantial interval, then sample many
+    // Good ratings and confirm the spread stays within the band.
+    let s = createScheduleState();
+    s = computeNextReview(s, RATING.GOOD);
+    s = computeNextReview(s, RATING.GOOD); // 1d
+    s = computeNextReview(s, RATING.GOOD); // ~3d
+    s = computeNextReview(s, RATING.GOOD); // ~7d
+    // Now repeat Good 100x and see the resulting intervals fall
+    // within ±15% of the unfuzzed multiplier (s.intervalDays *
+    // s.easeFactor) - the band that ≥7-30 day intervals get.
+    const baseline = Math.round(s.intervalDays * s.easeFactor);
+    const samples = [];
+    for (let i = 0; i < 100; i++) {
+      samples.push(computeNextReview(s, RATING.GOOD).intervalDays);
+    }
+    const upper = Math.ceil(baseline * 1.16); // a hair over 15%
+    const lower = Math.max(1, Math.floor(baseline * 0.84));
+    for (const v of samples) {
+      expect(v).toBeGreaterThanOrEqual(lower);
+      expect(v).toBeLessThanOrEqual(upper);
+    }
+  });
+});
+
+describe("lapse handling", () => {
+  it("graduating from RELEARNING shrinks but does not collapse a long-interval card", () => {
+    // Build a card up to a ~50-day interval, lapse it (Again),
+    // then graduate it back with Good. Expect the new interval
+    // to be ~30% of pre-lapse, NOT 1 day. This pins the chess-
+    // tuned LAPSE_NEW_INTERVAL_PCT = 0.30 behavior.
+    let s = createScheduleState();
+    s = computeNextReview(s, RATING.GOOD); // step 1
+    s = computeNextReview(s, RATING.GOOD); // -> 1d
+    for (let i = 0; i < 6; i++) s = computeNextReview(s, RATING.GOOD); // grow
+    const preLapse = s.intervalDays;
+    expect(preLapse).toBeGreaterThan(20);
+
+    s = computeNextReview(s, RATING.AGAIN); // lapse -> RELEARNING
+    expect(s.state).toBe(STATE.RELEARNING);
+    expect(s.lapseCount).toBe(1);
+
+    s = computeNextReview(s, RATING.GOOD); // graduate back
+    expect(s.state).toBe(STATE.REVIEW);
+    // New interval should be ~30% of pre-lapse, ±fuzz. Loose
+    // bounds: at least the floor (1d), at most ~50% of pre-lapse.
+    expect(s.intervalDays).toBeGreaterThanOrEqual(1);
+    expect(s.intervalDays).toBeLessThanOrEqual(Math.ceil(preLapse * 0.5));
+    expect(s.intervalDays).toBeLessThan(preLapse);
+  });
+
+  it("Easy from RELEARNING grants a longer interval than Good from RELEARNING", () => {
+    // Build identical pre-lapsed cards, then test Good vs Easy.
+    function buildLapsed() {
+      let s = createScheduleState();
+      s = computeNextReview(s, RATING.GOOD);
+      s = computeNextReview(s, RATING.GOOD);
+      for (let i = 0; i < 6; i++) s = computeNextReview(s, RATING.GOOD);
+      s = computeNextReview(s, RATING.AGAIN);
+      return s;
+    }
+    // Sample a few (interval fuzz introduces noise) and assert
+    // that the Easy-graduated mean meaningfully exceeds Good.
+    const goods = []; const easies = [];
+    for (let i = 0; i < 30; i++) {
+      goods.push(computeNextReview(buildLapsed(), RATING.GOOD).intervalDays);
+      easies.push(computeNextReview(buildLapsed(), RATING.EASY).intervalDays);
+    }
+    const meanG = goods.reduce((a, b) => a + b, 0) / goods.length;
+    const meanE = easies.reduce((a, b) => a + b, 0) / easies.length;
+    expect(meanE).toBeGreaterThan(meanG);
+  });
+});
+
 describe("computeNextReview - hardening", () => {
   it("clamps an unknown rating value to GOOD", () => {
     const s = createScheduleState();
