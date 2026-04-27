@@ -31,6 +31,12 @@ Verify the secret:
 npx supabase --workdir .. secrets list
 ```
 
+If you deployed this function before April 27, 2026 - re-run
+`functions deploy coach` after pulling the latest code. The earlier
+version was missing `apikey` and `x-client-info` from its CORS
+preflight, which produced "Failed to send a request to the Edge
+Function" in the browser console.
+
 ## How the client calls it
 
 `ochess-app/src/lib/coach-llm.js` is the client wrapper. It reads the user's review cards, filters to mistakes, sends up to 30 of them to this function with the user's optional free-text query, and renders the structured response.

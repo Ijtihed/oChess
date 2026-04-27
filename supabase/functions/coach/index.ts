@@ -192,17 +192,26 @@ function parseCoachJson(content: string): CoachResponse | null {
   }
 }
 
+// ── CORS ──
+// Supabase JS sends `apikey`, `x-client-info`, and `authorization`
+// alongside `content-type` on every functions.invoke() call. The
+// browser rejects the preflight if any of those aren't in the
+// Allow-Headers list, which manifests as the cryptic
+// "Failed to send a request to the Edge Function" error on the
+// client side. List every header @supabase/supabase-js 2.x is known
+// to send so a future minor bump doesn't silently break us again.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-supabase-api-version",
+  "Access-Control-Max-Age": "86400",
+};
+
 // ── Handler ──
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "authorization, content-type",
-      },
-    });
+    return new Response(null, { headers: CORS_HEADERS });
   }
   if (req.method !== "POST") {
     return jsonErr("Method not allowed", 405);
@@ -243,19 +252,13 @@ Deno.serve(async (req) => {
 
 function jsonOk(payload: CoachResponse): Response {
   return new Response(JSON.stringify(payload), {
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    },
+    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
   });
 }
 
 function jsonErr(error: string, status = 400): Response {
   return new Response(JSON.stringify({ ok: false, error }), {
     status,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    },
+    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
   });
 }

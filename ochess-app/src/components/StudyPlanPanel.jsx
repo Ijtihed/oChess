@@ -20,6 +20,13 @@ import {
   buildShareUrl,
 } from "../lib/review-cards";
 import { callCoach, isCoachAvailable } from "../lib/coach-llm";
+import {
+  loadDrillSets,
+  saveDrillSets,
+  addDrillSet,
+  removeDrillSet,
+  countDrillSetCards,
+} from "../lib/drill-sets";
 
 /**
  * Plan tab - the "what should I work on?" surface.
@@ -47,10 +54,11 @@ import { callCoach, isCoachAvailable } from "../lib/coach-llm";
 // misleading more than they helped. The two largest sets just get a
 // soft "this can take a while" hint instead.
 const GAME_LIMIT_OPTIONS = [
-  { value: 30,  label: "30",  warn: false },
-  { value: 100, label: "100", warn: false },
-  { value: 200, label: "200", warn: true },
-  { value: 500, label: "500", warn: true },
+  { value: 30,   label: "30",   warn: false },
+  { value: 100,  label: "100",  warn: false },
+  { value: 200,  label: "200",  warn: true },
+  { value: 500,  label: "500",  warn: true },
+  { value: 1000, label: "1000", warn: true },
 ];
 const DEFAULT_GAME_LIMIT = 100;
 const DAILY_QUOTA = 5;
@@ -165,9 +173,17 @@ export default function StudyPlanPanel({ onStartSession }) {
   const [allCards, setAllCards] = useState(() => loadCards());
   const [schedules] = useState(() => loadSchedules());
 
-  // Filter UI state.
+  // Filter UI state. `query` and `activeChip` describe the current
+  // ad-hoc drill (the one the "Start session" button kicks off).
+  // Saved drill sets live separately in `drillSets`; clicking one
+  // applies its filter and starts a session.
   const [query, setQuery] = useState("");
   const [activeChip, setActiveChip] = useState(null);
+  const [drillSets, setDrillSets] = useState(() => loadDrillSets());
+  const [savingDrill, setSavingDrill] = useState(false);
+  const [drillName, setDrillName] = useState("");
+  const [editingSetId, setEditingSetId] = useState(null);
+  const canSaveDrill = !!(query.trim() || activeChip);
 
   // AI Coach state - populated by the Edge Function call. Stored
   // alongside the cards so a user reading the plan and switching
@@ -194,6 +210,55 @@ export default function StudyPlanPanel({ onStartSession }) {
     () => buildDailyPlan(allCards, schedules, { quota: DAILY_QUOTA, query, chipId: activeChip }),
     [allCards, schedules, query, activeChip]
   );
+
+  // Save the current ad-hoc filter as a persistent named drill set.
+  // If an existing set is being edited (clicked "rename"), updates
+  // it in place; otherwise creates a new one. Either way the new
+  // collection is persisted to localStorage so a refresh / tab swap
+  // doesn't lose the user's saved drills.
+  const saveCurrentAsDrillSet = useCallback(() => {
+    if (!canSaveDrill) return;
+    const { sets, id } = addDrillSet(drillSets, {
+      id: editingSetId,
+      name: drillName,
+      query,
+      chipId: activeChip,
+    });
+    if (!id) return;
+    setDrillSets(sets);
+    saveDrillSets(sets);
+    setSavingDrill(false);
+    setEditingSetId(null);
+    setDrillName("");
+  }, [drillSets, editingSetId, drillName, query, activeChip, canSaveDrill]);
+
+  const startDrillSet = useCallback((set) => {
+    if (!set) return;
+    onStartSession?.({
+      query: set.query || "",
+      chipId: set.chipId || null,
+      setName: set.name,
+    });
+  }, [onStartSession]);
+
+  const deleteDrillSet = useCallback((setId) => {
+    const next = removeDrillSet(drillSets, setId);
+    setDrillSets(next);
+    saveDrillSets(next);
+    if (editingSetId === setId) {
+      setEditingSetId(null);
+      setSavingDrill(false);
+      setDrillName("");
+    }
+  }, [drillSets, editingSetId]);
+
+  const beginEditDrillSet = useCallback((set) => {
+    setQuery(set.query || "");
+    setActiveChip(set.chipId || null);
+    setDrillName(set.name);
+    setEditingSetId(set.id);
+    setSavingDrill(true);
+  }, []);
 
   const cancelImport = useCallback(() => {
     if (!abortRef.current) return;
@@ -689,12 +754,71 @@ export default function StudyPlanPanel({ onStartSession }) {
         </div>
       )}
 
-      {/* Free-text + chip filters */}
+      {/* Saved drill sets - clickable rows the user can come back to.
+          Lives ABOVE the ad-hoc filter so a returning user sees their
+          saved drills first instead of having to re-type the
+          query/chip every visit. */}
+      {drillSets.length > 0 && (
+        <div className="p-5 bg-surface-low border border-white/[0.04]">
+          <div className="flex items-baseline justify-between mb-3">
+            <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">My drill sets</h3>
+            <span className="text-[11px] text-on-surface-variant/30 tabular-nums">{drillSets.length}</span>
+          </div>
+          <div className="space-y-1.5">
+            {drillSets.map((set) => {
+              const count = countDrillSetCards(set, allCards, {
+                chipFor: (id) => COMMON_WEAKNESS_CHIPS.find((c) => c.id === id),
+                queryFilter: filterCardsByQuery,
+              });
+              const subtitle = [
+                set.chipId ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === set.chipId)?.label : null,
+                set.query ? `"${set.query}"` : null,
+              ].filter(Boolean).join(" · ");
+              return (
+                <div key={set.id} className="flex items-center gap-2 px-3 py-2 bg-surface-container border border-white/[0.04]">
+                  <button onClick={() => startDrillSet(set)}
+                    className="flex-1 min-w-0 text-left">
+                    <span className="font-headline text-[13px] font-bold text-on-surface-variant/80 block truncate">
+                      {set.name}
+                    </span>
+                    <span className="text-[10px] text-on-surface-variant/40 truncate block">
+                      {subtitle || "no filter"} · {count} card{count === 1 ? "" : "s"}
+                    </span>
+                  </button>
+                  <button onClick={() => beginEditDrillSet(set)}
+                    title="Edit this drill set's filter or name"
+                    className="px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-primary transition-colors">
+                    Edit
+                  </button>
+                  <button onClick={() => deleteDrillSet(set.id)}
+                    title="Delete this drill set"
+                    className="px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-error transition-colors">
+                    Delete
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Free-text + chip filters - the "ad-hoc drill" that lives
+          before the user decides to save it as a set. */}
       <div className="p-5 bg-surface-low border border-white/[0.04]">
-        <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40 mb-3">Drill what you want</h3>
+        <div className="flex items-baseline justify-between mb-3">
+          <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">
+            {editingSetId ? "Edit drill set" : "Drill what you want"}
+          </h3>
+          {canSaveDrill && !savingDrill && (
+            <button onClick={() => { setSavingDrill(true); setDrillName(""); }}
+              className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
+              Save as set
+            </button>
+          )}
+        </div>
         <p className="text-[12px] text-on-surface-variant/40 mb-3 leading-relaxed">
           Type a phrase like <span className="text-on-surface-variant/65 font-bold">endgame fork</span> or{" "}
-          <span className="text-on-surface-variant/65 font-bold">hanging queen</span> to drill positions matching it. Or pick a chip:
+          <span className="text-on-surface-variant/65 font-bold">hanging queen</span> to drill positions matching it. Or pick a chip. Save what you want to come back to.
         </p>
         <input
           value={query}
@@ -702,7 +826,7 @@ export default function StudyPlanPanel({ onStartSession }) {
           placeholder="What kind of mistakes do you make?"
           className="w-full bg-surface-container border border-white/[0.06] px-3 py-2.5 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40 mb-3"
         />
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 mb-3">
           {COMMON_WEAKNESS_CHIPS.map((chip) => (
             <button key={chip.id}
               onClick={() => setActiveChip(activeChip === chip.id ? null : chip.id)}
@@ -716,6 +840,33 @@ export default function StudyPlanPanel({ onStartSession }) {
             </button>
           ))}
         </div>
+
+        {/* Save-as-set inline editor. Appears when the user clicks
+            "Save as set" or "Edit" on an existing row. */}
+        {savingDrill && (
+          <div className="mt-3 p-3 bg-surface-container border border-primary/15 space-y-2">
+            <input
+              value={drillName}
+              onChange={(e) => setDrillName(e.target.value)}
+              placeholder="Name this drill set (e.g. 'Hanging queens')"
+              maxLength={60}
+              autoFocus
+              className="w-full bg-surface-low border border-white/[0.06] px-3 py-2 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40"
+              onKeyDown={(e) => { if (e.key === "Enter") saveCurrentAsDrillSet(); }}
+            />
+            <div className="flex gap-2">
+              <button onClick={saveCurrentAsDrillSet}
+                disabled={!canSaveDrill}
+                className="btn btn-primary px-4 py-1.5 text-[11px]">
+                {editingSetId ? "Update" : "Save"}
+              </button>
+              <button onClick={() => { setSavingDrill(false); setEditingSetId(null); setDrillName(""); }}
+                className="btn btn-secondary px-4 py-1.5 text-[11px]">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Today's queue */}

@@ -77,10 +77,15 @@ export default function ReviewPage() {
   // (StudyPlanPanel handles its own state + persistence).
   const [topTab, setTopTab] = useState("today");
   // Optional plan-driven filter - set when the user clicks "Start
-  // session" from the Plan tab. We narrow the SM-2 queue to the same
-  // chip / free-text filter so the session matches what they picked.
+  // session" from the Plan tab (either ad-hoc filter or a saved
+  // drill set). We narrow the SM-2 queue to the same chip /
+  // free-text filter so the session matches what they picked. The
+  // optional setName is shown in the banner so the user knows
+  // they're drilling "Hanging queens" instead of just `"hanging
+  // queen"`.
   const [planQuery, setPlanQuery] = useState("");
   const [planChipId, setPlanChipId] = useState(null);
+  const [planSetName, setPlanSetName] = useState("");
   const gameRef = useRef(null);
 
   // Card share import - if the URL has `?import=<base64>`, decode the
@@ -155,9 +160,10 @@ export default function ReviewPage() {
     [cards, dueIds]
   );
 
-  const startPlanSession = useCallback(({ query, chipId }) => {
+  const startPlanSession = useCallback(({ query, chipId, setName } = {}) => {
     setPlanQuery(query || "");
     setPlanChipId(chipId || null);
+    setPlanSetName(setName || "");
     setDeckFilter("all"); // Don't double-narrow; Plan filter takes over.
     setTopTab("today");
     setPhase("prompt");
@@ -168,6 +174,7 @@ export default function ReviewPage() {
   const clearPlanSession = useCallback(() => {
     setPlanQuery("");
     setPlanChipId(null);
+    setPlanSetName("");
   }, []);
 
   // If localStorage is mutated by another page (e.g. user adds a card
@@ -427,9 +434,14 @@ export default function ReviewPage() {
             <span className="text-[12px] text-on-surface-variant/65">
               Drilling{" "}
               <span className="font-bold text-primary">
-                {planChipId
-                  ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
-                  : `"${planQuery}"`}
+                {/* Prefer the saved-set name when present; fall back
+                    to the chip label or the raw query for an ad-hoc
+                    session. */}
+                {planSetName
+                  ? planSetName
+                  : planChipId
+                    ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
+                    : `"${planQuery}"`}
               </span>
             </span>
             <button onClick={clearPlanSession}
