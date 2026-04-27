@@ -41,11 +41,15 @@ import { callCoach, isCoachAvailable } from "../lib/coach-llm";
 // WASM, so 100 games is around an hour, 500 is several hours. The UI
 // surfaces this estimate so the user knows what they're committing
 // to before clicking Analyze.
+// Time-to-analyze varies wildly with CPU + how many of the user's
+// moves were already cached in Stockfish, so concrete estimates were
+// misleading more than they helped. The two largest sets just get a
+// soft "this can take a while" hint instead.
 const GAME_LIMIT_OPTIONS = [
-  { value: 30,  label: "30",  estMin: "~10 min" },
-  { value: 100, label: "100", estMin: "~30 min" },
-  { value: 200, label: "200", estMin: "~1 hr" },
-  { value: 500, label: "500", estMin: "~3 hr" },
+  { value: 30,  label: "30",  warn: false },
+  { value: 100, label: "100", warn: false },
+  { value: 200, label: "200", warn: true },
+  { value: 500, label: "500", warn: true },
 ];
 const DEFAULT_GAME_LIMIT = 100;
 const DAILY_QUOTA = 5;
@@ -490,14 +494,16 @@ export default function StudyPlanPanel({ onStartSession }) {
                   : "bg-surface-container border border-white/[0.04] text-on-surface-variant/55 hover:text-primary hover:bg-surface-high"
               }`}>
               <span className="font-headline text-sm font-extrabold">{opt.label}</span>
-              <span className={`text-[9px] mt-0.5 ${gameLimit === opt.value ? "text-on-primary/60" : "text-on-surface-variant/30"}`}>
-                {opt.estMin}
-              </span>
+              {opt.warn && (
+                <span className={`text-[9px] mt-0.5 ${gameLimit === opt.value ? "text-on-primary/60" : "text-amber-400/60"}`}>
+                  may take a while
+                </span>
+              )}
             </button>
           ))}
         </div>
         <p className="text-[10px] text-on-surface-variant/30 mt-2">
-          Larger sets find more patterns but take longer. Stockfish runs on your moves only.
+          Larger sets find more patterns. Stockfish runs on your moves only - 200+ can take a long time to get everything.
         </p>
       </div>
     </div>
