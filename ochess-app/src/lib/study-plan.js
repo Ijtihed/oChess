@@ -38,6 +38,26 @@ function mistakeId(source, gameId, ply) {
   return `mistake-${source}-${gameId}-${ply}`;
 }
 
+/**
+ * Collapse a Stockfish score (cp + mate) down to a single user-POV
+ * centipawn number. Engines emit `score mate N` separately from
+ * `score cp K`; treating mate as 0 makes a missed-mate look like a
+ * 0 cp swing, which silently un-flags the worst class of mistake.
+ *
+ * Mate distance is mapped to a very large cp value so any change
+ * between mating / non-mating positions dominates the threshold.
+ */
+export function scoreToUserCp(result) {
+  if (!result) return 0;
+  if (Number.isFinite(result.eval_mate) && result.eval_mate !== null) {
+    // Closer mates are bigger numbers; sign tracks who's mating.
+    const sign = result.eval_mate >= 0 ? 1 : -1;
+    return sign * (10000 - Math.min(50, Math.abs(result.eval_mate)) * 100);
+  }
+  if (Number.isFinite(result.eval_cp)) return result.eval_cp;
+  return 0;
+}
+
 /** Phase classification at a given chess.js position. */
 export function inferPhase(chess, ply) {
   if (ply < OPENING_PLY_LIMIT) return "opening";
@@ -133,10 +153,18 @@ export async function analyzeGameForMistakes(pgn, userColor, opts = {}) {
     if (!before || !after) continue;
 
     // Compute eval loss from the user's POV. evaluate() returns
-    // eval_cp from the side-to-move's POV, so we flip when needed.
-    const userPovBefore = userColor === "w" ? (before.eval_cp ?? 0) : -(before.eval_cp ?? 0);
-    // After the user moves, it's the opponent's turn - flip back.
-    const userPovAfter  = userColor === "w" ? -(after.eval_cp ?? 0) : (after.eval_cp ?? 0);
+    // score from the side-to-move's POV - positive = side-to-move
+    // winning. Before the user's move the user IS the side to move,
+    // so before's score is already user-POV regardless of color.
+    // After the user's move the OPPONENT is the side to move, so
+    // after's score must be flipped to user-POV - again regardless
+    // of color.
+    //
+    // (The previous version flipped on userColor instead, which was
+    // a sign error: it cancelled out for white and inverted for
+    // black, so Black-side blunders never crossed the threshold.)
+    const userPovBefore = scoreToUserCp(before);
+    const userPovAfter = -scoreToUserCp(after);
     const evalLossCp = userPovBefore - userPovAfter;
 
     if (!Number.isFinite(evalLossCp) || evalLossCp < threshold) continue;

@@ -28,7 +28,12 @@ export function loadCards() {
   try {
     const raw = JSON.parse(localStorage.getItem(CARDS_KEY) || "[]");
     if (!Array.isArray(raw)) return [];
-    return raw.map((c, i) => ({ ...c, ts: c.ts || i }));
+    // Defensive: drop any entry that isn't a real card object. A
+    // bad write from a different version (or storage tampering)
+    // would otherwise crash the .map below trying to spread null.
+    return raw
+      .filter((c) => c && typeof c === "object" && c.fen)
+      .map((c, i) => ({ ...c, ts: c.ts || i }));
   } catch { return []; }
 }
 
@@ -54,8 +59,25 @@ export function saveSchedules(map) {
 /** Get the schedule for a card, lazily creating one on first review. */
 export function getSchedule(map, id) {
   const s = map[id];
-  if (s && s.dueAt) return { ...s, dueAt: new Date(s.dueAt), lastReviewedAt: s.lastReviewedAt ? new Date(s.lastReviewedAt) : null };
-  return createScheduleState();
+  if (!s || !s.dueAt) return createScheduleState();
+  const dueAt = new Date(s.dueAt);
+  // If the persisted dueAt is corrupted (e.g. a non-ISO string), the
+  // resulting Date is Invalid and propagates NaN through every SM-2
+  // calculation - which would lock the card into "never due" forever.
+  // Reset to a fresh schedule in that case so the user can still
+  // review it.
+  if (Number.isNaN(dueAt.getTime())) return createScheduleState();
+  return {
+    ...s,
+    dueAt,
+    lastReviewedAt: s.lastReviewedAt && !Number.isNaN(new Date(s.lastReviewedAt).getTime())
+      ? new Date(s.lastReviewedAt)
+      : null,
+    easeFactor: Number.isFinite(s.easeFactor) ? s.easeFactor : 2.5,
+    intervalDays: Number.isFinite(s.intervalDays) ? s.intervalDays : 0,
+    repetitions: Number.isFinite(s.repetitions) ? s.repetitions : 0,
+    lapseCount: Number.isFinite(s.lapseCount) ? s.lapseCount : 0,
+  };
 }
 
 export function setSchedule(map, id, schedule) {
@@ -65,7 +87,10 @@ export function setSchedule(map, id, schedule) {
 export function isCardDue(map, id) {
   const s = map[id];
   if (!s) return true; // Brand-new cards are always due.
-  return isDue(s);
+  if (!s.dueAt) return true; // Corrupted: treat as new.
+  const t = new Date(s.dueAt).getTime();
+  if (Number.isNaN(t)) return true; // Corrupted: treat as new.
+  return Date.now() >= t;
 }
 
 /** Apply a rating to a card, returning the updated schedule map. */

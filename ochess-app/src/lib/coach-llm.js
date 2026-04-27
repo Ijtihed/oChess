@@ -52,10 +52,28 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
     game_id: c.game_id || null,
   }));
 
+  // Hard timeout. Groq's free tier is fast (~3s typical) but if the
+  // function or network hangs we don't want the UI stuck on
+  // "Thinking…" forever. 30 s is generous and well under the
+  // user's patience threshold. supabase.functions.invoke doesn't
+  // accept an AbortSignal as of @supabase/supabase-js 2.x, so we
+  // race the invoke against a timer instead.
+  const timeoutMs = 30_000;
+  const timeout = new Promise((resolve) =>
+    setTimeout(() => resolve({ __timeout: true }), timeoutMs)
+  );
+
   try {
-    const { data, error } = await supabase.functions.invoke("coach", {
-      body: { mistakes: slim, query: query || "", daily_quota: dailyQuota },
-    });
+    const result = await Promise.race([
+      supabase.functions.invoke("coach", {
+        body: { mistakes: slim, query: query || "", daily_quota: dailyQuota },
+      }),
+      timeout,
+    ]);
+    if (result?.__timeout) {
+      return { ok: false, error: "Coach took too long. Try again in a moment." };
+    }
+    const { data, error } = result;
     if (error) {
       // The function can also return a structured error in `data` even
       // on a non-2xx response from the underlying fetch; fall back to
@@ -67,7 +85,16 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
       return { ok: false, error: "Empty response from coach." };
     }
     if (data.ok === false) return { ok: false, error: data.error || "Coach failed" };
-    return data;
+    // Defensive: the LLM occasionally returns malformed JSON the
+    // server tries to parse - if any of the structured fields are
+    // missing, render whatever we got and skip the empty sections.
+    return {
+      ok: true,
+      summary: typeof data.summary === "string" ? data.summary : null,
+      plan: Array.isArray(data.plan) ? data.plan : [],
+      insights: Array.isArray(data.insights) ? data.insights : [],
+      model: data.model || null,
+    };
   } catch (e) {
     return { ok: false, error: e?.message || "Coach unavailable" };
   }

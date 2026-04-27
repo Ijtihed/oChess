@@ -7,6 +7,12 @@
 
 const DEFAULT_EASE = 2.5;
 const MIN_EASE = 1.3;
+// Interval cap (≈ 5 years). Without this, repeated EASY ratings
+// can grow intervalDays unboundedly fast - good for SM-2 in theory,
+// but a 200-year due date is functionally "never review", which is
+// not what the user wants. Five years is well past any realistic
+// review horizon and keeps Date arithmetic well within safe range.
+const MAX_INTERVAL_DAYS = 365 * 5;
 
 const RATING = Object.freeze({
   AGAIN: 1,
@@ -27,10 +33,28 @@ function createScheduleState() {
 }
 
 function computeNextReview(schedule, rating) {
-  const s = { ...schedule };
+  // Sanitize inputs. A corrupted persisted schedule (NaN ease,
+  // missing fields, etc.) would otherwise propagate NaN through
+  // every interval calculation.
+  const safe = {
+    easeFactor: Number.isFinite(schedule?.easeFactor) ? schedule.easeFactor : DEFAULT_EASE,
+    intervalDays: Number.isFinite(schedule?.intervalDays) ? schedule.intervalDays : 0,
+    repetitions: Number.isFinite(schedule?.repetitions) ? schedule.repetitions : 0,
+    lapseCount: Number.isFinite(schedule?.lapseCount) ? schedule.lapseCount : 0,
+    lastReviewedAt: schedule?.lastReviewedAt ?? null,
+    dueAt: schedule?.dueAt ?? new Date(),
+  };
+  const s = { ...safe };
   s.lastReviewedAt = new Date();
 
-  if (rating === RATING.AGAIN) {
+  // Clamp the rating into the AGAIN..EASY band so an unexpected
+  // value (e.g. a stray keypress mapping or a future change) can't
+  // produce NaN intervals.
+  const r = rating === RATING.AGAIN || rating === RATING.HARD || rating === RATING.GOOD || rating === RATING.EASY
+    ? rating
+    : RATING.GOOD;
+
+  if (r === RATING.AGAIN) {
     s.repetitions = 0;
     s.intervalDays = 1;
     s.lapseCount += 1;
@@ -46,17 +70,21 @@ function computeNextReview(schedule, rating) {
 
     s.easeFactor = Math.max(
       MIN_EASE,
-      s.easeFactor + (0.1 - (5 - rating) * (0.08 + (5 - rating) * 0.02))
+      s.easeFactor + (0.1 - (5 - r) * (0.08 + (5 - r) * 0.02))
     );
 
-    if (rating === RATING.HARD) {
+    if (r === RATING.HARD) {
       s.intervalDays = Math.max(1, Math.round(s.intervalDays * 0.8));
-    } else if (rating === RATING.EASY) {
+    } else if (r === RATING.EASY) {
       s.intervalDays = Math.round(s.intervalDays * 1.3);
     }
 
     s.repetitions += 1;
   }
+
+  // Cap the interval to keep the user from drifting into a
+  // "never-due" position after a string of EASY ratings.
+  s.intervalDays = Math.min(MAX_INTERVAL_DAYS, Math.max(1, s.intervalDays));
 
   const due = new Date(s.lastReviewedAt);
   due.setDate(due.getDate() + s.intervalDays);
@@ -66,7 +94,10 @@ function computeNextReview(schedule, rating) {
 }
 
 function isDue(schedule) {
-  return new Date() >= new Date(schedule.dueAt);
+  if (!schedule || !schedule.dueAt) return true; // Treat missing as due.
+  const t = new Date(schedule.dueAt).getTime();
+  if (Number.isNaN(t)) return true; // Treat corrupted as due.
+  return Date.now() >= t;
 }
 
 export { RATING, createScheduleState, computeNextReview, isDue };

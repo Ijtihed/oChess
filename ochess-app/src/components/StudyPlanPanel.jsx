@@ -10,6 +10,7 @@ import {
   COMMON_WEAKNESS_CHIPS,
   buildDailyPlan,
   planCacheKey,
+  MISTAKE_CP_THRESHOLD,
 } from "../lib/study-plan";
 import {
   loadCards,
@@ -318,6 +319,24 @@ export default function StudyPlanPanel({ onStartSession }) {
         const merged = [...allCards, ...newCards];
         saveCards(merged);
         setAllCards(merged);
+      }
+
+      // Surface a useful empty-result message when we processed
+      // games but found nothing usable. Skip this if we never made
+      // it through analysis (cancellation falls through here too) -
+      // in that case the AbortError catch block handles the phase.
+      if (newCards.length === 0 && preExistingMistakes === 0 && !ctrl.signal.aborted) {
+        if (games.length === 0) {
+          setErr(
+            "We couldn't find any games on the source(s) you picked. Double-check the username spelling under Edit accounts."
+          );
+        } else {
+          setErr(
+            `Analyzed ${games.length} game${games.length === 1 ? "" : "s"} but didn't find any positions where you lost more than ${MISTAKE_CP_THRESHOLD / 100} pawns. Try a larger sample or different sources.`
+          );
+        }
+        setPhase("error");
+        return;
       }
 
       // Terminal phase: built if we have cards (existing or just

@@ -51,6 +51,25 @@ describe("loadCards / saveCards", () => {
     localStorage.setItem("ochess_review_cards", JSON.stringify({ not: "an array" }));
     expect(loadCards()).toEqual([]);
   });
+
+  // Regression: a corrupted entry (null, missing fen, or a primitive)
+  // used to crash the .map() in loadCards because it spread through
+  // `{ ...c, ts: c.ts || i }` - reading `.ts` on null throws. The
+  // recovery path keeps the rest of the deck intact.
+  it("drops malformed entries (null / non-object / missing fen) without crashing", () => {
+    localStorage.setItem(
+      "ochess_review_cards",
+      JSON.stringify([
+        null,
+        "not-an-object",
+        { fen: "ok-1", type: "puzzle" },
+        { type: "puzzle" }, // missing fen
+        { fen: "ok-2", type: "analysis" },
+      ])
+    );
+    const out = loadCards();
+    expect(out.map((c) => c.fen)).toEqual(["ok-1", "ok-2"]);
+  });
 });
 
 describe("removeCard", () => {
@@ -66,6 +85,16 @@ describe("removeCard", () => {
 describe("isCardDue / rateCard", () => {
   it("treats brand-new cards as due", () => {
     expect(isCardDue({}, "anything")).toBe(true);
+  });
+
+  // Regression: a schedule with a corrupted/missing dueAt used to
+  // make isCardDue return false (because new Date(undefined) >=
+  // anything is false). The card would silently fall out of the
+  // queue and the user could never review it again.
+  it("treats a schedule with missing/corrupted dueAt as due", () => {
+    expect(isCardDue({ x: {} }, "x")).toBe(true);
+    expect(isCardDue({ x: { dueAt: null } }, "x")).toBe(true);
+    expect(isCardDue({ x: { dueAt: "not a date" } }, "x")).toBe(true);
   });
 
   it("schedules a card forward after a Good rating", () => {

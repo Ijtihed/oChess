@@ -24,6 +24,7 @@ import {
   buildDailyPlan,
   COMMON_WEAKNESS_CHIPS,
   analyzeGameForMistakes,
+  scoreToUserCp,
   MISTAKE_CP_THRESHOLD,
   BLUNDER_CP_THRESHOLD,
 } from "./study-plan";
@@ -204,6 +205,52 @@ describe("analyzeGameForMistakes", () => {
     expect(out).toEqual([]);
   });
 
+  // Regression: the previous version of the eval-loss math
+  // negated based on userColor, which double-flipped for Black and
+  // produced negative loss values - so blunders by Black were
+  // never flagged. This test pins the corrected behavior.
+  it("flags a black-side blunder when Stockfish swings >100cp against the user", async () => {
+    // PGN: 1. e4 e5 2. Nf3 Nc6. UserColor = "b". We analyze each
+    // black move in turn. For each move analyzeGameForMistakes
+    // calls evaluate() twice: once on the position before the
+    // move, once on the position after.
+    //
+    // Move 1 (...e5): before = position after 1. e4, black to move.
+    //   eval_cp = +200 from black's POV (black is +200).
+    //   userPovBefore = +200 (black winning).
+    //   After ...e5, white to move. eval_cp = +200 from WHITE's POV
+    //   (white is +200, i.e. black is -200). userPovAfter = -200.
+    //   evalLoss = 200 - (-200) = 400 → flagged blunder.
+    //
+    // Move 2 (...Nc6): keep both evals at 0 so nothing fires.
+    evalQueue.values = [
+      { eval_cp: 200, eval_mate: null, bestMove: "g8f6", pv: ["g8f6"], depth: 8 }, // before ...e5
+      { eval_cp: 200, eval_mate: null, bestMove: "g1f3", pv: ["g1f3"], depth: 8 }, // after ...e5 (white POV, white winning)
+      { eval_cp: 0,   eval_mate: null, bestMove: "b8c6", pv: ["b8c6"], depth: 8 }, // before ...Nc6
+      { eval_cp: 0,   eval_mate: null, bestMove: "f1c4", pv: ["f1c4"], depth: 8 }, // after ...Nc6
+    ];
+    const pgn = "1. e4 e5 2. Nf3 Nc6";
+    const out = await analyzeGameForMistakes(pgn, "b", { depth: 8, threshold: MISTAKE_CP_THRESHOLD });
+    expect(out.length).toBeGreaterThanOrEqual(1);
+    expect(out[0].played_san).toBe("e5");
+    expect(out[0].eval_loss_cp).toBeGreaterThanOrEqual(MISTAKE_CP_THRESHOLD);
+  });
+
+  it("treats `score mate N` as a near-infinite swing when computing eval loss", async () => {
+    // White had mate in 1, played a quiet move, mate vanished.
+    // Without scoreToUserCp the missed mate would register as a
+    // 0 cp swing (eval_mate ignored, eval_cp null). With it the
+    // loss is dominated by the mate distance.
+    evalQueue.values = [
+      { eval_cp: null, eval_mate: 1, bestMove: "f3h5", pv: ["f3h5"], depth: 8 }, // before move 1: mate-in-1 for white
+      { eval_cp: 50,   eval_mate: null, bestMove: "h7h6", pv: ["h7h6"], depth: 8 }, // after move 1 (black POV)
+    ];
+    const pgn = "1. h4";
+    const out = await analyzeGameForMistakes(pgn, "w", { depth: 8, threshold: MISTAKE_CP_THRESHOLD });
+    expect(out.length).toBeGreaterThanOrEqual(1);
+    expect(out[0].eval_loss_cp).toBeGreaterThanOrEqual(BLUNDER_CP_THRESHOLD);
+  });
+
   it("flags a single blunder when Stockfish swings >100cp against the user", async () => {
     // Two user moves (white's). For move 1, Stockfish says "white is +200" before, then "white is -200" after.
     //   userPovBefore = +200
@@ -225,5 +272,33 @@ describe("analyzeGameForMistakes", () => {
     expect(out[0].type).toBe("mistake");
     expect(out[0].played_san).toBe("e4");
     expect(out[0].eval_loss_cp).toBeGreaterThanOrEqual(MISTAKE_CP_THRESHOLD);
+  });
+});
+
+describe("scoreToUserCp", () => {
+  it("falls through to eval_cp when no mate is available", () => {
+    expect(scoreToUserCp({ eval_cp: 200, eval_mate: null })).toBe(200);
+    expect(scoreToUserCp({ eval_cp: -200, eval_mate: null })).toBe(-200);
+  });
+
+  it("returns 0 for missing or empty score objects", () => {
+    expect(scoreToUserCp(null)).toBe(0);
+    expect(scoreToUserCp({})).toBe(0);
+    expect(scoreToUserCp({ eval_cp: null, eval_mate: null })).toBe(0);
+  });
+
+  it("converts mate scores to a large signed cp value dominated by sign", () => {
+    const mateInOneForUs = scoreToUserCp({ eval_cp: null, eval_mate: 1 });
+    const mateInOneAgainstUs = scoreToUserCp({ eval_cp: null, eval_mate: -1 });
+    expect(mateInOneForUs).toBeGreaterThan(BLUNDER_CP_THRESHOLD);
+    expect(mateInOneAgainstUs).toBeLessThan(-BLUNDER_CP_THRESHOLD);
+    // Closer mates should dominate normal cp evaluations.
+    expect(Math.abs(mateInOneForUs)).toBeGreaterThan(2000);
+  });
+
+  it("ranks closer mates higher than further mates", () => {
+    const m1 = scoreToUserCp({ eval_cp: null, eval_mate: 1 });
+    const m10 = scoreToUserCp({ eval_cp: null, eval_mate: 10 });
+    expect(m1).toBeGreaterThan(m10);
   });
 });
