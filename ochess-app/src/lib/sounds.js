@@ -42,13 +42,28 @@ function preloadAll() {
   Object.values(SOUNDS).forEach((h) => h.load());
 }
 
-function playMoveSound(moveResult) {
+/**
+ * Move sound dispatcher.
+ *
+ * For checkmating moves we deliberately do NOT play the dramatic
+ * "checkmate" sound here. Every game-screen calls `playVictory()` /
+ * `playDefeat()` immediately after detecting the mate, and stacking
+ * Checkmate.mp3 (~1 s) on top of Victory.mp3 (~3 s) creates the
+ * "off-feeling" double-trigger players hear at the end of a game.
+ *
+ * For analysis playback (where there's no follow-up game-end sound)
+ * pass `{ allowMateSound: true }` to restore the Checkmate.mp3 cue.
+ */
+function playMoveSound(moveResult, { allowMateSound = false } = {}) {
   if (!moveResult) return;
   const san = typeof moveResult === "string" ? moveResult : (moveResult.san || "");
-  if (san.includes("#"))       play("checkmate", 1);
-  else if (san.includes("+"))  play("check", 0.9);
-  else if (moveResult.captured) play("capture", 0.85);
-  else                          play("move", 0.75);
+  if (san.includes("#")) {
+    if (allowMateSound) play("checkmate", 1);
+    else if (moveResult.captured) play("capture", 0.85);
+    else play("move", 0.75);
+  } else if (san.includes("+"))   play("check", 0.9);
+  else if (moveResult.captured)  play("capture", 0.85);
+  else                            play("move", 0.75);
 }
 
 function playGameStart() { play("start", 0.6); }

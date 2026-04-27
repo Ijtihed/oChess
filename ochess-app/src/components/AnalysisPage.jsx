@@ -472,7 +472,10 @@ export default function AnalysisPage() {
     try {
       const result = temp.move(move);
       if (!result) return false;
-      playMoveSound(result);
+      // Analysis is a contemplative mode — there's no follow-up
+      // Victory/Defeat sound when the user steps through a mate, so
+      // play the dramatic Checkmate cue here.
+      playMoveSound(result, { allowMateSound: true });
       const newHist = history.slice(0, currentPly);
       newHist.push(result);
       setHistory(newHist);

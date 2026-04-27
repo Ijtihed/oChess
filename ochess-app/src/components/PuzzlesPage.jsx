@@ -4,7 +4,7 @@ import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
 import LoadingScreen from "./LoadingScreen";
 import { loadPuzzles, getAdaptivePuzzle, findPuzzleById, searchPuzzleById, loadPuzzleRating, updatePuzzleRating } from "../lib/puzzles";
-import { playMoveSound, playError, playVictory, playDraw, preloadAll } from "../lib/sounds";
+import { playMoveSound, playError, playVictory, playDefeat, preloadAll } from "../lib/sounds";
 import { explainPuzzle } from "../lib/coach";
 import SocialPanel from "./SocialPanel";
 import { useAuth } from "./AuthProvider";
@@ -338,7 +338,10 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     } catch {}
     setFen(g.fen());
     setHighlight({ [m.from]: { backgroundColor: "rgba(239,68,68,0.25)" }, [m.to]: { backgroundColor: "rgba(239,68,68,0.35)" } });
-    setStatus("failed"); setSessionFailed((f) => f + 1); setStreak(0); playDraw();
+    // Failure plays the defeat cue — the chess-draw sound (used
+    // previously) implied a neutral result, but the user just lost
+    // this puzzle, so the louder "you lost" sound is more accurate.
+    setStatus("failed"); setSessionFailed((f) => f + 1); setStreak(0); playDefeat();
     const isRetry = wasPuzzleAttempted(puzzle.id);
     savePuzzleResult(puzzle.id, "failed", puzzle.rating, authUser?.id);
     if (!isRetry) {

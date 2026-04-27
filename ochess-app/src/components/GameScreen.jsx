@@ -286,7 +286,10 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
   useEffect(() => { doBotMoveRef.current = doBotMove; }, [doBotMove]);
 
   useEffect(() => {
-    playGameStart();
+    // Skip the start sound when resuming a saved bot game — it
+    // already happened the first time the game began. Only play it
+    // for genuinely-new games.
+    if (!resumeData) playGameStart();
     if (hasTime) {
       if (resumeData?.clockState) {
         clock.restore(resumeData.clockState.white, resumeData.clockState.black);

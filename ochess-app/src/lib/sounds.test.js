@@ -20,9 +20,27 @@ beforeEach(() => {
 });
 
 describe("playMoveSound — choice of sound from the chess.js move object", () => {
-  it("plays Checkmate.mp3 when SAN ends with #", async () => {
+  it("does NOT play Checkmate.mp3 by default for # — game-end sound covers the moment", async () => {
     const { playMoveSound } = await import("./sounds");
-    playMoveSound({ san: "Qxh7#" });
+    playMoveSound({ san: "Qxh7#", captured: "p" });
+    // Without the opt-in flag, a mating move plays the regular
+    // capture / move cue and lets the follow-up Victory/Defeat call
+    // (fired from endGame) own the audio. Stops the dramatic
+    // Checkmate.mp3 + Victory.mp3 stacking that felt "off".
+    expect(playCalls.some((p) => p.includes("Checkmate"))).toBe(false);
+    expect(playCalls.some((p) => p.includes("Capture"))).toBe(true);
+  });
+
+  it("plays Move.mp3 for a quiet # move when the capture flag isn't set", async () => {
+    const { playMoveSound } = await import("./sounds");
+    playMoveSound({ san: "Qh7#" });
+    expect(playCalls.some((p) => p.includes("Move"))).toBe(true);
+    expect(playCalls.some((p) => p.includes("Checkmate"))).toBe(false);
+  });
+
+  it("plays Checkmate.mp3 for # when allowMateSound: true is passed (analysis playback)", async () => {
+    const { playMoveSound } = await import("./sounds");
+    playMoveSound({ san: "Qxh7#", captured: "p" }, { allowMateSound: true });
     expect(playCalls.some((p) => p.includes("Checkmate"))).toBe(true);
   });
 
@@ -55,7 +73,10 @@ describe("playMoveSound — choice of sound from the chess.js move object", () =
   it("accepts a bare SAN string instead of a verbose move object", async () => {
     const { playMoveSound } = await import("./sounds");
     playMoveSound("Qxh7#");
-    expect(playCalls.some((p) => p.includes("Checkmate"))).toBe(true);
+    // SAN-only path can't tell capture from quiet, so it falls back
+    // to Move.mp3 by default (no Checkmate cue without the flag).
+    expect(playCalls.some((p) => p.includes("Move"))).toBe(true);
+    expect(playCalls.some((p) => p.includes("Checkmate"))).toBe(false);
   });
 });
 

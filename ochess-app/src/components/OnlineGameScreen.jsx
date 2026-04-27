@@ -276,7 +276,12 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   //   6. If broadcast missed, DB change still delivers the move
 
   useEffect(() => {
-    preloadAll(); playGameStart();
+    preloadAll();
+    // Only play the start sound for genuinely fresh games. Refreshing
+    // a tab mid-game (or coming back to an in-progress online match)
+    // would otherwise replay Confirmation.mp3 every mount, which feels
+    // wrong since the game has been going for a while.
+    if (!gameData.pgn?.trim()) playGameStart();
 
     // ── Hydrate from the game row we already have ──
     if (gameData.pgn?.trim()) {
