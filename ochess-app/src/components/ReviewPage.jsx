@@ -180,7 +180,7 @@ export default function ReviewPage() {
     return (
       <div className="flex">
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-12 text-center">
-          <h1 className="font-headline text-3xl font-extrabold tracking-tighter text-primary mb-3">Review</h1>
+          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-3">Review</h1>
           <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed">
             No cards yet. Save positions from the Analysis board, your bot games, or failed puzzles
             and they will appear here for spaced-repetition review.
@@ -195,7 +195,7 @@ export default function ReviewPage() {
     return (
       <div className="flex">
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-12 text-center">
-          <h1 className="font-headline text-3xl font-extrabold tracking-tighter text-primary mb-3">All caught up</h1>
+          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-3">All caught up</h1>
           <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-6">
             You've reviewed every card that's due right now. Come back tomorrow, or save more
             positions from the Analysis board.

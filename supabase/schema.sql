@@ -942,6 +942,7 @@ create policy "Users can delete their own avatar" on storage.objects
 
 create extension if not exists pg_cron with schema extensions;
 
+-- ── Stale matchmaking seeks ──
 do $$ begin
   if exists (select 1 from cron.job where jobname = 'ochess-cleanup-stale-seeks') then
     perform cron.unschedule('ochess-cleanup-stale-seeks');
@@ -952,4 +953,55 @@ select cron.schedule(
   'ochess-cleanup-stale-seeks',
   '*/5 * * * *',
   $cron$select cleanup_stale_seeks()$cron$
+);
+
+-- ── Abandoned games ──
+-- Backstop for the "both players walked away" case. The normal
+-- abandonment flow is: one player closes their tab, the other player's
+-- browser sees their opponent's clock hit 0 (computed locally from
+-- `last_move_at`) and writes the timeout result to the DB. That covers
+-- single-side abandonment.
+--
+-- This RPC handles the edge case where neither side is watching — for
+-- instance, both players close their tab during a slow game, or both
+-- crash. Without this, the row stays in `status = 'active'` forever
+-- and pollutes the user's "active games" list on next sign-in.
+--
+-- Scope is intentionally narrow:
+--   * Only games with a real time control (skip "Unlimited" /
+--     correspondence-style games where multi-day pauses are normal).
+--   * Only after 24 hours of no `last_move_at` activity. That's far
+--     longer than any time-controlled game can legitimately last
+--     (longest preset is 30+0 = ~1 hour wall-clock), so any survivor
+--     is by definition abandoned.
+--   * Result is `*` with `result_reason = 'abandoned'` so the existing
+--     UI renders it as a non-rated, non-result row in game history.
+create or replace function cleanup_stale_games()
+returns void as $$
+begin
+  update games
+  set status = 'completed',
+      result = '*',
+      result_reason = 'abandoned',
+      ended_at = now()
+  where status = 'active'
+    and time_control is not null
+    and (last_move_at is null or last_move_at < now() - interval '24 hours')
+    and (created_at is null or created_at < now() - interval '24 hours');
+end;
+$$ language plpgsql security definer;
+
+revoke execute on function cleanup_stale_games() from public, authenticated, anon;
+grant execute on function cleanup_stale_games() to service_role;
+
+do $$ begin
+  if exists (select 1 from cron.job where jobname = 'ochess-cleanup-stale-games') then
+    perform cron.unschedule('ochess-cleanup-stale-games');
+  end if;
+end $$;
+
+select cron.schedule(
+  'ochess-cleanup-stale-games',
+  '17 */6 * * *',
+  $cron$select cleanup_stale_games()$cron$
 );

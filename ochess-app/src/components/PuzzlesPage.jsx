@@ -133,11 +133,11 @@ export default function PuzzlesPage() {
   if (phase === "error") {
     return (
       <div className="min-h-[calc(100dvh-8rem)] flex items-center justify-center px-6">
-        <div className="text-center max-w-sm">
-          <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-2">Puzzles unavailable</h1>
-          <p className="text-[12px] text-on-surface-variant/40 mb-6">{loadError}</p>
+        <div className="anim-fade-up text-center max-w-sm">
+          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-3">Puzzles unavailable</h1>
+          <p className="text-sm text-on-surface-variant/40 mb-6">{loadError}</p>
           <button onClick={() => { setLoadError(null); setRetryKey((k) => k + 1); }}
-            className="px-5 py-2 bg-primary text-on-primary font-headline text-xs font-bold uppercase tracking-wide hover:bg-primary-dim transition-colors">
+            className="btn btn-primary px-5 py-2 text-xs">
             Retry
           </button>
         </div>

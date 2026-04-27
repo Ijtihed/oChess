@@ -27,7 +27,7 @@ export default function StudyPage({ onNavigate }) {
       {/* Header */}
       <div className="anim-fade-up flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-3" style={{ "--delay": "0.05s" }}>
         <div>
-          <h1 className="font-headline text-3xl sm:text-4xl font-extrabold tracking-tighter text-primary">Study</h1>
+          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1">Study</h1>
           <p className="text-[11px] text-on-surface-variant/55 uppercase tracking-widest mt-1">Preview · Italian Game Repertoire</p>
         </div>
         <div className="flex gap-2">
