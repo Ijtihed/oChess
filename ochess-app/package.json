@@ -35,7 +35,7 @@
     "chess.js": "^1.4.0",
     "howler": "^2.2.4",
     "js-chess-engine": "^1.0.2",
-    "react": "^19.2.4",
+    "react": "^19.2.5",
     "react-chessboard": "^5.10.0",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.14.0",
