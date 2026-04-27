@@ -28,7 +28,7 @@ const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 beforeEach(() => { lastProps.current = null; });
 
-describe("InteractiveBoard — drag/drop", () => {
+describe("InteractiveBoard - drag/drop", () => {
   it("forwards a legal pawn move from the mocked chessboard to onMove", () => {
     const onMove = vi.fn(() => true);
     render(<InteractiveBoard fen={START_FEN} onMove={onMove} playerColor="w" />);
@@ -71,7 +71,7 @@ describe("InteractiveBoard — drag/drop", () => {
   });
 });
 
-describe("InteractiveBoard — square click sanity", () => {
+describe("InteractiveBoard - square click sanity", () => {
   it("clicking an empty square with no selection does nothing (does not call onMove)", () => {
     const onMove = vi.fn();
     render(<InteractiveBoard fen={START_FEN} onMove={onMove} playerColor="w" />);

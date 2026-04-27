@@ -294,7 +294,7 @@ export default function Dashboard({ user, onNavigate }) {
                 dailySolved ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/60 hover:text-primary hover:bg-surface-high"
               }`}
             >
-              {dailySolved ? "Solved — View Analysis" : "Solve Puzzle"}
+              {dailySolved ? "Solved - View Analysis" : "Solve Puzzle"}
             </button>
           </div>
         </div>

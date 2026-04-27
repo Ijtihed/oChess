@@ -87,7 +87,7 @@ export async function acceptChallengeRPC(challengeId, joinerId, joinerName, join
   });
   if (error) { logErr("acceptChallengeRPC error:", error.message, error.details); throw new Error(error.message || "Failed to accept challenge"); }
   if (data?.error) { logErr("acceptChallengeRPC server error:", data.error); throw new Error(data.error); }
-  log("acceptChallengeRPC OK — game:", data?.id);
+  log("acceptChallengeRPC OK - game:", data?.id);
   return data;
 }
 
@@ -116,7 +116,7 @@ export function watchChallenge(challengeId, callback) {
       // connectivity briefly could miss an `accepted` flip.
       if (status === "SUBSCRIBED") {
         const reconnect = lastStatus !== null && lastStatus !== "SUBSCRIBED";
-        if (reconnect) log("watchChallenge reconnected — refetching row");
+        if (reconnect) log("watchChallenge reconnected - refetching row");
         supabase.from("challenges").select("*").eq("id", challengeId).maybeSingle()
           .then(({ data }) => { if (data) callback(data); })
           .catch(() => {});

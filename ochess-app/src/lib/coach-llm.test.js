@@ -71,7 +71,7 @@ describe("callCoach", () => {
 
     expect(out.ok).toBe(true);
     expect(out.summary).toMatch(/middlegame/i);
-    // Confirm the FEN was NOT forwarded — privacy + token budget.
+    // Confirm the FEN was NOT forwarded - privacy + token budget.
     const forwarded = invokeMock.fn.mock.calls[0][1].body.mistakes[0];
     expect(forwarded.fen).toBeUndefined();
     expect(forwarded.played_san).toBe("Bg5");

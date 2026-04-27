@@ -1,6 +1,6 @@
 /**
  * Game import connectors for Lichess and Chess.com.
- * All requests go directly to public APIs — no backend needed.
+ * All requests go directly to public APIs - no backend needed.
  *
  * Imports are hard-capped at MAX_IMPORT_GAMES so a heavy account
  * (10k+ games) doesn't OOM the browser tab. The cap is exposed on

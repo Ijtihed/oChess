@@ -30,7 +30,7 @@ describe("formatTime", () => {
   });
 });
 
-describe("useClock — hook behavior", () => {
+describe("useClock - hook behavior", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-26T20:00:00Z"));

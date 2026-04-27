@@ -73,7 +73,7 @@ export default function ReviewPage() {
   // had; "plan" surfaces the new pulled-from-your-games study plan
   // (StudyPlanPanel handles its own state + persistence).
   const [topTab, setTopTab] = useState("today");
-  // Optional plan-driven filter — set when the user clicks "Start
+  // Optional plan-driven filter - set when the user clicks "Start
   // session" from the Plan tab. We narrow the SM-2 queue to the same
   // chip / free-text filter so the session matches what they picked.
   const [planQuery, setPlanQuery] = useState("");
@@ -95,7 +95,7 @@ export default function ReviewPage() {
 
   const activeFilter = DECK_FILTERS.find((f) => f.id === deckFilter) || DECK_FILTERS[0];
 
-  // Recompute the due queue on every render — cheap, ~tens of cards.
+  // Recompute the due queue on every render - cheap, ~tens of cards.
   // The deck-chip filter (puzzle / game / analysis) gates first; the
   // plan-driven filter (set by Plan tab's "Start session") narrows
   // further if present. The two compose so a Plan-tab session can
@@ -210,7 +210,7 @@ export default function ReviewPage() {
 
   const skip = useCallback(() => {
     if (!card) return;
-    // Treat skip as "Hard" without ratcheting interval up — just reset
+    // Treat skip as "Hard" without ratcheting interval up - just reset
     // the prompt and move on without crediting it as a review.
     resetCard();
     setSchedules((prev) => {
@@ -239,7 +239,7 @@ export default function ReviewPage() {
   const totalCards = cards.length;
   const remaining = dueIds.length;
 
-  // Top-level tab strip is shared across every state — the Plan tab is
+  // Top-level tab strip is shared across every state - the Plan tab is
   // useful even before the user has any cards (so they can build the
   // initial deck), and useful after they've reviewed everything (so
   // they can pull more games).
@@ -285,7 +285,7 @@ export default function ReviewPage() {
           <div className="text-center py-10">
             <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">No cards yet</h2>
             <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-5">
-              Save positions from the Analysis board, your bot games, or failed puzzles — or open the{" "}
+              Save positions from the Analysis board, your bot games, or failed puzzles - or open the{" "}
               <button onClick={() => setTopTab("plan")} className="text-primary hover:underline font-bold">Plan tab</button>{" "}
               to import your chess.com / Lichess games and auto-extract mistake cards.
             </p>
@@ -448,7 +448,7 @@ export default function ReviewPage() {
                     {card.answerMove ? "Show Answer" : "Reveal & Rate"}
                   </button>
                   <span className="flex-[2] py-3.5 bg-primary/5 border border-primary/10 text-center font-headline text-xs font-bold uppercase tracking-wide text-primary/60">
-                    {card.answerMove ? "Make your move on the board" : "Recall — then rate yourself"}
+                    {card.answerMove ? "Make your move on the board" : "Recall - then rate yourself"}
                   </span>
                 </div>
               )}

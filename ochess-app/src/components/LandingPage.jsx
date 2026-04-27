@@ -30,7 +30,7 @@ export default function LandingPage({ onNavigate }) {
             >
               The only chess platform with built&#8209;in spaced repetition.
               Play, blunder, review, remember. Your mistakes become your
-              training&nbsp;— automatically.
+              training&nbsp;- automatically.
             </p>
 
             <div className="anim-fade-up" style={{ "--delay": "0.34s" }}>
@@ -42,7 +42,7 @@ export default function LandingPage({ onNavigate }) {
             </div>
           </div>
 
-          {/* Board — pushed right, large and prominent */}
+          {/* Board - pushed right, large and prominent */}
           <div className="hidden lg:flex lg:w-[60%] xl:w-[64%] items-center justify-end pl-4">
             <div
               className="anim-scale-in w-full max-w-[600px] xl:max-w-[660px]"
@@ -66,7 +66,7 @@ export default function LandingPage({ onNavigate }) {
             </h2>
           </div>
 
-          {/* Lead differentiator — Review/Anki */}
+          {/* Lead differentiator - Review/Anki */}
           <div
             className="anim-fade-up p-6 sm:p-8 bg-surface border border-primary/10 mb-3 sm:mb-4"
             style={{ "--delay": "0.08s" }}

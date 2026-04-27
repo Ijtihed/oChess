@@ -261,7 +261,7 @@ export default function Profile() {
         <div className="anim-fade-up flex items-center gap-4 sm:gap-5 mb-6" style={{ "--delay": "0.05s" }}>
           <div className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-surface-high flex items-center justify-center shrink-0 group">
             {/*
-              Avatar fallback chain — must mirror what App.jsx feeds
+              Avatar fallback chain - must mirror what App.jsx feeds
               the navbar so the picture is consistent across reloads.
               For Google sign-ups, `handle_new_user` should populate
               `profiles.avatar_url` via the trigger, but on accounts
@@ -557,7 +557,7 @@ export default function Profile() {
                   </div>
                   <div className="flex justify-between text-[12px]">
                     <span className="text-on-surface-variant/30">Member since</span>
-                    <span className="text-on-surface-variant/60">{profile?.created_at ? new Date(profile.created_at).toLocaleDateString() : "—"}</span>
+                    <span className="text-on-surface-variant/60">{profile?.created_at ? new Date(profile.created_at).toLocaleDateString() : "-"}</span>
                   </div>
                 </div>
               </div>

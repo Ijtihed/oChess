@@ -146,7 +146,7 @@ function AppShell() {
 
   return (
     <div className="min-h-screen min-h-[100dvh] bg-surface text-on-surface overflow-x-hidden">
-      {/* Skip link — only visible on keyboard focus, but lets screen
+      {/* Skip link - only visible on keyboard focus, but lets screen
           reader / tab users jump past the persistent nav and social
           rail straight to the page body. */}
       <a href="#main"
@@ -223,7 +223,7 @@ function OnlineGameRoute() {
   const [gameData, setGameData] = useState(location.state?.gameData || null);
   const [error, setError] = useState(null);
 
-  // Refetch whenever gameId changes — including in-app navigation
+  // Refetch whenever gameId changes - including in-app navigation
   // from one online game to a rematch / new game without unmounting.
   // We accept a fast-path when location.state.gameData matches the
   // new id, but always re-load otherwise.
@@ -245,7 +245,7 @@ function OnlineGameRoute() {
         .catch(() => { if (!cancelled) setError("Failed to load game"); });
     });
     return () => { cancelled = true; };
-  // gameData is intentionally excluded — we only refetch when gameId changes.
+  // gameData is intentionally excluded - we only refetch when gameId changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameId]);
 

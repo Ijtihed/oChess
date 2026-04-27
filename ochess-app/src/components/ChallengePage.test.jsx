@@ -36,7 +36,7 @@ describe("CreateChallenge", () => {
       </MemoryRouter>
     );
     expect(screen.getByText(/Create challenge/i)).toBeDefined();
-    // Time control buttons render the TIME_CONTROLS list — pick one to assert.
+    // Time control buttons render the TIME_CONTROLS list - pick one to assert.
     expect(screen.getByText("5+0")).toBeDefined();
   });
 

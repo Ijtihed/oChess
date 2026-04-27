@@ -52,7 +52,7 @@ describe("getAdaptivePuzzle", () => {
       gameUrl: null,
     }));
     const attempted = {};
-    // Mark the first 30 (ratings 1500..1645) attempted — outside the
+    // Mark the first 30 (ratings 1500..1645) attempted - outside the
     // [1850, 2150] tier-1 spread for target 2000.
     for (let i = 0; i < 30; i++) attempted[`q${i}`] = { result: "solved", ts: Date.now() };
     localStorage.setItem("ochess_puzzle_history", JSON.stringify(attempted));
@@ -72,7 +72,7 @@ describe("getAdaptivePuzzle", () => {
     for (const p of puzzles) attempted[p.id] = { result: "solved", ts: Date.now() };
     localStorage.setItem("ochess_puzzle_history", JSON.stringify(attempted));
 
-    // Picker must still return *something* — better re-train than fail.
+    // Picker must still return *something* - better re-train than fail.
     const p = fresh.getAdaptivePuzzle(puzzles, 1500);
     expect(p).toBeDefined();
     expect(puzzles).toContain(p);
@@ -162,7 +162,7 @@ describe("puzzle rating (Glicko-1)", () => {
     localStorage.clear();
     const timerFail = updatePuzzleRating(1500, false, { timerSec: 30 });
     // The timer-on path multiplies delta by 0.8, so the rating dropped
-    // *less* — i.e. ended at a higher value.
+    // *less* - i.e. ended at a higher value.
     expect(timerFail.rating).toBeGreaterThanOrEqual(noTimerFail.rating);
   });
 

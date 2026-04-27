@@ -5,7 +5,7 @@ import { Component } from "react";
  *
  * React surfaces render-time errors as exceptions that propagate
  * up the tree until they hit a boundary. Without one, the entire
- * <App /> unmounts and the user sees a white screen — the worst
+ * <App /> unmounts and the user sees a white screen - the worst
  * possible failure mode mid-game.
  *
  * This boundary wraps the whole router. The fallback intentionally
@@ -26,7 +26,7 @@ export default class ErrorBoundary extends Component {
   componentDidCatch(error, info) {
     // Always log render errors to the console so prod crash reports
     // (and any future Sentry-style integration) can pick them up.
-    // Intentionally not gated by makeLogger — these are real errors.
+    // Intentionally not gated by makeLogger - these are real errors.
     // eslint-disable-next-line no-console
     console.error("[oChess] render error:", error, info?.componentStack);
   }

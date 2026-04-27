@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { useAuth } from "./AuthProvider";
 import { fetchChesscomGames, fetchLichessGames } from "../lib/game-import";
+import { updateProfile } from "../lib/auth";
 import { Chess } from "chess.js";
 import {
   analyzeGameForMistakes,
@@ -19,7 +20,7 @@ import {
 import { callCoach, isCoachAvailable } from "../lib/coach-llm";
 
 /**
- * Plan tab — the "what should I work on?" surface.
+ * Plan tab - the "what should I work on?" surface.
  *
  * The flow is deliberately three-state:
  *
@@ -30,11 +31,22 @@ import { callCoach, isCoachAvailable } from "../lib/coach-llm";
  *
  * Each phase lives in this single component; the parent ReviewPage
  * just decides whether to mount us under the "Plan" tab. We never
- * touch the SM-2 review state directly — the cards we generate flow
+ * touch the SM-2 review state directly - the cards we generate flow
  * back into the same `ochess_review_cards` storage the Today tab
  * already reads, so SM-2 scheduling is shared automatically.
  */
-const SOURCE_GAME_LIMIT = 30;
+// User-selectable game-import sizes. The actual analysis time grows
+// roughly linearly with this number: ~25-40s per game at depth 12 in
+// WASM, so 100 games is around an hour, 500 is several hours. The UI
+// surfaces this estimate so the user knows what they're committing
+// to before clicking Analyze.
+const GAME_LIMIT_OPTIONS = [
+  { value: 30,  label: "30",  estMin: "~10 min" },
+  { value: 100, label: "100", estMin: "~30 min" },
+  { value: 200, label: "200", estMin: "~1 hr" },
+  { value: 500, label: "500", estMin: "~3 hr" },
+];
+const DEFAULT_GAME_LIMIT = 100;
 const DAILY_QUOTA = 5;
 
 const PHASE_LABELS = { opening: "Opening", middlegame: "Middlegame", endgame: "Endgame" };
@@ -55,7 +67,7 @@ function detectUserColor(pgn, chesscomUsername, lichessUsername) {
 }
 
 export default function StudyPlanPanel({ onStartSession }) {
-  const { profile } = useAuth();
+  const { user, profile, refreshProfile } = useAuth();
   const cc = profile?.chesscom_username?.trim() || "";
   const li = profile?.lichess_username?.trim() || "";
 
@@ -65,10 +77,61 @@ export default function StudyPlanPanel({ onStartSession }) {
   const [useChesscom, setUseChesscom] = useState(!!cc);
   const [useLichess,  setUseLichess]  = useState(!!li);
 
-  // Re-sync source defaults when the profile loads.
+  // Inline editor state for the chess.com / lichess usernames so the
+  // user can wire up their accounts directly from the Plan tab
+  // without bouncing to /profile. Two modes:
+  //   - editing === false: read-only summary with "Edit" button
+  //   - editing === true:  inputs + Save / Cancel
+  // The editor pre-fills from the profile, writes via updateProfile,
+  // and refreshes the auth context so the rest of the panel sees the
+  // new values immediately.
+  const [editingUsernames, setEditingUsernames] = useState(false);
+  const [editCC, setEditCC] = useState(cc);
+  const [editLI, setEditLI] = useState(li);
+  const [savingUsernames, setSavingUsernames] = useState(false);
+  const [usernameErr, setUsernameErr] = useState(null);
+
+  // How many games to pull per source. Default 100 covers months of
+  // play for an active user without spending hours on Stockfish; the
+  // 500 option exists for power users who want a deep dive.
+  const [gameLimit, setGameLimit] = useState(DEFAULT_GAME_LIMIT);
+
+  // Re-sync source defaults + editor inputs when the profile loads.
   useEffect(() => {
     setUseChesscom(!!cc);
     setUseLichess(!!li);
+    setEditCC(cc);
+    setEditLI(li);
+  }, [cc, li]);
+
+  const saveUsernames = useCallback(async () => {
+    if (!user?.id) {
+      setUsernameErr("Sign in first.");
+      return;
+    }
+    setSavingUsernames(true);
+    setUsernameErr(null);
+    try {
+      const ccTrim = editCC.trim().replace(/^@/, "");
+      const liTrim = editLI.trim().replace(/^@/, "");
+      await updateProfile(user.id, {
+        chesscom_username: ccTrim || null,
+        lichess_username:  liTrim || null,
+      });
+      await refreshProfile?.(user.id);
+      setEditingUsernames(false);
+    } catch (e) {
+      setUsernameErr(e?.message || "Couldn't save usernames.");
+    } finally {
+      setSavingUsernames(false);
+    }
+  }, [user, editCC, editLI, refreshProfile]);
+
+  const cancelEditUsernames = useCallback(() => {
+    setEditCC(cc);
+    setEditLI(li);
+    setUsernameErr(null);
+    setEditingUsernames(false);
   }, [cc, li]);
 
   const [phase, setPhase] = useState("ready"); // ready | importing | analyzing | built | error
@@ -76,7 +139,7 @@ export default function StudyPlanPanel({ onStartSession }) {
   const [err, setErr] = useState(null);
   const abortRef = useRef(null);
 
-  // Card store — re-read on every build/refresh so the Today tab and
+  // Card store - re-read on every build/refresh so the Today tab and
   // this tab stay in lockstep.
   const [allCards, setAllCards] = useState(() => loadCards());
   const [schedules] = useState(() => loadSchedules());
@@ -85,7 +148,7 @@ export default function StudyPlanPanel({ onStartSession }) {
   const [query, setQuery] = useState("");
   const [activeChip, setActiveChip] = useState(null);
 
-  // AI Coach state — populated by the Edge Function call. Stored
+  // AI Coach state - populated by the Edge Function call. Stored
   // alongside the cards so a user reading the plan and switching
   // tabs doesn't lose what the LLM said. Cleared explicitly when the
   // user re-analyzes (the corpus may have shifted) or when they hit
@@ -121,7 +184,7 @@ export default function StudyPlanPanel({ onStartSession }) {
     setCoachLoading(true);
     setCoachError(null);
     try {
-      // Send the mistakes that match the *current filter* — that way
+      // Send the mistakes that match the *current filter* - that way
       // a user who chipped "Endgame" gets an endgame-specific plan,
       // not a generic one. If nothing's filtered, send the full
       // mistake corpus (capped at 30 server-side).
@@ -153,7 +216,7 @@ export default function StudyPlanPanel({ onStartSession }) {
 
   const runImport = useCallback(async () => {
     if (!useChesscom && !useLichess) {
-      setErr("Pick at least one source — chess.com or lichess.");
+      setErr("Pick at least one source - chess.com or lichess.");
       return;
     }
     setErr(null);
@@ -168,7 +231,7 @@ export default function StudyPlanPanel({ onStartSession }) {
         setProgress((p) => ({ ...p, source: "chess.com", fetched: 0 }));
         const ccGames = await fetchChesscomGames(cc, {
           signal: ctrl.signal,
-          max: SOURCE_GAME_LIMIT,
+          max: gameLimit,
           onProgress: (n) => setProgress((p) => ({ ...p, fetched: n })),
         });
         games.push(...ccGames);
@@ -177,7 +240,7 @@ export default function StudyPlanPanel({ onStartSession }) {
         setProgress((p) => ({ ...p, source: "lichess", fetched: 0 }));
         const liGames = await fetchLichessGames(li, {
           signal: ctrl.signal,
-          max: SOURCE_GAME_LIMIT,
+          max: gameLimit,
           onProgress: (n) => setProgress((p) => ({ ...p, fetched: n })),
         });
         games.push(...liGames);
@@ -235,7 +298,7 @@ export default function StudyPlanPanel({ onStartSession }) {
     } finally {
       abortRef.current = null;
     }
-  }, [useChesscom, useLichess, cc, li, allCards]);
+  }, [useChesscom, useLichess, cc, li, allCards, gameLimit]);
 
   // Auto-pick the right starting state: if there's no source AND no
   // existing mistake cards, show the empty-empty state. If there are
@@ -299,17 +362,111 @@ export default function StudyPlanPanel({ onStartSession }) {
     );
   }
 
-  // The "no sources, no cards" cold-empty case.
+  // Inline editor that lets the user type their chess.com / lichess
+  // usernames directly here. Reusable across the empty state and the
+  // built state's "Re-analyze" panel so the user can update accounts
+  // without ever leaving the Plan tab.
+  const usernamesEditor = (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div>
+          <label className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block mb-1">
+            chess.com
+          </label>
+          <input
+            value={editCC}
+            onChange={(e) => setEditCC(e.target.value)}
+            placeholder="username"
+            autoCapitalize="none"
+            autoCorrect="off"
+            className="w-full bg-surface-container border border-white/[0.06] px-3 py-2 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40"
+          />
+        </div>
+        <div>
+          <label className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block mb-1">
+            Lichess
+          </label>
+          <input
+            value={editLI}
+            onChange={(e) => setEditLI(e.target.value)}
+            placeholder="username"
+            autoCapitalize="none"
+            autoCorrect="off"
+            className="w-full bg-surface-container border border-white/[0.06] px-3 py-2 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40"
+          />
+        </div>
+      </div>
+      {usernameErr && (
+        <p className="text-[12px] text-error">{usernameErr}</p>
+      )}
+      <div className="flex gap-2">
+        <button onClick={saveUsernames}
+          disabled={savingUsernames}
+          className="btn btn-primary px-4 py-2 text-xs">
+          {savingUsernames ? "Saving..." : "Save"}
+        </button>
+        {(cc || li) && (
+          <button onClick={cancelEditUsernames}
+            disabled={savingUsernames}
+            className="btn btn-secondary px-4 py-2 text-xs">
+            Cancel
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
+  // Game-count + (optional) source toggle picker. Always rendered
+  // alongside the "Analyze my games" button so the user picks both
+  // depth and breadth in one place.
+  const importControls = (
+    <div className="space-y-3">
+      {(cc && li) && (
+        <div className="space-y-2">
+          <span className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block">Sources</span>
+          <SourceToggle label="chess.com" username={cc} active={useChesscom} onToggle={() => setUseChesscom((v) => !v)} />
+          <SourceToggle label="Lichess"   username={li} active={useLichess}  onToggle={() => setUseLichess((v) => !v)} />
+        </div>
+      )}
+      <div>
+        <span className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block mb-2">
+          How many games per source?
+        </span>
+        <div className="grid grid-cols-4 gap-1.5">
+          {GAME_LIMIT_OPTIONS.map((opt) => (
+            <button key={opt.value}
+              onClick={() => setGameLimit(opt.value)}
+              className={`flex flex-col items-center justify-center py-2.5 transition-colors active:scale-[0.97] ${
+                gameLimit === opt.value
+                  ? "bg-primary text-on-primary"
+                  : "bg-surface-container border border-white/[0.04] text-on-surface-variant/55 hover:text-primary hover:bg-surface-high"
+              }`}>
+              <span className="font-headline text-sm font-extrabold">{opt.label}</span>
+              <span className={`text-[9px] mt-0.5 ${gameLimit === opt.value ? "text-on-primary/60" : "text-on-surface-variant/30"}`}>
+                {opt.estMin}
+              </span>
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-on-surface-variant/30 mt-2">
+          Larger sets find more patterns but take longer. Stockfish runs on your moves only.
+        </p>
+      </div>
+    </div>
+  );
+
+  // The "no usernames, no cards" cold-empty case. Inline editor
+  // appears here so the user can wire up accounts without bouncing.
   if (noSourcesAtAll && !hasAnyMistakes) {
     return (
-      <div className="anim-fade-up p-6 bg-surface-low border border-white/[0.04] text-center">
-        <h3 className="font-headline text-base font-bold text-primary mb-2">Connect a chess account first</h3>
-        <p className="text-[13px] text-on-surface-variant/55 max-w-md mx-auto leading-relaxed mb-4">
-          Add your chess.com or Lichess username on your{" "}
-          <a href="/profile" className="text-primary hover:underline font-bold">profile</a>{" "}
-          and oChess will pull your recent games, find positions where you make recurring mistakes,
-          and turn them into Anki cards organized by weakness.
+      <div className="anim-fade-up p-5 bg-surface-low border border-white/[0.04]">
+        <h3 className="font-headline text-base font-bold text-primary mb-2">Connect a chess account</h3>
+        <p className="text-[13px] text-on-surface-variant/55 leading-relaxed mb-4">
+          Add your chess.com or Lichess username below. oChess will pull your recent games,
+          find positions where you make recurring mistakes, and turn them into Anki cards
+          organized by weakness.
         </p>
+        {usernamesEditor}
       </div>
     );
   }
@@ -319,19 +476,23 @@ export default function StudyPlanPanel({ onStartSession }) {
     return (
       <div className="anim-fade-up space-y-5">
         <div className="p-5 bg-surface-low border border-white/[0.04]">
-          <h3 className="font-headline text-base font-bold text-primary mb-2">Build your study plan</h3>
-          <p className="text-[13px] text-on-surface-variant/55 leading-relaxed mb-4">
-            We'll pull your last {SOURCE_GAME_LIMIT} games per source, run Stockfish on your moves to find
-            positions where the eval dropped, and save each one as an Anki card you can drill.
-            This usually takes ~1 minute per source.
-          </p>
-          {(cc && li) && (
-            <div className="space-y-2 mb-4">
-              <span className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block">Sources</span>
-              <SourceToggle label="chess.com" username={cc} active={useChesscom} onToggle={() => setUseChesscom((v) => !v)} />
-              <SourceToggle label="Lichess"   username={li} active={useLichess}  onToggle={() => setUseLichess((v) => !v)} />
-            </div>
+          <div className="flex items-baseline justify-between mb-2">
+            <h3 className="font-headline text-base font-bold text-primary">Build your study plan</h3>
+            <button onClick={() => setEditingUsernames((v) => !v)}
+              className="text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+              {editingUsernames ? "Done" : "Edit accounts"}
+            </button>
+          </div>
+          {editingUsernames ? (
+            <div className="mb-4">{usernamesEditor}</div>
+          ) : (
+            <p className="text-[13px] text-on-surface-variant/55 leading-relaxed mb-4">
+              We'll pull up to {gameLimit} of your most recent games per source, run Stockfish on
+              your moves to find positions where the eval dropped, and save each one as an Anki card
+              you can drill.
+            </p>
           )}
+          <div className="mb-4">{importControls}</div>
           <button onClick={runImport}
             disabled={!useChesscom && !useLichess}
             className="btn btn-primary w-full py-3 text-sm">
@@ -342,7 +503,7 @@ export default function StudyPlanPanel({ onStartSession }) {
     );
   }
 
-  // Built state — full plan UI.
+  // Built state - full plan UI.
   return (
     <div className="anim-fade-up space-y-5">
       {/* Weakness summary */}
@@ -373,7 +534,7 @@ export default function StudyPlanPanel({ onStartSession }) {
         )}
       </div>
 
-      {/* AI Coach — opt-in. Reads the user's mistake corpus and
+      {/* AI Coach - opt-in. Reads the user's mistake corpus and
           generates a natural-language plan via the `coach` Edge
           Function. The button appears even before generation; once
           we have a result we render summary + multi-day plan +
@@ -394,7 +555,7 @@ export default function StudyPlanPanel({ onStartSession }) {
             <p className="text-[12px] text-on-surface-variant/50 mb-3 leading-relaxed">
               Ask a free Llama 3 model to read your mistakes, name your weakness in plain English,
               and write you a multi-day plan. Inference happens on a free Groq API tier through a
-              Supabase Edge Function — no per-request cost.
+              Supabase Edge Function - no per-request cost.
             </p>
           )}
           {coachError && (
@@ -511,14 +672,25 @@ export default function StudyPlanPanel({ onStartSession }) {
         )}
       </div>
 
-      {/* Refresh */}
-      <div className="p-4 bg-surface-low border border-white/[0.04] flex items-center justify-between gap-3">
-        <span className="text-[12px] text-on-surface-variant/40">
-          Played more games?
-        </span>
+      {/* Re-analyze panel - exposes the same source toggles + game
+          count picker + inline username editor as the empty-state UI
+          so the user can change sources / size / accounts without
+          leaving the Plan tab. */}
+      <div className="p-5 bg-surface-low border border-white/[0.04] space-y-4">
+        <div className="flex items-baseline justify-between">
+          <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">
+            Re-analyze
+          </h3>
+          <button onClick={() => setEditingUsernames((v) => !v)}
+            className="text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+            {editingUsernames ? "Done" : "Edit accounts"}
+          </button>
+        </div>
+        {editingUsernames && usernamesEditor}
+        {importControls}
         <button onClick={runImport}
           disabled={!useChesscom && !useLichess}
-          className="btn btn-secondary px-4 py-2 text-[11px]">
+          className="btn btn-secondary w-full py-2.5 text-xs">
           Re-analyze
         </button>
       </div>

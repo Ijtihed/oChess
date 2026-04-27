@@ -1,5 +1,5 @@
 /**
- * Review engine — spaced repetition scheduling for oChess.
+ * Review engine - spaced repetition scheduling for oChess.
  *
  * Implements SM-2 based scheduling. Separated from UI and card content
  * so the algorithm can be swapped (e.g. FSRS) without touching components.

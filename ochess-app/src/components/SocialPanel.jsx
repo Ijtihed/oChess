@@ -21,7 +21,7 @@ export default function SocialPanel() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  // The panel is meant for navigation/social context — hide it on
+  // The panel is meant for navigation/social context - hide it on
   // game-style routes so it doesn't steal focus or wrap layout.
   const path = location.pathname;
   const isGameRoute =
@@ -46,7 +46,7 @@ export default function SocialPanel() {
     // the spinner so the "Friends" panel never sits stuck on the loader
     // when the auth context is still settling.
     if (!user || !isOnline()) {
-      log("skip — user:", user?.id, "online:", isOnline());
+      log("skip - user:", user?.id, "online:", isOnline());
       setLoading(false);
       setFriends([]);
       setPending({ incoming: [], outgoing: [] });
@@ -57,7 +57,7 @@ export default function SocialPanel() {
     setLoading(true);
     setLoadError(null);
     try {
-      // 4 s upper bound — anything slower is effectively unusable, and
+      // 4 s upper bound - anything slower is effectively unusable, and
       // a falsy fallback unblocks the spinner cleanly. The timeout
       // never throws; it resolves with the fallback.
       const withTimeout = (p, ms, fallback) =>
@@ -68,7 +68,7 @@ export default function SocialPanel() {
         withTimeout(getPendingRequests(user.id).catch((e) => { log("getPendingRequests error:", e); return null; }), 4000, null),
       ]);
 
-      log("loaded — friends:", f?.length, "pending:", p);
+      log("loaded - friends:", f?.length, "pending:", p);
       setFriends(f || []);
       const pData = p || { incoming: [], outgoing: [], outgoingRequestIds: {} };
       setPending(pData);
@@ -90,7 +90,7 @@ export default function SocialPanel() {
     return () => clearInterval(interval);
   }, [loadData]);
 
-  // Live updates from the friendships table — instant rather than
+  // Live updates from the friendships table - instant rather than
   // 30 s polling. Filtering by the current user's id is done on the
   // RLS layer (see schema.sql); we just refresh on any change.
   useEffect(() => {
@@ -186,7 +186,7 @@ export default function SocialPanel() {
         </div>
 
         {loadError && (
-          <p className="text-[10px] text-error/60 mb-2 text-center">{loadError} — <button onClick={loadData} className="underline hover:text-error transition-colors">retry</button></p>
+          <p className="text-[10px] text-error/60 mb-2 text-center">{loadError} - <button onClick={loadData} className="underline hover:text-error transition-colors">retry</button></p>
         )}
 
         {/* Search */}

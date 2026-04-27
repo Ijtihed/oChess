@@ -25,7 +25,7 @@ export default function BoardStylePicker() {
     // navbar search) so touch + pen + mouse all behave identically.
     const id = setTimeout(() => document.addEventListener("pointerdown", outside), 0);
     window.addEventListener("keydown", onKey);
-    // On mobile the panel is `inset-4` — almost full-screen — so we
+    // On mobile the panel is `inset-4` - almost full-screen - so we
     // lock body scroll while open. Desktop floats it in the corner
     // so background scroll is unobtrusive there, but locking is the
     // safe default.

@@ -27,7 +27,7 @@ function makeBuilder(table) {
       return true;
     });
   };
-  // Note: applyFilters legacy helper removed — matchesNow handles all callers.
+  // Note: applyFilters legacy helper removed - matchesNow handles all callers.
   // (Marker)
 
   const builder = {
@@ -72,7 +72,7 @@ function makeBuilder(table) {
     },
     limit() { return builder; },
     then(resolve, reject) {
-      // Builder is the awaitable terminator — evaluate the queued
+      // Builder is the awaitable terminator - evaluate the queued
       // op against the current filters at await time so update() /
       // delete() chained with eq() resolves like real Supabase.
       const matches = matchesNow();

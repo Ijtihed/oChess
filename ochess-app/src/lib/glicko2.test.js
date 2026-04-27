@@ -66,7 +66,7 @@ describe("computeGlicko2", () => {
 
   it("rounds rating and rd to one decimal and volatility to six decimals", () => {
     const r = computeGlicko2(1500, 350, 0.06, 1500, 350, 1);
-    // Using *10 then round-trip — verify at most one decimal place.
+    // Using *10 then round-trip - verify at most one decimal place.
     expect(Math.abs(r.rating - Math.round(r.rating * 10) / 10)).toBeLessThan(1e-9);
     expect(Math.abs(r.rd - Math.round(r.rd * 10) / 10)).toBeLessThan(1e-9);
     expect(Math.abs(r.volatility - Math.round(r.volatility * 1e6) / 1e6)).toBeLessThan(1e-12);

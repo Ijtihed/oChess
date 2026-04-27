@@ -5,7 +5,7 @@
  * through Stockfish to find positions where the user threw away
  * eval, and stores each one as a `type: "mistake"` Anki card in the
  * existing `ochess_review_cards` localStorage. From there the
- * existing SM-2 review flow takes over — mistake cards are first-
+ * existing SM-2 review flow takes over - mistake cards are first-
  * class citizens alongside puzzle / analysis / game cards.
  *
  * Design notes:
@@ -49,14 +49,14 @@ export function inferPhase(chess, ply) {
 
 /**
  * Heuristic themes derived from a single mistaken move + the engine's
- * recommendation. No LLM — just SAN inspection. Cheap and good enough
+ * recommendation. No LLM - just SAN inspection. Cheap and good enough
  * for the free-text filter ("show me my hanging queen mistakes").
  */
 export function inferThemes(playedMove, bestMove, evalLossCp) {
   const themes = [];
   if (evalLossCp >= BLUNDER_CP_THRESHOLD) themes.push("blunder");
   else if (evalLossCp >= MISTAKE_CP_THRESHOLD) themes.push("mistake");
-  // SAN inspection — chess.js gives us .san, .piece, .captured, .flags.
+  // SAN inspection - chess.js gives us .san, .piece, .captured, .flags.
   const playedSan = playedMove?.san || "";
   const bestSan = bestMove?.san || "";
   if (bestSan.includes("#")) themes.push("missed_mate");
@@ -75,7 +75,7 @@ export function inferThemes(playedMove, bestMove, evalLossCp) {
  * return any mistakes (eval drop >= threshold from the user's POV).
  *
  * @param {string} pgn        PGN of the game.
- * @param {string} userColor  "w" or "b" — which side is the user.
+ * @param {string} userColor  "w" or "b" - which side is the user.
  * @param {object} opts
  * @param {AbortSignal=} opts.signal       Cancellation hook.
  * @param {Function=}   opts.onProgress    Called with (movesAnalyzed, totalMoves).
@@ -96,7 +96,7 @@ export async function analyzeGameForMistakes(pgn, userColor, opts = {}) {
   if (fullHistory.length === 0) return [];
 
   // Build the list of (positionFen, playedMove, ply) for the user's
-  // moves only. ply is 0-indexed — index 0 = white's first move.
+  // moves only. ply is 0-indexed - index 0 = white's first move.
   const replay = new Chess();
   const userMoves = [];
   for (let i = 0; i < fullHistory.length; i++) {
@@ -117,11 +117,11 @@ export async function analyzeGameForMistakes(pgn, userColor, opts = {}) {
   for (const { fen, move, ply } of userMoves) {
     if (signal?.aborted) break;
 
-    // 1. Eval BEFORE the move — what was the best the user could do.
+    // 1. Eval BEFORE the move - what was the best the user could do.
     const before = await evaluate(fen, depth);
     if (signal?.aborted) break;
 
-    // 2. Eval AFTER — actual position after the move was played.
+    // 2. Eval AFTER - actual position after the move was played.
     const afterChess = new Chess(fen);
     try { afterChess.move({ from: move.from, to: move.to, promotion: move.promotion }); } catch { continue; }
     const after = await evaluate(afterChess.fen(), depth);
@@ -134,7 +134,7 @@ export async function analyzeGameForMistakes(pgn, userColor, opts = {}) {
     // Compute eval loss from the user's POV. evaluate() returns
     // eval_cp from the side-to-move's POV, so we flip when needed.
     const userPovBefore = userColor === "w" ? (before.eval_cp ?? 0) : -(before.eval_cp ?? 0);
-    // After the user moves, it's the opponent's turn — flip back.
+    // After the user moves, it's the opponent's turn - flip back.
     const userPovAfter  = userColor === "w" ? -(after.eval_cp ?? 0) : (after.eval_cp ?? 0);
     const evalLossCp = userPovBefore - userPovAfter;
 
@@ -151,7 +151,7 @@ export async function analyzeGameForMistakes(pgn, userColor, opts = {}) {
           promotion: before.bestMove.length > 4 ? before.bestMove[4] : undefined,
         });
       }
-    } catch { /* ignore — bestMove stays null */ }
+    } catch { /* ignore - bestMove stays null */ }
 
     const phaseChess = new Chess(fen);
     const phase = inferPhase(phaseChess, ply);
@@ -173,7 +173,7 @@ export async function analyzeGameForMistakes(pgn, userColor, opts = {}) {
       ply,
       moveNumber: Math.floor(ply / 2) + 1,
       // Keep an `answerMove` so the existing Review handler can grade
-      // a self-assessment against the engine's preferred line — same
+      // a self-assessment against the engine's preferred line - same
       // shape PuzzlesPage uses when saving puzzle failures.
       answerMove: bestMove ? { from: bestMove.from, to: bestMove.to, promotion: bestMove.promotion } : null,
       answerText: bestMove?.san
@@ -213,7 +213,7 @@ export function buildWeaknessProfile(cards) {
 /**
  * Free-text filter against a card collection. Tokenizes on whitespace
  * and AND-matches each token against a flat searchable representation
- * of the card. No LLM — just substring matching against what the
+ * of the card. No LLM - just substring matching against what the
  * extractors already wrote on the card.
  */
 export function filterCardsByQuery(cards, query) {

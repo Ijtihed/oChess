@@ -223,7 +223,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
       if (checkGameEnd()) return;
       setTimeout(() => doBotMoveRef.current?.(), 50);
     } catch {
-      // premove was illegal in the new position — silently discard
+      // premove was illegal in the new position - silently discard
     }
   }, [playerColor, syncState, clock, hasTime, checkGameEnd]);
 
@@ -286,7 +286,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
   useEffect(() => { doBotMoveRef.current = doBotMove; }, [doBotMove]);
 
   useEffect(() => {
-    // Skip the start sound when resuming a saved bot game — it
+    // Skip the start sound when resuming a saved bot game - it
     // already happened the first time the game began. Only play it
     // for genuinely-new games.
     if (!resumeData) playGameStart();
@@ -299,7 +299,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
     const g = gameRef.current;
     if (g.turn() !== playerColor && !g.isGameOver()) doBotMove();
     // Tear down the JCE + Stockfish workers when leaving the bot
-    // game screen — otherwise they keep running for the rest of the
+    // game screen - otherwise they keep running for the rest of the
     // SPA session and Stockfish in particular holds onto its WASM
     // heap.
     return () => { destroyBotEngines(); };
@@ -717,7 +717,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
           />
 
           <div className="w-full flex gap-0">
-            {/* Eval bar — only post-game */}
+            {/* Eval bar - only post-game */}
             {gameOver && (
               <EvalBar
                 evals={evals}
@@ -863,7 +863,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
               </div>
             </div>
 
-            {/* Move list (live — reversed, newest on top) */}
+            {/* Move list (live - reversed, newest on top) */}
             <div className="bg-surface-low flex flex-col flex-1 min-h-0">
               <div className="p-3 flex justify-between items-center border-b border-white/[0.03] shrink-0">
                 <h2 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">Moves</h2>
@@ -899,10 +899,10 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
           </div>
         )}
 
-        {/* ── Analysis sidebar (post-game) — result + controls column ── */}
+        {/* ── Analysis sidebar (post-game) - result + controls column ── */}
         {gameOver && (
           <div className="w-full xl:w-[280px] shrink-0 flex flex-col gap-3">
-            {/* Result — role=status + aria-live so screen readers
+            {/* Result - role=status + aria-live so screen readers
                 announce the outcome when the game ends. */}
             <div className="anim-fade-up p-4 bg-surface-container border border-white/[0.06]"
               role="status" aria-live="polite">
@@ -985,10 +985,10 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
                 </div>
               </div>
               <p className="text-[9px] text-on-surface-variant/55 mt-1.5 leading-relaxed">
-                Runs locally in your browser — nothing is sent to a server.
+                Runs locally in your browser - nothing is sent to a server.
                 {evalDepth >= 18 && " Higher depth is slower on most devices."}
                 {evalDepth >= 22 && " 22+ may take minutes for long games."}
-                {evalDepth >= 26 && " 26 is very slow — only for short games."}
+                {evalDepth >= 26 && " 26 is very slow - only for short games."}
               </p>
               {evalRunning && (
                 <div className="mt-2 h-1 bg-surface-low overflow-hidden">

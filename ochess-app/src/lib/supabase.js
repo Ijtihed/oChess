@@ -18,7 +18,7 @@ export const supabase = (supabaseUrl && supabaseAnonKey)
     })
   : null;
 
-// Lightweight client for Realtime (broadcast/presence only — no auth needed)
+// Lightweight client for Realtime (broadcast/presence only - no auth needed)
 let _realtimeClient = null;
 export function getRealtimeClient() {
   if (_realtimeClient) return _realtimeClient;

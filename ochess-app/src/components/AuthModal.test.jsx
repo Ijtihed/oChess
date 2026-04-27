@@ -57,7 +57,7 @@ describe("AuthModal", () => {
     expect(document.body.style.overflow).toBe("hidden");
     rerender(<AuthModal open={false} onClose={() => {}} />);
     expect(document.body.style.overflow).not.toBe("hidden");
-    // Re-open then unmount mid-flight — should still restore.
+    // Re-open then unmount mid-flight - should still restore.
     rerender(<AuthModal open={true} onClose={() => {}} />);
     expect(document.body.style.overflow).toBe("hidden");
     unmount();
@@ -103,7 +103,7 @@ describe("AuthModal", () => {
     // Focus is moved on the next paint; wait a tick.
     await new Promise((r) => setTimeout(r, 5));
     const active = document.activeElement;
-    // The first focusable inside the sheet should now hold focus —
+    // The first focusable inside the sheet should now hold focus -
     // either the close button or the email input depending on tab.
     expect(active).not.toBe(document.body);
   });

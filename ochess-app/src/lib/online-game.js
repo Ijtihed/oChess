@@ -1,7 +1,7 @@
 /**
  * Online game service for oChess.
  * All database operations use the Supabase SDK (supabase.from / supabase.rpc)
- * so auth headers are managed automatically — no manual getSession() needed.
+ * so auth headers are managed automatically - no manual getSession() needed.
  */
 
 import { supabase, getRealtimeClient } from "./supabase";
@@ -10,7 +10,7 @@ import { makeLogger } from "./log";
 const { log, error: logErr } = makeLogger("online-game");
 
 /**
- * One-shot auth diagnostic — call from a UI surface where you actually
+ * One-shot auth diagnostic - call from a UI surface where you actually
  * want to verify the live session (e.g. a debug button), not from
  * module load. Logging at import time is misleading because the SDK
  * may not have rehydrated the session yet, and the call can race with
@@ -21,8 +21,8 @@ export async function logAuthState() {
   try {
     const { data, error } = await supabase.auth.getSession();
     if (error) logErr("auth session error:", error.message);
-    else if (data?.session) log("auth OK — user:", data.session.user?.id, "expires:", new Date(data.session.expires_at * 1000).toLocaleTimeString());
-    else log("auth: NO SESSION — requests will use anon key, RLS will block most queries");
+    else if (data?.session) log("auth OK - user:", data.session.user?.id, "expires:", new Date(data.session.expires_at * 1000).toLocaleTimeString());
+    else log("auth: NO SESSION - requests will use anon key, RLS will block most queries");
   } catch (e) { logErr("logAuthState exception:", e); }
 }
 
@@ -83,8 +83,8 @@ export async function findMatch(userId, rating, options) {
       .lte("min_rating", rating + 100)
       .order("created_at", { ascending: true })
       .limit(1);
-    // Only pair a rated seeker with another rated seeker — and vice
-    // versa — otherwise a casual click can drag a rated player into a
+    // Only pair a rated seeker with another rated seeker - and vice
+    // versa - otherwise a casual click can drag a rated player into a
     // ratings-affecting game (or strip ratings off a rated seek).
     if (options.isRated !== undefined) {
       query = query.eq("is_rated", options.isRated !== false);
@@ -108,7 +108,7 @@ export async function claimSeekRPC(seekId, claimerId, claimerName, claimerRating
   });
   if (error) { logErr("claimSeekRPC error:", error.message, error.details, error.hint); throw new Error(error.message || "Failed to claim seek"); }
   if (data?.error) { logErr("claimSeekRPC server error:", data.error); throw new Error(data.error); }
-  log("claimSeekRPC OK — game:", data?.id);
+  log("claimSeekRPC OK - game:", data?.id);
   return data;
 }
 
@@ -220,10 +220,10 @@ export function subscribeToGameRow(gameId, onChange) {
     )
     .subscribe((status) => {
       log("subscribeToGameRow status:", status);
-      // Initial subscribe AND every later resubscribe — refetch.
+      // Initial subscribe AND every later resubscribe - refetch.
       if (status === "SUBSCRIBED") {
         const reconnect = lastStatus !== null && lastStatus !== "SUBSCRIBED";
-        if (reconnect) log("subscribeToGameRow reconnected — refetching row");
+        if (reconnect) log("subscribeToGameRow reconnected - refetching row");
         supabase.from("games").select("*").eq("id", gameId).maybeSingle()
           .then(({ data }) => { if (data) onChange(data); })
           .catch(() => {});
@@ -279,6 +279,6 @@ export async function createRematchGame(sourceGameId, userId) {
   });
   if (error) { logErr("createRematchGame error:", error.message); return null; }
   if (data?.error) { logErr("createRematchGame server error:", data.error); return null; }
-  log("createRematchGame OK — game:", data?.id);
+  log("createRematchGame OK - game:", data?.id);
   return data;
 }

@@ -95,7 +95,7 @@ describe("PlayPage", () => {
 
   it("re-checks the active game when the tab regains focus", async () => {
     // First call returns an active game, second call (after focus)
-    // returns null — the banner should clear without a refresh.
+    // returns null - the banner should clear without a refresh.
     getActiveGameMock.mockResolvedValue(null);
     await act(async () => {
       render(

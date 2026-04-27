@@ -124,7 +124,7 @@ describe("filterCardsByQuery", () => {
     expect(filterCardsByQuery(cards, "puzzle")).toHaveLength(1);
   });
 
-  it("AND-matches multiple tokens — all must hit", () => {
+  it("AND-matches multiple tokens - all must hit", () => {
     // "middlegame fork" → both tokens match the second card.
     expect(filterCardsByQuery(cards, "middlegame fork")).toHaveLength(1);
     // "middlegame queen" → no card has both.
@@ -156,7 +156,7 @@ describe("buildDailyPlan", () => {
     { id: "a", type: "mistake", ts: 1, phase: "opening",    themes: ["blunder"] },
     { id: "b", type: "mistake", ts: 2, phase: "middlegame", themes: ["fork"] },
     { id: "c", type: "puzzle",  ts: 3, phase: "endgame",    themes: ["pin"] },
-    { id: "d", type: "analysis", ts: 4 }, // not a mistake/puzzle — excluded
+    { id: "d", type: "analysis", ts: 4 }, // not a mistake/puzzle - excluded
   ];
 
   it("filters to mistake/puzzle cards only and slices to quota", () => {

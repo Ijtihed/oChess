@@ -7,7 +7,7 @@ import { useParams, Link } from "react-router-dom";
  * One component, three slugs, content authored as plain JSX so we
  * don't need a markdown renderer dependency. The text below is
  * deliberately written to match what the live database actually
- * stores (see `supabase/schema.sql`) — every claim about data
+ * stores (see `supabase/schema.sql`) - every claim about data
  * collection, retention, and deletion is grounded in a real table
  * or RLS policy.
  *
@@ -106,7 +106,7 @@ function PrivacyContent() {
         oChess is a chess platform run as an open-source project. This page
         describes what personal data the service collects, where it lives, who
         else sees it, and how to remove it. We have written it to match the
-        actual database schema rather than a generic template — every field
+        actual database schema rather than a generic template - every field
         named below corresponds to a real column you can read from the source
         in <Code>supabase/schema.sql</Code>.
       </p>
@@ -117,7 +117,7 @@ function PrivacyContent() {
       <p>
         When you create an account, Supabase Auth stores your email address and
         a salted password hash. If you sign in with Google, the OAuth provider
-        returns your email and (optionally) display name and avatar URL — these
+        returns your email and (optionally) display name and avatar URL - these
         are forwarded to Supabase and used to seed your profile row. We never
         see or store your raw password.
       </p>
@@ -144,7 +144,7 @@ function PrivacyContent() {
       </p>
       <p>
         Game rows are visible to both participants while the game is active,
-        and visible to everyone once the game completes. This is intentional —
+        and visible to everyone once the game completes. This is intentional -
         the post-game review and analysis surfaces depend on a public PGN.
       </p>
 
@@ -165,7 +165,7 @@ function PrivacyContent() {
         <Code>puzzle_attempts</Code>. Review cards (spaced-repetition entries
         you save from failed puzzles or important game positions) are stored
         in <Code>review_cards</Code> with the FEN, your answer, and the SM-2
-        scheduling fields. All three tables are private — only you can read or
+        scheduling fields. All three tables are private - only you can read or
         write your own rows.
       </p>
 
@@ -203,7 +203,7 @@ function PrivacyContent() {
 
       <H2>How we use it</H2>
       <p>
-        We use the data above only to provide the service — authenticating
+        We use the data above only to provide the service - authenticating
         you, matching you against opponents, computing ratings, displaying
         your profile, persisting saved games and puzzles, and propagating
         moves between you and your opponents in real time. We do not sell or
@@ -246,7 +246,7 @@ function PrivacyContent() {
       <p>
         You can read every row tied to your user id directly from the API
         with your own credentials, since Row-Level Security only restricts
-        writes — your own profile, ratings, games, puzzle progress, review
+        writes - your own profile, ratings, games, puzzle progress, review
         cards and friendships are all readable by you. To request a packaged
         export, email us at <Code>{CONTACT_EMAIL}</Code>.
       </p>
@@ -385,8 +385,8 @@ function TermsContent() {
         basis. There is no service level agreement, no uptime guarantee, no
         backup guarantee, and no warranty of any kind. The operator may
         change, suspend, or discontinue any part of the service at any time
-        — including features, accounts, stored games, ratings, and the
-        entire platform — without notice and without liability.
+        - including features, accounts, stored games, ratings, and the
+        entire platform - without notice and without liability.
       </p>
 
       <H2>You assume all risk</H2>
@@ -403,7 +403,7 @@ function TermsContent() {
       <p>
         To the maximum extent permitted by Finnish law and any other
         applicable law, the operator disclaims all express and implied
-        warranties of any kind — including but not limited to merchantability,
+        warranties of any kind - including but not limited to merchantability,
         fitness for a particular purpose, accuracy, reliability, security,
         non-infringement, and quiet enjoyment. No advice or information
         obtained from the service creates any warranty not expressly stated
@@ -416,9 +416,9 @@ function TermsContent() {
         oChess will not be liable to you for any damages of any kind arising
         from or related to your use of the service.</strong> This includes,
         without limitation, direct, indirect, incidental, consequential,
-        special, exemplary, punitive, or other damages — whether based on
+        special, exemplary, punitive, or other damages - whether based on
         warranty, contract, tort (including negligence), product liability,
-        statute, or any other legal theory — and whether or not the operator
+        statute, or any other legal theory - and whether or not the operator
         has been advised of the possibility of such damages.
       </p>
       <p>

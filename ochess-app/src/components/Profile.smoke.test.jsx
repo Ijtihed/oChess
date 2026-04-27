@@ -4,8 +4,8 @@
  * Earlier attempts at a Profile test deadlocked because of the
  * intricate auth + Supabase + localStorage + reactdom-portal
  * machinery the component pulls in. This minimal harness mocks
- * every external surface so the render is purely React + DOM —
- * no real timers, no network, no portals — and just asserts that
+ * every external surface so the render is purely React + DOM -
+ * no real timers, no network, no portals - and just asserts that
  * the page mounts in both the signed-out and signed-in branches.
  */
 

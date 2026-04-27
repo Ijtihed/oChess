@@ -1,5 +1,5 @@
 /**
- * Game session manager — wraps chess.js for oChess game lifecycle.
+ * Game session manager - wraps chess.js for oChess game lifecycle.
  *
  * STATUS (as of phase-9 audit): not currently imported anywhere in
  * the app. The screens (`GameScreen`, `OnlineGameScreen`,
@@ -8,7 +8,7 @@
  * Reserved for: a future shared module that exposes the same
  * lifecycle to (eventually) a server-side validator. Until that
  * server lands, treat this file as a planned scaffold rather than
- * production code — change with care, but feel free to delete or
+ * production code - change with care, but feel free to delete or
  * rewrite if the design shifts.
  *
  * Handles: move validation, game state, PGN export, position
@@ -116,7 +116,7 @@ function toPgn(game, result) {
 
 /**
  * Load a game from PGN. Used for analysis, review, replay.
- * chess.js parses this in microseconds — no need for a Move table.
+ * chess.js parses this in microseconds - no need for a Move table.
  */
 function fromPgn(pgn) {
   const chess = new Chess();

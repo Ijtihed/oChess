@@ -19,8 +19,8 @@ beforeEach(() => {
   playCalls.length = 0;
 });
 
-describe("playMoveSound — choice of sound from the chess.js move object", () => {
-  it("does NOT play Checkmate.mp3 by default for # — game-end sound covers the moment", async () => {
+describe("playMoveSound - choice of sound from the chess.js move object", () => {
+  it("does NOT play Checkmate.mp3 by default for # - game-end sound covers the moment", async () => {
     const { playMoveSound } = await import("./sounds");
     playMoveSound({ san: "Qxh7#", captured: "p" });
     // Without the opt-in flag, a mating move plays the regular

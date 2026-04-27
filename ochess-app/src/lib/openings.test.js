@@ -40,7 +40,7 @@ describe("openings.getOpeningName", () => {
       { from: "g1", to: "f3" },
       { from: "b8", to: "c6" },
       { from: "f1", to: "b5" },
-      { from: "a7", to: "a6" }, // Morphy defense — unknown to our fake db
+      { from: "a7", to: "a6" }, // Morphy defense - unknown to our fake db
     ];
     expect(await getOpeningName(history)).toBe("Ruy Lopez");
   });
@@ -52,7 +52,7 @@ describe("openings.getOpeningName", () => {
       { from: "e2", to: "e4" }, { from: "e7", to: "e5" },
       { from: "g1", to: "f3" }, { from: "b8", to: "c6" }, { from: "f1", to: "b5" },
     ]);
-    // Now an unknown line — getOpeningName should fall back to lastKnown.
+    // Now an unknown line - getOpeningName should fall back to lastKnown.
     const out = await getOpeningName([
       { from: "h2", to: "h4" }, // unknown from move 1
     ]);

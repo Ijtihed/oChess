@@ -27,7 +27,7 @@ export function useAuth() {
  *
  *   3. Release the `loading` gate as soon as we know the user state,
  *      WITHOUT waiting for the profile fetch. The profile is enrichment
- *      (display name, avatar, bio) — the navbar / routes can render
+ *      (display name, avatar, bio) - the navbar / routes can render
  *      meaningfully with just the auth user, falling back to OAuth
  *      metadata until the profile row arrives.
  *
@@ -47,7 +47,7 @@ export default function AuthProvider({ children }) {
       const p = await getProfile(userId);
       if (mountedRef.current) setProfile(p);
     } catch {
-      /* swallow — UI keeps the previous profile */
+      /* swallow - UI keeps the previous profile */
     }
   }, []);
 
@@ -80,7 +80,7 @@ export default function AuthProvider({ children }) {
       alog("ready");
     };
 
-    // 1) Synchronous bootstrap — getSession() resolves from
+    // 1) Synchronous bootstrap - getSession() resolves from
     //    localStorage in milliseconds. This populates `user` before the
     //    listener has a chance to emit, eliminating the flash where the
     //    navbar briefly shows the "Sign In" button on a fresh page load.
@@ -114,7 +114,7 @@ export default function AuthProvider({ children }) {
         alog("event:", event, "user:", u?.id || "none");
         if (!mountedRef.current) return;
 
-        // Ignore TOKEN_REFRESHED with the same user id — it doesn't
+        // Ignore TOKEN_REFRESHED with the same user id - it doesn't
         // change anything the UI cares about and re-fetching the
         // profile every refresh is wasteful.
         if (event === "TOKEN_REFRESHED" && u?.id === user?.id) {
@@ -140,14 +140,14 @@ export default function AuthProvider({ children }) {
       done();
     }
 
-    // 3) Generous safety timeout — only triggers if both getSession()
+    // 3) Generous safety timeout - only triggers if both getSession()
     //    AND the listener never resolve. 8 s is long enough that we
     //    don't pre-empt a slow real response on poor networks, but
     //    short enough that a totally broken auth client doesn't hang
     //    the splash forever.
     const timeout = setTimeout(() => {
       if (resolved) return;
-      awarn("safety timeout (8s) — forcing ready");
+      awarn("safety timeout (8s) - forcing ready");
       done();
     }, 8000);
 

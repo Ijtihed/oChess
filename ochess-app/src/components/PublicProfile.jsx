@@ -47,7 +47,7 @@ export default function PublicProfile() {
 
         setProfile(p);
         // Track ratings + games separately so a network failure on
-        // games doesn't render as "no games" — shown as an explicit
+        // games doesn't render as "no games" - shown as an explicit
         // error row instead.
         const [rRes, gRes] = await Promise.allSettled([
           getRatings(p.id),
@@ -121,7 +121,7 @@ export default function PublicProfile() {
     setAddError(null);
     try {
       // declineFriendRequest also deletes the row, so it's the right
-      // primitive for "withdraw my own request" too — same operation.
+      // primitive for "withdraw my own request" too - same operation.
       await declineFriendRequest(outgoingRequestId);
       setFriendStatus(null);
       setOutgoingRequestId(null);
@@ -254,7 +254,7 @@ export default function PublicProfile() {
           </div>
         )}
 
-        {/* Recent Games — always render the section header so the
+        {/* Recent Games - always render the section header so the
             "no games" / load-failure states are visible instead of
             silently disappearing. */}
         <div className="anim-fade-up" style={{ "--delay": "0.15s" }}>

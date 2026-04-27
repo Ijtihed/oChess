@@ -104,7 +104,7 @@ describe("AuthProvider", () => {
   });
 
   it("releases the loading gate after the safety timeout fires", async () => {
-    // Simulate a totally stuck client — getSession() never resolves
+    // Simulate a totally stuck client - getSession() never resolves
     // and the listener never fires. The 8 s safety timeout is the
     // last line of defense against an infinite splash.
     vi.useFakeTimers();
@@ -120,10 +120,10 @@ describe("AuthProvider", () => {
   it("bootstraps user state synchronously from getSession() on mount", async () => {
     state.bootstrapSession = { user: { id: "u1" } };
     render(<AuthProvider><Probe /></AuthProvider>);
-    // getSession() resolves on the next microtask — wait for it.
+    // getSession() resolves on the next microtask - wait for it.
     await waitFor(() => expect(screen.getByTestId("user").textContent).toBe("u1"));
     // The loading gate must release without waiting for the profile
-    // fetch — the navbar / route can render with just the auth user.
+    // fetch - the navbar / route can render with just the auth user.
     await waitFor(() => expect(screen.getByTestId("loading").textContent).toBe("false"));
   });
 });

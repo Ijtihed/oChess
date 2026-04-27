@@ -43,7 +43,7 @@ describe("Navbar", () => {
       document.body.dispatchEvent(evt);
     });
 
-    // Mobile copy should be gone — only the desktop nav copy remains.
+    // Mobile copy should be gone - only the desktop nav copy remains.
     expect(screen.getAllByText("Play").length).toBe(1);
   });
 });

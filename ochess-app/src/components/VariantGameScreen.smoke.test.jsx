@@ -1,7 +1,7 @@
 /**
  * VariantGameScreen smoke test.
  *
- * Mirrors the OnlineGameScreen smoke harness — mocks bot-engine, sounds,
+ * Mirrors the OnlineGameScreen smoke harness - mocks bot-engine, sounds,
  * variants, and InteractiveBoard so we can mount the default-export and
  * verify the basic UI renders without crashing for the supported variants.
  */
@@ -30,7 +30,7 @@ vi.mock("../lib/bot-chat", () => ({
   getBotChatMessage: vi.fn(() => null),
 }));
 
-// Variant game state — the screen reads `.fen()` / `.move()` /
+// Variant game state - the screen reads `.fen()` / `.move()` /
 // `.history()` / `.checkEnd()` from this object. A minimal stub
 // is enough for the smoke render.
 function makeVariantGame() {

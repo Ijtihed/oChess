@@ -14,7 +14,7 @@ describe("StudyPage", () => {
     render(<StudyPage />);
     // ComingSoon renders the page name as the h2 title plus the
     // generic "under construction" copy. Don't lock in the exact
-    // wording — just assert the user sees Study + the Coming Soon
+    // wording - just assert the user sees Study + the Coming Soon
     // affordance.
     expect(screen.getByRole("heading", { name: /Study/i })).toBeDefined();
     expect(screen.getByText(/Coming Soon/i)).toBeDefined();

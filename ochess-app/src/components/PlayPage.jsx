@@ -262,7 +262,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
 
   const [seeksLoadError, setSeeksLoadError] = useState(null);
 
-  // Load open seeks — initial fetch + Realtime subscription for instant updates
+  // Load open seeks - initial fetch + Realtime subscription for instant updates
   useEffect(() => {
     if (!isLoggedIn || !supabase) return;
 
@@ -277,7 +277,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
         .then(({ data, error }) => {
           if (error) {
             perr("loadSeeks error:", error.message, error.details, error.hint);
-            setSeeksLoadError("Couldn't load open games — check your connection.");
+            setSeeksLoadError("Couldn't load open games - check your connection.");
             return;
           }
           plog("loadSeeks:", data?.length || 0, "seeks found", data?.map(s => ({ id: s.id, user: s.username, tc: s.time_control })));
@@ -286,7 +286,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
         })
         .catch((e) => {
           perr("loadSeeks exception:", e);
-          setSeeksLoadError("Couldn't load open games — check your connection.");
+          setSeeksLoadError("Couldn't load open games - check your connection.");
         });
     };
 
@@ -338,7 +338,7 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
       await cancelAllMySeeks(user.id);
 
       // Try to claim an existing seek first. We pass `isRated` so the
-      // matchmaker only pairs us with a seek of the same flavour —
+      // matchmaker only pairs us with a seek of the same flavour -
       // rated-with-rated, casual-with-casual.
       const match = await findMatch(user.id, rating, { timeControl: tc, isRated: mode === "rated" });
       if (match) {
@@ -354,15 +354,15 @@ function OnlineMatchmaking({ navigate, mode, setMode }) {
         } catch (e) { plog("claim failed (seek may be taken):", e.message); }
       }
 
-      // No match found — post our own seek (only one at a time)
+      // No match found - post our own seek (only one at a time)
       plog("no match found, creating seek...");
       const seek = await createSeek(user.id, myName, rating, {
         timeControl: tc, category, isRated: mode === "rated",
       });
-      plog("seek created:", seek.id, "— waiting for opponent to claim it");
+      plog("seek created:", seek.id, "- waiting for opponent to claim it");
       setSeekId(seek.id);
 
-      // Subscribe to games table — fires when opponent claims our seek
+      // Subscribe to games table - fires when opponent claims our seek
       if (gameSubRef.current) { supabase.removeChannel(gameSubRef.current); gameSubRef.current = null; }
       const gameCh = supabase
         .channel("my-game-created")

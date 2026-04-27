@@ -472,7 +472,7 @@ export default function AnalysisPage() {
     try {
       const result = temp.move(move);
       if (!result) return false;
-      // Analysis is a contemplative mode — there's no follow-up
+      // Analysis is a contemplative mode - there's no follow-up
       // Victory/Defeat sound when the user steps through a mate, so
       // play the dramatic Checkmate cue here.
       playMoveSound(result, { allowMateSound: true });
@@ -883,7 +883,7 @@ export default function AnalysisPage() {
               </div>
             )}
 
-            {/* Material bar (top — opponent) */}
+            {/* Material bar (top - opponent) */}
             <MaterialBar pieces={topIsBlack ? mat.bPieces : mat.wPieces} adv={topIsBlack ? (mat.diff < 0 ? Math.abs(mat.diff) : 0) : (mat.diff > 0 ? mat.diff : 0)} color={topIsBlack ? "b" : "w"} />
 
             {/* Board + eval bar */}
@@ -935,7 +935,7 @@ export default function AnalysisPage() {
               </div>
             </div>
 
-            {/* Material bar (bottom — player side) */}
+            {/* Material bar (bottom - player side) */}
             <MaterialBar pieces={topIsBlack ? mat.wPieces : mat.bPieces} adv={topIsBlack ? (mat.diff > 0 ? mat.diff : 0) : (mat.diff < 0 ? Math.abs(mat.diff) : 0)} color={topIsBlack ? "w" : "b"} />
 
             {/* Navigation */}
@@ -1059,7 +1059,7 @@ export default function AnalysisPage() {
                   )}
 
                   <p className="text-[11px] text-on-surface-variant/55 leading-relaxed">
-                    Local engine — nothing sent to a server.
+                    Local engine - nothing sent to a server.
                     {engineDepth >= 22 && " Higher depth may be slow."}
                   </p>
                 </>
@@ -1296,7 +1296,7 @@ export default function AnalysisPage() {
               )}
             </div>
 
-            {/* Saved boards — always render so the empty state is
+            {/* Saved boards - always render so the empty state is
                 visible (and the user discovers the Save action). */}
             <div className="bg-surface-container border border-white/[0.04]">
               <div className="p-2.5 border-b border-white/[0.03] flex items-center justify-between">
@@ -1341,7 +1341,7 @@ export default function AnalysisPage() {
         </div>
       </div>
 
-      {/* Hints — between main content and friends panel */}
+      {/* Hints - between main content and friends panel */}
       <div className="hidden xl:flex flex-col gap-2 w-48 shrink-0 py-4 pr-2">
         <div className="p-4 bg-surface-container border border-white/[0.04] rounded">
           <p className="text-[13px] text-on-surface-variant/55 leading-relaxed">

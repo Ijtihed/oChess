@@ -34,7 +34,7 @@ describe("reconcileClockState", () => {
       now: new Date("2026-04-27T00:00:00Z").getTime(),
     });
     expect(out.white).toBe(0); // would be very negative without cap
-    // The black clock is untouched — only the active side burns time.
+    // The black clock is untouched - only the active side burns time.
     expect(out.black).toBe(60_000);
   });
 

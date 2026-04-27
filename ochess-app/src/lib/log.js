@@ -6,7 +6,7 @@
  * is set, so production users don't see the firehose of `[friends]`
  * / `[online-game]` / `[play]` traces that we use during development.
  *
- * Errors always log — they're rare and useful for crash reports.
+ * Errors always log - they're rare and useful for crash reports.
  */
 
 const enabled =

@@ -338,7 +338,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     } catch {}
     setFen(g.fen());
     setHighlight({ [m.from]: { backgroundColor: "rgba(239,68,68,0.25)" }, [m.to]: { backgroundColor: "rgba(239,68,68,0.35)" } });
-    // Failure plays the defeat cue — the chess-draw sound (used
+    // Failure plays the defeat cue - the chess-draw sound (used
     // previously) implied a neutral result, but the user just lost
     // this puzzle, so the louder "you lost" sound is more accurate.
     setStatus("failed"); setSessionFailed((f) => f + 1); setStreak(0); playDefeat();
@@ -516,7 +516,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
             </div>
           </div>
 
-          {/* Timer bar above board — finite timers only */}
+          {/* Timer bar above board - finite timers only */}
           {timerSec > 0 && !isInfinite && (status === "playing" || isDone) && (
             <div className="w-full h-[3px] bg-surface-low overflow-hidden mb-0.5">
               <div className={`h-full transition-all duration-100 ${timerPct < 20 ? "bg-error" : timerPct < 50 ? "bg-yellow-500" : "bg-primary"}`} style={{ width: `${timerPct}%` }} />

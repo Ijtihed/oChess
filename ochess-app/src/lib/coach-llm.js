@@ -18,13 +18,13 @@ import { supabase } from "./supabase";
  * Send a mistake corpus + optional free-text query to the coach
  * function and return its structured response.
  *
- * @param {Array} mistakes — cards from `ochess_review_cards` filtered
+ * @param {Array} mistakes - cards from `ochess_review_cards` filtered
  *   to `type === "mistake"` (and optionally `type === "puzzle"`).
  *   We send a slim subset of fields per card; the FEN is intentionally
  *   omitted because it isn't needed for the natural-language plan
  *   and keeping it out lowers token cost.
- * @param {string} [query] — free-text drill query, e.g. "endgame fork".
- * @param {number} [dailyQuota] — cards per day in the generated plan.
+ * @param {string} [query] - free-text drill query, e.g. "endgame fork".
+ * @param {number} [dailyQuota] - cards per day in the generated plan.
  * @returns {Promise<{
  *   ok: boolean,
  *   summary?: string,
@@ -75,7 +75,7 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
 
 /** Lightweight helper: is the coach feature reachable from the
  *  client? True iff Supabase is configured. We intentionally don't
- *  ping the function here — that would cost a real call. The UI
+ *  ping the function here - that would cost a real call. The UI
  *  handles 4xx/5xx gracefully so an undeployed function still
  *  surfaces a clean error message rather than a hang. */
 export function isCoachAvailable() {

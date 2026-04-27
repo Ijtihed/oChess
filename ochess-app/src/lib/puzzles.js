@@ -29,7 +29,7 @@ async function loadPuzzles(count = 3000) {
     try {
       // The deployed CSV (`puzzles.csv`) is a 10k-puzzle sample of the
       // Lichess database, trimmed by `scripts/trim-puzzles.mjs`. The
-      // full 1 GB file is gitignored — we ship a curated subset so
+      // full 1 GB file is gitignored - we ship a curated subset so
       // that Vercel deploys stay under the 100 MB asset limit.
       const response = await fetch("/puzzledb/puzzles.csv");
       if (!response.ok) {
@@ -113,8 +113,8 @@ async function searchPuzzleById(id) {
  *      your level.
  *   2. Within spread, NOT in recentIds, but may have been attempted
  *      historically. Lets a heavy user keep training without running
- *      out — they'll re-encounter old puzzles eventually.
- *   3. Anywhere in the deck — last-resort fallback.
+ *      out - they'll re-encounter old puzzles eventually.
+ *   3. Anywhere in the deck - last-resort fallback.
  *
  * `recentIds` tracks the last MAX_RECENT picks within the current
  * session. `getAttemptedIds()` reads localStorage at picker-time so
@@ -162,7 +162,7 @@ function getAdaptivePuzzle(puzzles, playerRating) {
 
   // Tier 2: within rating spread, non-recent, allow re-encountering
   // historically attempted puzzles. This kicks in when a user has
-  // worked through a big chunk of the deck — better to re-train an old
+  // worked through a big chunk of the deck - better to re-train an old
   // puzzle than to silently fail.
   for (let spread = 150; spread <= 1000; spread += 100) {
     const candidates = puzzles.filter((p) =>

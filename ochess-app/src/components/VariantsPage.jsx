@@ -9,14 +9,14 @@ const PLAYABLE = [
   {
     id: "chess960", name: "Chess960", icon: "♚", players: "3,210",
     desc: "Randomized back-rank. Fischer Random.",
-    detail: "Both sides start with the same randomized piece order. Bishops on opposite colors, king between rooks. No memorized openings — pure chess skill.",
+    detail: "Both sides start with the same randomized piece order. Bishops on opposite colors, king between rooks. No memorized openings - pure chess skill.",
     exampleFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/BRKNNQRB w KQ - 0 1",
     exampleHL: {},
   },
   {
     id: "kingOfTheHill", name: "King of the Hill", icon: "⛰", players: "921",
     desc: "Get your king to the center to win.",
-    detail: "Normal chess rules, plus: if your king lands on d4, d5, e4, or e5, you win instantly — even if you're down material.",
+    detail: "Normal chess rules, plus: if your king lands on d4, d5, e4, or e5, you win instantly - even if you're down material.",
     exampleFen: "r1bq1bnr/ppppkppp/2n5/4p3/3PK3/8/PPP1PPPP/RNBQ1BNR w - - 0 1",
     exampleHL: { d4: { boxShadow: "inset 0 0 0 3px rgba(255,215,0,0.5)" }, d5: { boxShadow: "inset 0 0 0 3px rgba(255,215,0,0.5)" }, e4: { boxShadow: "inset 0 0 0 3px rgba(255,215,0,0.5)" }, e5: { boxShadow: "inset 0 0 0 3px rgba(255,215,0,0.5)" } },
   },
@@ -44,14 +44,14 @@ const PLAYABLE = [
   {
     id: "atomic", name: "Atomic", icon: "💥", players: "512",
     desc: "Captures cause explosions.",
-    detail: "Every capture destroys the capturing piece, the captured piece, and all non-pawn neighbors. If a king is caught in the blast — game over.",
+    detail: "Every capture destroys the capturing piece, the captured piece, and all non-pawn neighbors. If a king is caught in the blast - game over.",
     exampleFen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
     exampleHL: {},
   },
   {
     id: "racingKings", name: "Racing Kings", icon: "🏁", players: "245",
     desc: "Race your king to rank 8. No checks.",
-    detail: "Custom starting position. First king to reach the 8th rank wins. No checks allowed — ever. If White arrives first, Black gets one equalizing turn.",
+    detail: "Custom starting position. First king to reach the 8th rank wins. No checks allowed - ever. If White arrives first, Black gets one equalizing turn.",
     exampleFen: "8/8/8/8/8/8/krbnNBRK/qrbnNBRQ w - - 0 1",
     exampleHL: {},
   },
@@ -79,7 +79,7 @@ const PLAYABLE = [
   {
     id: "fogOfWar", name: "Fog of War", icon: "🌫", players: "890",
     desc: "You only see what your pieces can see.",
-    detail: "Standard chess, but the board is dark. You only see squares your pieces can move to or attack. No check warnings — moving your king into danger loses.",
+    detail: "Standard chess, but the board is dark. You only see squares your pieces can move to or attack. No check warnings - moving your king into danger loses.",
     exampleFen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
     exampleHL: {},
   },
@@ -128,21 +128,21 @@ const PLAYABLE = [
   {
     id: "checkless", name: "Checkless Chess", icon: "🛡", players: "150",
     desc: "You can't give check (except checkmate).",
-    detail: "Moves that deliver check are illegal — unless it's checkmate. King safety is guaranteed until the killing blow. Completely changes endgame strategy.",
+    detail: "Moves that deliver check are illegal - unless it's checkmate. King safety is guaranteed until the killing blow. Completely changes endgame strategy.",
     exampleFen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
     exampleHL: {},
   },
   {
     id: "peasants", name: "Peasants' Revolt", icon: "⚔", players: "120",
     desc: "King + 8 pawns vs king + 3 knights.",
-    detail: "White has a king and 8 pawns. Black has a king and 3 knights plus a pawn. A classic asymmetric puzzle — can the peasants overwhelm the cavalry?",
+    detail: "White has a king and 8 pawns. Black has a king and 3 knights plus a pawn. A classic asymmetric puzzle - can the peasants overwhelm the cavalry?",
     exampleFen: "1nn1k1n1/4p3/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
     exampleHL: {},
   },
   {
     id: "weakArmy", name: "Weak Army", icon: "🏳", players: "95",
     desc: "Black starts without rooks.",
-    detail: "Black has no rooks — a significant material handicap. Great for learning how to play with fewer resources or testing your attack against a crippled army.",
+    detail: "Black has no rooks - a significant material handicap. Great for learning how to play with fewer resources or testing your attack against a crippled army.",
     exampleFen: "1nbqkbn1/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQ - 0 1",
     exampleHL: {},
   },
@@ -156,11 +156,11 @@ const COMING_SOON = [
   { name: "Placement", icon: "🎲", desc: "Place your back rank pieces before playing." },
   { name: "Maharaja", icon: "👑", desc: "One super-piece vs a full army." },
   { name: "Bughouse", icon: "🤝", desc: "4-player team variant with drops." },
-  { name: "Alice", icon: "🪞", desc: "Two boards — pieces teleport after moving." },
+  { name: "Alice", icon: "🪞", desc: "Two boards - pieces teleport after moving." },
   { name: "Capablanca", icon: "🏰", desc: "10×8 board with new piece types." },
   { name: "Cylindrical", icon: "🔁", desc: "a-file and h-file are connected." },
   { name: "Four-Player", icon: "4️⃣", desc: "Cross-shaped board, 4 players." },
-  { name: "Kung Fu", icon: "⚡", desc: "Real-time — no turns, cooldown timers." },
+  { name: "Kung Fu", icon: "⚡", desc: "Real-time - no turns, cooldown timers." },
 ];
 
 const BOTS = [
@@ -288,7 +288,7 @@ export default function VariantsPage() {
                 </h3>
                 {!botSupported && (
                   <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400/90 leading-relaxed">
-                    The bot can't play this variant yet — its rules are too far from standard
+                    The bot can't play this variant yet - its rules are too far from standard
                     chess for the engine to handle. Challenge a friend with the link tool on the
                     Play page instead.
                   </div>
@@ -327,7 +327,7 @@ export default function VariantsPage() {
                     Bot opponent unavailable
                   </button>
                 )}
-                {/* Friend-challenge route — only offered for variants
+                {/* Friend-challenge route - only offered for variants
                     that round-trip cleanly via PGN online (see
                     `ONLINE_SUPPORTED_VARIANTS` in lib/variants.js).
                     Atomic / Crazyhouse stay bot-only for now. */}

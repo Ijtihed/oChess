@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { classifyMove, ANNOTATIONS } from "./move-classify";
 
-describe("classifyMove — book / no-data short circuits", () => {
+describe("classifyMove - book / no-data short circuits", () => {
   it("returns the book annotation when isBook is true (no eval needed)", () => {
     const a = classifyMove(null, null, "w", { isBook: true });
     expect(a).toBe(ANNOTATIONS.book);
@@ -13,7 +13,7 @@ describe("classifyMove — book / no-data short circuits", () => {
   });
 });
 
-describe("classifyMove — centipawn loss thresholds (white to move)", () => {
+describe("classifyMove - centipawn loss thresholds (white to move)", () => {
   it("classifies a 300+ cp loss as a blunder", () => {
     expect(classifyMove({ cp: 100 }, { cp: -250 }, "w")).toBe(ANNOTATIONS.blunder);
     // Boundary: exactly 300 still fires
@@ -50,7 +50,7 @@ describe("classifyMove — centipawn loss thresholds (white to move)", () => {
   });
 });
 
-describe("classifyMove — perspective flip for black", () => {
+describe("classifyMove - perspective flip for black", () => {
   it("a position dropping from +0 to -300 (in white units) is a blunder for white but a great move for black", () => {
     // Same numeric eval drop, different moving color -> sign flips loss.
     expect(classifyMove({ cp: 0 }, { cp: -300 }, "w")).toBe(ANNOTATIONS.blunder);
@@ -58,7 +58,7 @@ describe("classifyMove — perspective flip for black", () => {
   });
 });
 
-describe("classifyMove — mate-to-mate transitions", () => {
+describe("classifyMove - mate-to-mate transitions", () => {
   it("going from +mate to -mate is a blunder", () => {
     // Mate-in-3 for white -> mate-in-2 for black
     const a = classifyMove({ mate: 3 }, { mate: -2 }, "w");

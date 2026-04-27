@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// Read directly from the working directory — under Vitest's transform,
+// Read directly from the working directory - under Vitest's transform,
 // `import.meta.url` for CSS files isn't a `file:` URL we can convert.
 const css = readFileSync(join(process.cwd(), "src", "index.css"), "utf8");
 
@@ -21,7 +21,7 @@ describe("index.css design tokens", () => {
   });
 
   it("uses a non-translating fade for page-enter so it doesn't fight anim-fade-up", () => {
-    // page-enter must be a fade only (no translateY) — otherwise
+    // page-enter must be a fade only (no translateY) - otherwise
     // first-paint headings double-animate and snap. Match either
     // animation: fade-in or fade with no translate keyframe.
     const pageEnter = css.match(/\.page-enter\s*{[^}]*}/);

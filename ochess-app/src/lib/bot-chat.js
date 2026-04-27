@@ -1,5 +1,5 @@
 /**
- * Bot chat — static personality lines.
+ * Bot chat - static personality lines.
  * For custom bots, API-key-based LLM chat will be added later.
  */
 

@@ -10,7 +10,7 @@ import SocialPanel from "./SocialPanel";
 
 // Match PlayPage's PRESETS so a user moving between Quick-match and
 // Create-challenge sees the same time-control buttons in the same
-// order. Casual-only here — challenge links are always unrated.
+// order. Casual-only here - challenge links are always unrated.
 const TIME_CONTROLS = [
   { label: "1+0", cat: "Bullet" },
   { label: "3+0", cat: "Blitz" },
@@ -24,7 +24,7 @@ const TIME_CONTROLS = [
 ];
 
 // Variants offered in the picker. The list is intentionally narrower
-// than `lib/variants.VARIANT_DEFS` — only variants that round-trip
+// than `lib/variants.VARIANT_DEFS` - only variants that round-trip
 // cleanly across reload via PGN replay are exposed here. Atomic and
 // Crazyhouse stay bot-only for now (see ONLINE_SUPPORTED_VARIANTS in
 // lib/variants.js for the rationale).
@@ -153,7 +153,7 @@ export function CreateChallenge() {
   return (
     <div className="flex">
       <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
-        {/* Back affordance — sub-pages need a way out. Leaving early
+        {/* Back affordance - sub-pages need a way out. Leaving early
             with a live challenge tears the row down so a half-shared
             link can't trap an opponent. */}
         <button

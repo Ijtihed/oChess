@@ -57,7 +57,7 @@ export function reconcileClockState({ whiteMs, blackMs, lastMoveAt, turn, fallba
  * the receiver didn't store the sender's user_id. New rows store the
  * actual user_id (or `null` if it couldn't be determined). Either
  * shape round-trips to a stable `fromId` that equals one of the two
- * participants — so `fromId === authUserId` is the only thing the
+ * participants - so `fromId === authUserId` is the only thing the
  * renderer needs to ask.
  */
 export function normalizeChat(stored, opponentId, myId) {
@@ -108,7 +108,7 @@ function getCaptured(fen) {
 export default function OnlineGameScreen({ gameData, playerColor }) {
   const navigate = useNavigate();
   const { user: authUser, profile } = useAuth();
-  // Use the variant wrapper for every online game — for `standard`
+  // Use the variant wrapper for every online game - for `standard`
   // it's a no-op shell around chess.js so the call sites below stay
   // identical to the chess.js API. For other variants it injects the
   // variant-specific rules (forcedCapture, kingOfTheHill end, etc.).
@@ -357,7 +357,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         if (premoveRef.current) setTimeout(() => executePremove(), 80);
       }
 
-      // Sync clocks from server — only when a move actually advanced.
+      // Sync clocks from server - only when a move actually advanced.
       // Replaying restore() on every chat / draw / rematch update jitters
       // the local ticker against the elapsed time we re-derive here.
       if (movesAdvanced && hasTime && row.white_time_ms != null && row.black_time_ms != null && row.last_move_at) {
@@ -372,7 +372,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         clock.start(activeSide);
       }
 
-      // Sync chat. The DB row is authoritative — we adopt it as-is so
+      // Sync chat. The DB row is authoritative - we adopt it as-is so
       // an admin fix or a legitimate truncation propagates instead of
       // being silently overridden by a longer local cache.
       if (row.chat && Array.isArray(row.chat)) {
@@ -417,7 +417,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
           if (!data || gameOverRef.current) return;
           if (data.status === "completed") applyServerRow(data);
           // Soft retry once after 1.5s for the case where the actual
-          // resigner's DB write has not landed yet — the row will
+          // resigner's DB write has not landed yet - the row will
           // flip to completed within glicko2_update's transaction.
           else {
             const t = setTimeout(() => {
@@ -454,13 +454,13 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
             if (hasTime) clock.switchSide();
             if (!checkEnd() && premoveRef.current) setTimeout(() => executePremove(), 80);
           }
-          // If move fails locally, do nothing — the DB subscription will correct us
+          // If move fails locally, do nothing - the DB subscription will correct us
         } catch {}
       },
       onResign: ({ userId }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
         // Broadcast is a fast hint, not authority. Verify against the
-        // DB row before terminating — a malicious actor with the
+        // DB row before terminating - a malicious actor with the
         // anon key could otherwise forge resign payloads.
         verifyTermination("resignation");
       },
@@ -492,7 +492,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         if (data?.userId && !validPlayers.has(data.userId)) return;
         // Same DB-first guard as the other terminal events. The
         // sender hasn't necessarily written the games row yet (e.g.
-        // the 30s auto-abort path) — verify on the DB and let
+        // the 30s auto-abort path) - verify on the DB and let
         // applyServerRow finalize if the status really is completed.
         verifyTermination(data?.reason || "game ended");
       },
@@ -509,7 +509,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       onRematchOffer: ({ userId }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
         // Rematch offers always come AFTER a game ends, so don't gate
-        // on gameOver here — that would suppress the cue every time.
+        // on gameOver here - that would suppress the cue every time.
         playNotify();
         setRematchIncoming(true);
       },
@@ -558,19 +558,19 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
           const remaining = 30000 - elapsed;
           abortTimer = setTimeout(() => {
             if (gameRef.current.history().length === 0 && !gameOverRef.current) {
-              ch?.sendGameOver({ result: "*", reason: "aborted — no moves in 30s", userId: authUserIdRef.current });
-              endGame("*", "aborted — no moves in 30s");
+              ch?.sendGameOver({ result: "*", reason: "aborted - no moves in 30s", userId: authUserIdRef.current });
+              endGame("*", "aborted - no moves in 30s");
             }
           }, remaining);
         }
         // If we're already past the 30s window without moves, don't
-        // fire instantly — the originating host has already aborted
+        // fire instantly - the originating host has already aborted
         // (or is about to) and we'll learn about it via the DB sync.
       }
     }
 
     // If the realtime channel never reaches SUBSCRIBED within 8s,
-    // surface a banner so the user knows something is off — moves
+    // surface a banner so the user knows something is off - moves
     // still go through the DB write path so the game continues, but
     // they won't see opponent moves until the page reconciles. We
     // read the live `connected` value via a ref so this delayed
@@ -609,7 +609,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       setFen(g.fen());
       setHistory([...g.history({ verbose: true })]);
       if (hasTime) clock.switchSide();
-      // 1. Write to DB (authoritative — opponent's subscription will fire)
+      // 1. Write to DB (authoritative - opponent's subscription will fire)
       saveGameState();
       // 2. Broadcast for instant delivery (speed hint)
       channelRef.current?.sendMove({ from: result.from, to: result.to, promotion: result.promotion || undefined });
@@ -984,7 +984,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
               </div>
             </div>
 
-            {/* Move list (live — reversed, newest on top) */}
+            {/* Move list (live - reversed, newest on top) */}
             <div className="bg-surface-low flex flex-col flex-1 min-h-0">
               <div className="p-3 flex justify-between items-center border-b border-white/[0.03] shrink-0">
                 <h2 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">Moves</h2>
@@ -1021,7 +1021,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         {/* ── Post-game sidebar ── */}
         {gameOver && (
           <div className="w-full xl:w-[340px] shrink-0 flex flex-col gap-3">
-            {/* Result panel — role=status + aria-live so screen
+            {/* Result panel - role=status + aria-live so screen
                 readers announce the result when the game ends. */}
             <div className="anim-fade-up p-4 bg-surface-container border border-white/[0.06]"
               role="status" aria-live="polite">
@@ -1069,7 +1069,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
               ) : rematchOffered ? (
                 <div className="mt-3 flex gap-2">
                   <div className="flex-1 py-2.5 bg-surface-low border border-white/[0.04] text-center">
-                    <span className="text-[11px] text-on-surface-variant/30">Rematch sent — waiting...</span>
+                    <span className="text-[11px] text-on-surface-variant/30">Rematch sent - waiting...</span>
                   </div>
                   <button onClick={handleRematchCancel}
                     className="py-2.5 px-3 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/30 hover:text-error transition-colors">Cancel</button>

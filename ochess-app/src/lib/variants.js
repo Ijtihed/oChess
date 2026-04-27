@@ -127,9 +127,9 @@ const DUNSANY_FEN = "rnbqkbnr/pppppppp/8/8/PPPPPPPP/PPPPPPPP/PPPPPPPP/4K3 w kq -
  * `loadPgn` so that a mid-game refresh / second tab / opponent's
  * realtime sync rebuilds the same position. That excludes:
  *
- *   - atomic    — `afterMove` mutates the board; chess.js replay
+ *   - atomic    - `afterMove` mutates the board; chess.js replay
  *                 doesn't re-fire those mutations.
- *   - crazyhouse — uses drop notation that chess.js doesn't parse.
+ *   - crazyhouse - uses drop notation that chess.js doesn't parse.
  *
  * The shipped friend-challenge UI hides those two; bots-only stays
  * supported on /variant-game.
@@ -138,7 +138,7 @@ export const ONLINE_SUPPORTED_VARIANTS = new Set([
   "standard",
   "antichess",
   "kingOfTheHill",
-  "threeCheck", // Check counts reset on refresh — minor degradation, not a blocker.
+  "threeCheck", // Check counts reset on refresh - minor degradation, not a blocker.
   "horde",
   "racingKings",
   "fogOfWar",
@@ -196,8 +196,8 @@ export const VARIANT_DEFS = {
     name: "Antichess", startFen: null, forcedCapture: true,
     checkCustomEnd: (chess) => {
       const turn = chess.turn();
-      if (totalPieces(chess, turn) === 0) return { result: turn === "w" ? "1-0" : "0-1", reason: "Lost all pieces — you win!" };
-      if (chess.moves().length === 0) return { result: turn === "w" ? "1-0" : "0-1", reason: "No moves — you win!" };
+      if (totalPieces(chess, turn) === 0) return { result: turn === "w" ? "1-0" : "0-1", reason: "Lost all pieces - you win!" };
+      if (chess.moves().length === 0) return { result: turn === "w" ? "1-0" : "0-1", reason: "No moves - you win!" };
       return null;
     },
   },
@@ -446,7 +446,7 @@ export function createVariantGame(variantId) {
       if (def.forcedCapture) {
         if (chess.moves().length === 0) {
           const t = chess.turn();
-          return { result: t === "w" ? "1-0" : "0-1", reason: "No moves — you win!" };
+          return { result: t === "w" ? "1-0" : "0-1", reason: "No moves - you win!" };
         }
         return null;
       }
