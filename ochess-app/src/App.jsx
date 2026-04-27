@@ -20,6 +20,7 @@ import ComingSoon from "./components/ComingSoon";
 import BoardStylePicker from "./components/BoardStylePicker";
 import LoadingScreen from "./components/LoadingScreen";
 import ErrorBoundary from "./components/ErrorBoundary";
+import LegalPage from "./components/LegalPage";
 
 // Code-split the heaviest routes. Each pulls in chess.js + the
 // engine UI / game flow / coach / Stockfish glue, so loading them on
@@ -198,6 +199,7 @@ function AppShell() {
               element={<Profile />}
             />
             <Route path="/logout" element={<LogoutPage />} />
+            <Route path="/legal/:slug" element={<LegalPage />} />
             <Route path="*" element={<ComingSoon page="unknown" onBack={() => handleNavigate("home")} />} />
           </Routes>
           </Suspense>

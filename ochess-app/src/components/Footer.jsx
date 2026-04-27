@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 
 const GITHUB_URL = "https://github.com/oChess";
 
@@ -8,6 +8,12 @@ const PLATFORM_LINKS = [
   { label: "Analysis", path: "/analysis" },
   { label: "Anki", path: "/review" },
   { label: "Study", path: "/study" },
+];
+
+const LEGAL_LINKS = [
+  { label: "Privacy", path: "/legal/privacy" },
+  { label: "Terms", path: "/legal/terms" },
+  { label: "Attribution", path: "/legal/attribution" },
 ];
 
 export default function Footer() {
@@ -49,8 +55,11 @@ export default function Footer() {
               </div>
               <div className="flex flex-col gap-2">
                 <span className="text-[9px] font-label font-bold uppercase tracking-widest text-on-surface-variant/30">Legal</span>
-                <span className="text-[11px] text-on-surface-variant/25 py-0.5">Privacy</span>
-                <span className="text-[11px] text-on-surface-variant/25 py-0.5">Terms</span>
+                {LEGAL_LINKS.map((link) => (
+                  <Link key={link.label} to={link.path} className="text-[11px] text-on-surface-variant/50 hover:text-primary transition-colors py-0.5 text-left">
+                    {link.label}
+                  </Link>
+                ))}
               </div>
             </div>
           </div>

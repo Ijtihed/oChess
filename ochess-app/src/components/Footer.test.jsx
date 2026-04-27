@@ -4,6 +4,11 @@ import { render, screen, fireEvent } from "@testing-library/react";
 const navigate = vi.fn();
 vi.mock("react-router-dom", () => ({
   useNavigate: () => navigate,
+  // Footer uses <Link> for the Legal section; provide a minimal
+  // anchor-equivalent so the import resolves without a real router.
+  Link: ({ to, children, ...rest }) => (
+    <a href={typeof to === "string" ? to : "#"} {...rest}>{children}</a>
+  ),
 }));
 
 import Footer from "./Footer";
@@ -36,5 +41,15 @@ describe("Footer", () => {
     render(<Footer />);
     const year = String(new Date().getFullYear());
     expect(document.body.textContent).toMatch(new RegExp(year));
+  });
+
+  it("links to the privacy, terms, and attribution pages", () => {
+    render(<Footer />);
+    const privacy = screen.getByText("Privacy").closest("a");
+    const terms = screen.getByText("Terms").closest("a");
+    const attribution = screen.getByText("Attribution").closest("a");
+    expect(privacy?.getAttribute("href")).toBe("/legal/privacy");
+    expect(terms?.getAttribute("href")).toBe("/legal/terms");
+    expect(attribution?.getAttribute("href")).toBe("/legal/attribution");
   });
 });
