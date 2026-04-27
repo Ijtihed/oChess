@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
 import SocialPanel from "./SocialPanel";
@@ -15,6 +16,8 @@ import {
   rateCard,
   isCardDue,
   RATING,
+  deserializeSharedCard,
+  addCardIfNew,
 } from "../lib/review-cards";
 
 const RATING_BUTTONS = [
@@ -79,6 +82,44 @@ export default function ReviewPage() {
   const [planQuery, setPlanQuery] = useState("");
   const [planChipId, setPlanChipId] = useState(null);
   const gameRef = useRef(null);
+
+  // Card share import - if the URL has `?import=<base64>`, decode the
+  // shared card, dedupe against the existing deck, and append. Then
+  // strip the query param so a refresh doesn't re-import (which would
+  // be benign thanks to addCardIfNew but would surface the toast
+  // again). Lives at the top so it runs before the empty-state check
+  // and the user immediately sees the imported card.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [shareToast, setShareToast] = useState(null);
+  useEffect(() => {
+    const payload = searchParams.get("import");
+    if (!payload) return;
+    const incoming = deserializeSharedCard(payload);
+    if (!incoming) {
+      setShareToast({ kind: "error", text: "Couldn't import that card - the link looks corrupted." });
+    } else {
+      setCards((prev) => {
+        const merged = addCardIfNew(prev, incoming);
+        const added = merged.length > prev.length;
+        saveCards(merged);
+        setShareToast({
+          kind: added ? "ok" : "info",
+          text: added
+            ? "Shared card added to your deck. Switch to Today to drill it."
+            : "You already have this card in your deck.",
+        });
+        return merged;
+      });
+    }
+    // Drop the query param so a refresh / share-with-self doesn't
+    // re-fire the import flow.
+    const next = new URLSearchParams(searchParams);
+    next.delete("import");
+    setSearchParams(next, { replace: true });
+    const t = setTimeout(() => setShareToast(null), 5000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Per-deck breakdown of the FULL collection (not just due cards) so
   // the filter chips can show "Puzzles 12 · Games 5 · Analysis 3"
@@ -260,6 +301,18 @@ export default function ReviewPage() {
     </div>
   );
 
+  // Inline banner shown after a `?import=<card>` URL adds a shared
+  // card. Stays for 5 s then auto-dismisses.
+  const ShareToast = shareToast ? (
+    <div className={`anim-fade-up mb-4 px-4 py-3 border text-[12px] ${
+      shareToast.kind === "error" ? "bg-error/10 border-error/20 text-error"
+      : shareToast.kind === "info" ? "bg-surface-low border-white/[0.06] text-on-surface-variant/65"
+      : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+    }`}>
+      {shareToast.text}
+    </div>
+  ) : null;
+
   if (topTab === "plan") {
     return (
       <div className="flex">
@@ -269,6 +322,7 @@ export default function ReviewPage() {
             Drill the positions where you keep slipping up.
           </p>
           {TopTabs}
+          {ShareToast}
           <StudyPlanPanel onStartSession={startPlanSession} />
         </div>
         <SocialPanel />
@@ -282,6 +336,7 @@ export default function ReviewPage() {
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
           <h1 className="anim-fade-up font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1" style={{ "--delay": "0.05s" }}>Review</h1>
           {TopTabs}
+          {ShareToast}
           <div className="text-center py-10">
             <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">No cards yet</h2>
             <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-5">
@@ -311,6 +366,7 @@ export default function ReviewPage() {
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
           <h1 className="anim-fade-up font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1" style={{ "--delay": "0.05s" }}>Review</h1>
           {TopTabs}
+          {ShareToast}
           <div className="text-center py-6">
             <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">
               {inPlanSession
@@ -361,6 +417,7 @@ export default function ReviewPage() {
     <div className="flex">
       <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
         {TopTabs}
+        {ShareToast}
 
         {/* If a Plan-driven filter is active, show a chip describing
             it with a clear way out. Helps the user remember they're

@@ -16,6 +16,7 @@ import {
   saveCards,
   cardId,
   loadSchedules,
+  buildShareUrl,
 } from "../lib/review-cards";
 import { callCoach, isCoachAvailable } from "../lib/coach-llm";
 
@@ -769,21 +770,41 @@ function PlanCardRow({ card, index }) {
   // For simplicity we just show a text summary; the user clicks
   // through to the actual review session.
   const phaseLabel = card.phase ? PHASE_LABELS[card.phase] || card.phase : "";
+  const [copied, setCopied] = useState(false);
+
+  const onShare = useCallback(() => {
+    const url = buildShareUrl(card);
+    if (!url) return;
+    try {
+      navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard unavailable - silently fail */ }
+  }, [card]);
+
   return (
     <div className="flex items-center gap-3 px-3 py-2 bg-surface-low border border-white/[0.03]">
       <span className="font-headline text-[10px] font-bold tabular-nums text-on-surface-variant/30 w-5">{index}.</span>
       <div className="flex-1 min-w-0">
         <span className="font-headline text-[12px] font-bold text-on-surface-variant/65 block truncate">
           {card.played_san ? `You played ${card.played_san}` : card.type === "puzzle" ? "Puzzle" : "Position"}
-          {card.best_san ? <span className="text-on-surface-variant/35 font-normal"> · best: {card.best_san}</span> : null}
+          {card.best_san ? <span className="text-on-surface-variant/35 font-normal"> - best: {card.best_san}</span> : null}
         </span>
         <span className="text-[10px] text-on-surface-variant/30 truncate block">
           {phaseLabel}
-          {card.eval_loss_cp ? ` · −${(card.eval_loss_cp / 100).toFixed(1)}` : ""}
+          {card.eval_loss_cp ? ` · -${(card.eval_loss_cp / 100).toFixed(1)}` : ""}
           {card.themes?.length ? ` · ${card.themes.slice(0, 2).join(", ").replace(/_/g, " ")}` : ""}
           {card.opening ? ` · ${card.opening}` : ""}
         </span>
       </div>
+      <button onClick={onShare} title="Copy a shareable link to this card"
+        className={`px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
+          copied
+            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/20"
+            : "bg-surface-container border border-white/[0.04] text-on-surface-variant/45 hover:text-primary hover:bg-surface-high"
+        }`}>
+        {copied ? "Copied!" : "Share"}
+      </button>
       {card.source && (
         <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25">{card.source}</span>
       )}

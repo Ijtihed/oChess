@@ -76,3 +76,97 @@ export function rateCard(map, id, rating) {
 }
 
 export { RATING };
+
+// ─────────────────────────────────────────────────────────────────────
+// Card sharing — encode a card to a URL fragment, decode on the
+// receiving side, dedupe against the existing deck. Uses a custom
+// type marker (`shared`) and a recipient-namespaced id so the same
+// card shared twice (or shared and then saved again) doesn't pile up
+// duplicates.
+// ─────────────────────────────────────────────────────────────────────
+
+const SHARED_FIELDS = [
+  "fen", "type", "played_san", "best_san", "answerMove", "answerText",
+  "themes", "phase", "opening", "rating", "themes", "source", "source_url",
+  "title", "notes",
+];
+
+/** URL-safe base64 helpers. We avoid + / = which break in query
+ *  params; replace them with - _ and trim. */
+function base64UrlEncode(json) {
+  const utf8 = unescape(encodeURIComponent(json));
+  // btoa is in jsdom; in Node tests we shim with Buffer.
+  const b64 = typeof btoa === "function" ? btoa(utf8) : Buffer.from(utf8, "binary").toString("base64");
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(b64url) {
+  const pad = "=".repeat((4 - (b64url.length % 4)) % 4);
+  const b64 = (b64url + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const utf8 = typeof atob === "function" ? atob(b64) : Buffer.from(b64, "base64").toString("binary");
+  return decodeURIComponent(escape(utf8));
+}
+
+/**
+ * Pack a card down to a shareable string. Strips fields that don't
+ * round-trip well (timestamps, ids - the recipient generates fresh
+ * ones) and only keeps the per-card content the recipient needs.
+ */
+export function serializeCardForShare(card) {
+  if (!card || typeof card !== "object" || !card.fen) return null;
+  const slim = {};
+  for (const k of SHARED_FIELDS) {
+    if (card[k] !== undefined && card[k] !== null) slim[k] = card[k];
+  }
+  // Add a shape marker so we can detect malformed payloads on import.
+  slim.v = 1;
+  try {
+    return base64UrlEncode(JSON.stringify(slim));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decode a share string back to a card. Returns null on any parse
+ * failure - never throws. The returned card has a fresh id + ts so
+ * it slots into the recipient's deck like any other card.
+ */
+export function deserializeSharedCard(b64url) {
+  if (!b64url || typeof b64url !== "string") return null;
+  try {
+    const json = base64UrlDecode(b64url);
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object" || parsed.v !== 1 || !parsed.fen) return null;
+    const ts = Date.now();
+    return {
+      ...parsed,
+      // Force the type-marker for shared cards so they're easy to
+      // surface separately if the user wants to filter or remove
+      // shared imports later.
+      type: parsed.type || "shared",
+      id: `shared-${ts}-${Math.random().toString(36).slice(2, 8)}`,
+      ts,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Build a full sharable URL given a card and the current origin. */
+export function buildShareUrl(card, origin) {
+  const payload = serializeCardForShare(card);
+  if (!payload) return null;
+  const base = origin || (typeof window !== "undefined" ? window.location.origin : "");
+  return `${base}/review?import=${payload}`;
+}
+
+/** Add a card to the deck unless an identical (fen + type + answer)
+ *  card already exists. Returns the merged deck. */
+export function addCardIfNew(cards, newCard) {
+  if (!newCard?.fen) return cards;
+  const sigOf = (c) => `${c.type || ""}|${c.fen}|${c.played_san || ""}|${c.best_san || ""}`;
+  const incoming = sigOf(newCard);
+  if (cards.some((c) => sigOf(c) === incoming)) return cards;
+  return [...cards, newCard];
+}

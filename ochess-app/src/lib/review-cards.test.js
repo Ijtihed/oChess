@@ -9,6 +9,10 @@ import {
   rateCard,
   isCardDue,
   RATING,
+  serializeCardForShare,
+  deserializeSharedCard,
+  buildShareUrl,
+  addCardIfNew,
 } from "./review-cards";
 
 beforeEach(() => {
@@ -87,5 +91,82 @@ describe("loadSchedules / saveSchedules", () => {
     saveSchedules({ a: { dueAt: new Date(0).toISOString(), easeFactor: 2.5 } });
     const map = loadSchedules();
     expect(map.a).toBeDefined();
+  });
+});
+
+describe("serializeCardForShare / deserializeSharedCard", () => {
+  it("round-trips a typical mistake card through a URL-safe payload", () => {
+    const card = {
+      fen: "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+      type: "mistake",
+      played_san: "Bg5",
+      best_san: "Nxe5",
+      eval_loss_cp: 250,
+      themes: ["mistake", "missed_capture"],
+      phase: "middlegame",
+      opening: "Italian Game",
+    };
+    const payload = serializeCardForShare(card);
+    expect(typeof payload).toBe("string");
+    expect(payload).toMatch(/^[A-Za-z0-9_-]+$/); // URL-safe alphabet
+    const decoded = deserializeSharedCard(payload);
+    expect(decoded).not.toBeNull();
+    expect(decoded.fen).toBe(card.fen);
+    expect(decoded.played_san).toBe("Bg5");
+    expect(decoded.best_san).toBe("Nxe5");
+    expect(decoded.themes).toEqual(["mistake", "missed_capture"]);
+    expect(decoded.opening).toBe("Italian Game");
+    // The recipient's copy should have its own fresh id + ts.
+    expect(decoded.id).toMatch(/^shared-/);
+    expect(typeof decoded.ts).toBe("number");
+  });
+
+  it("returns null on missing FEN (the only required field)", () => {
+    expect(serializeCardForShare({ type: "puzzle" })).toBeNull();
+    expect(serializeCardForShare(null)).toBeNull();
+  });
+
+  it("returns null on a malformed payload string", () => {
+    expect(deserializeSharedCard(null)).toBeNull();
+    expect(deserializeSharedCard("")).toBeNull();
+    expect(deserializeSharedCard("not-base64")).toBeNull();
+    expect(deserializeSharedCard("eyJ4Ijoxfff")).toBeNull(); // bad b64
+  });
+
+  it("rejects payloads without the v=1 schema marker", () => {
+    const noMarker = btoa(JSON.stringify({ fen: "x" }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    expect(deserializeSharedCard(noMarker)).toBeNull();
+  });
+});
+
+describe("buildShareUrl", () => {
+  it("appends the encoded card to /review?import= against the given origin", () => {
+    const url = buildShareUrl({ fen: "x", type: "shared" }, "https://example.com");
+    expect(url).toMatch(/^https:\/\/example\.com\/review\?import=[A-Za-z0-9_-]+$/);
+  });
+
+  it("returns null on a card with no FEN", () => {
+    expect(buildShareUrl({ type: "shared" }, "https://example.com")).toBeNull();
+  });
+});
+
+describe("addCardIfNew", () => {
+  it("appends a card when no signature collision exists", () => {
+    const out = addCardIfNew([], { fen: "f1", type: "shared" });
+    expect(out).toHaveLength(1);
+  });
+
+  it("dedupes cards with the same fen + type + played_san + best_san", () => {
+    const existing = [{ fen: "f1", type: "shared", played_san: "Bg5", best_san: "Nxe5" }];
+    const out = addCardIfNew(existing, { fen: "f1", type: "shared", played_san: "Bg5", best_san: "Nxe5" });
+    expect(out).toBe(existing); // unchanged reference
+    expect(out).toHaveLength(1);
+  });
+
+  it("treats a different played_san as a new card", () => {
+    const existing = [{ fen: "f1", type: "shared", played_san: "Bg5" }];
+    const out = addCardIfNew(existing, { fen: "f1", type: "shared", played_san: "Nf3" });
+    expect(out).toHaveLength(2);
   });
 });
