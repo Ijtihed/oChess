@@ -7,7 +7,7 @@ import { useAuth } from "./AuthProvider";
 import { joinGameChannel, completeGame, saveGameStateToDB, createRematchGame, subscribeToGameRow } from "../lib/online-game";
 import { getOpeningName, resetOpeningCache } from "../lib/openings";
 import useClock, { formatTime } from "../hooks/useClock";
-import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, playLowTime, preloadAll } from "../lib/sounds";
+import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, playLowTime, playNotify, preloadAll } from "../lib/sounds";
 import { supabase } from "../lib/supabase";
 
 const STARTING = { p: 8, n: 2, b: 2, r: 2, q: 1 };
@@ -444,6 +444,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       },
       onDrawOffer: ({ userId }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
+        if (!gameOverRef.current) playNotify();
         setDrawIncoming(true);
       },
       onDrawAccept: ({ userId }) => {
@@ -476,11 +477,18 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       onChat: ({ userId, text, name }) => {
         if (!validPlayers.has(userId)) return;
         const fromMe = userId === authUserIdRef.current;
+        // Soft notify on incoming opponent chat. Skip self-echoes
+        // (your own messages already played on send) and skip when
+        // the game has ended (avoids overlapping with Victory/Defeat).
+        if (!fromMe && !gameOverRef.current) playNotify();
         setChatMessages((prev) => [...prev.slice(-50), { fromId: userId, text, name: name || (fromMe ? "You" : "Opponent") }]);
         setTimeout(() => chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }), 50);
       },
       onRematchOffer: ({ userId }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
+        // Rematch offers always come AFTER a game ends, so don't gate
+        // on gameOver here — that would suppress the cue every time.
+        playNotify();
         setRematchIncoming(true);
       },
       onRematchAccept: (newGameData) => {

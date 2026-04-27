@@ -106,27 +106,80 @@ async function searchPuzzleById(id) {
 
 /**
  * Pick a puzzle near the player's rating.
- * Range: playerRating ± spread, biased slightly upward to challenge.
- * If no puzzles in range, widens until something is found.
+ *
+ * Selection strategy (in order, falling back when each tier exhausts):
+ *   1. Within +/- spread of the rating, NOT in recentIds, NOT in
+ *      attempted-puzzle history. This is the ideal: novel puzzle near
+ *      your level.
+ *   2. Within spread, NOT in recentIds, but may have been attempted
+ *      historically. Lets a heavy user keep training without running
+ *      out — they'll re-encounter old puzzles eventually.
+ *   3. Anywhere in the deck — last-resort fallback.
+ *
+ * `recentIds` tracks the last MAX_RECENT picks within the current
+ * session. `getAttemptedIds()` reads localStorage at picker-time so
+ * the avoidance survives reloads.
+ *
+ * Spread widens iteratively when not enough candidates are found.
  */
 const recentIds = new Set();
 const MAX_RECENT = 50;
 
+function getAttemptedIds() {
+  try {
+    const h = JSON.parse(localStorage.getItem("ochess_puzzle_history") || "{}");
+    return new Set(Object.keys(h));
+  } catch { return new Set(); }
+}
+
+function rememberPick(id) {
+  recentIds.add(id);
+  if (recentIds.size > MAX_RECENT) {
+    const first = recentIds.values().next().value;
+    recentIds.delete(first);
+  }
+}
+
 function getAdaptivePuzzle(puzzles, playerRating) {
   const bias = 50;
   const target = playerRating + bias;
+  const attempted = getAttemptedIds();
+
+  // Tier 1: within rating spread, novel + non-recent.
   for (let spread = 150; spread <= 1000; spread += 100) {
-    const candidates = puzzles.filter((p) => p.rating >= target - spread && p.rating <= target + spread && !recentIds.has(p.id));
+    const candidates = puzzles.filter((p) =>
+      p.rating >= target - spread &&
+      p.rating <= target + spread &&
+      !recentIds.has(p.id) &&
+      !attempted.has(p.id)
+    );
     if (candidates.length >= 5) {
       const pick = candidates[Math.floor(Math.random() * candidates.length)];
-      recentIds.add(pick.id);
-      if (recentIds.size > MAX_RECENT) { const first = recentIds.values().next().value; recentIds.delete(first); }
+      rememberPick(pick.id);
       return pick;
     }
   }
+
+  // Tier 2: within rating spread, non-recent, allow re-encountering
+  // historically attempted puzzles. This kicks in when a user has
+  // worked through a big chunk of the deck — better to re-train an old
+  // puzzle than to silently fail.
+  for (let spread = 150; spread <= 1000; spread += 100) {
+    const candidates = puzzles.filter((p) =>
+      p.rating >= target - spread &&
+      p.rating <= target + spread &&
+      !recentIds.has(p.id)
+    );
+    if (candidates.length >= 5) {
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      rememberPick(pick.id);
+      return pick;
+    }
+  }
+
+  // Tier 3: pure random fallback.
   const pick = puzzles[Math.floor(Math.random() * puzzles.length)];
-  recentIds.add(pick.id);
-  if (recentIds.size > MAX_RECENT) { const first = recentIds.values().next().value; recentIds.delete(first); }
+  rememberPick(pick.id);
   return pick;
 }
 

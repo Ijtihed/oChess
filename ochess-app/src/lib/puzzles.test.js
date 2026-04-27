@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { getAdaptivePuzzle, getRandomPuzzle, getPuzzlesByTheme, loadPuzzleRating, updatePuzzleRating } from "./puzzles";
 
 function makePuzzles(count = 50) {
@@ -30,6 +30,53 @@ describe("getAdaptivePuzzle", () => {
       expect(seen.has(p.id)).toBe(false);
       seen.add(p.id);
     }
+  });
+
+  it("avoids historically-attempted puzzles when fresh ones are available", async () => {
+    // Reset the picker's internal recentIds Set by re-importing the
+    // module so prior tests don't pollute the in-rating-range pool.
+    vi.resetModules();
+    const fresh = await import("./puzzles");
+
+    // Build a 200-puzzle pool centered around 2000 with steps of 5 so
+    // there's a dense pool well inside the +/-150 spread of rating
+    // 2000. Mark the LOW end (away from target) attempted; novel
+    // puzzles inside the spread are abundant.
+    const puzzles = Array.from({ length: 200 }, (_, i) => ({
+      id: `q${i}`,
+      fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      moves: ["e2e4", "e7e5"],
+      rating: 1500 + i * 5,
+      popularity: 80,
+      themes: [],
+      gameUrl: null,
+    }));
+    const attempted = {};
+    // Mark the first 30 (ratings 1500..1645) attempted — outside the
+    // [1850, 2150] tier-1 spread for target 2000.
+    for (let i = 0; i < 30; i++) attempted[`q${i}`] = { result: "solved", ts: Date.now() };
+    localStorage.setItem("ochess_puzzle_history", JSON.stringify(attempted));
+
+    for (let i = 0; i < 20; i++) {
+      const p = fresh.getAdaptivePuzzle(puzzles, 2000);
+      expect(attempted[p.id]).toBeUndefined();
+    }
+    localStorage.removeItem("ochess_puzzle_history");
+  });
+
+  it("falls back to attempted puzzles when the deck is exhausted", async () => {
+    vi.resetModules();
+    const fresh = await import("./puzzles");
+    const puzzles = makePuzzles(20);
+    const attempted = {};
+    for (const p of puzzles) attempted[p.id] = { result: "solved", ts: Date.now() };
+    localStorage.setItem("ochess_puzzle_history", JSON.stringify(attempted));
+
+    // Picker must still return *something* — better re-train than fail.
+    const p = fresh.getAdaptivePuzzle(puzzles, 1500);
+    expect(p).toBeDefined();
+    expect(puzzles).toContain(p);
+    localStorage.removeItem("ochess_puzzle_history");
   });
 });
 
