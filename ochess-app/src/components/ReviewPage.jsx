@@ -4,7 +4,7 @@ import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
 import SocialPanel from "./SocialPanel";
 import StudyPlanPanel from "./StudyPlanPanel";
-import { playVictory, playError } from "../lib/sounds";
+import { playMoveSound, playVictory, playError } from "../lib/sounds";
 import { filterCardsByQuery, COMMON_WEAKNESS_CHIPS } from "../lib/study-plan";
 import {
   cardId,
@@ -18,13 +18,26 @@ import {
   RATING,
   deserializeSharedCard,
   addCardIfNew,
+  predictIntervalsFor,
 } from "../lib/review-cards";
 
+// Convert a 4/5-character UCI string ("e2e4" / "e7e8q") to a chess.js
+// move object. Centralized here so review and the puzzle replay
+// share the same parser.
+function uciToMove(uci) {
+  if (!uci || typeof uci !== "string" || uci.length < 4) return null;
+  return {
+    from: uci.slice(0, 2),
+    to: uci.slice(2, 4),
+    promotion: uci.length > 4 ? uci[4] : undefined,
+  };
+}
+
 const RATING_BUTTONS = [
-  { label: "Again", value: RATING.AGAIN, color: "bg-error/20 text-error hover:bg-error/30 border border-error/10" },
-  { label: "Hard",  value: RATING.HARD,  color: "bg-surface-low border border-white/[0.04] text-on-surface-variant/60 hover:text-primary hover:bg-surface-high" },
-  { label: "Good",  value: RATING.GOOD,  color: "bg-surface-low border border-white/[0.04] text-on-surface-variant/60 hover:text-primary hover:bg-surface-high" },
-  { label: "Easy",  value: RATING.EASY,  color: "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/10" },
+  { label: "Again", value: RATING.AGAIN, key: "AGAIN", color: "bg-error/20 text-error hover:bg-error/30 border border-error/10" },
+  { label: "Hard",  value: RATING.HARD,  key: "HARD",  color: "bg-surface-low border border-white/[0.04] text-on-surface-variant/60 hover:text-primary hover:bg-surface-high" },
+  { label: "Good",  value: RATING.GOOD,  key: "GOOD",  color: "bg-surface-low border border-white/[0.04] text-on-surface-variant/60 hover:text-primary hover:bg-surface-high" },
+  { label: "Easy",  value: RATING.EASY,  key: "EASY",  color: "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/10" },
 ];
 
 function deckLabel(card) {
@@ -160,6 +173,32 @@ export default function ReviewPage() {
     [cards, dueIds]
   );
 
+  // Spin up a fresh live board whenever the active card changes so
+  // multi-move play-out has somewhere to mutate. Each puzzle / line
+  // gets a clean Chess instance from the saved FEN. We ALSO reset
+  // the per-card transient state (lineIndex, played SAN, wrong-
+  // attempt flash, interval hints) here so leftover state from the
+  // previous card can't bleed into the next prompt.
+  const cardKey = card ? cardId(card) : null;
+  useEffect(() => {
+    if (!card) {
+      gameRef.current = null;
+      return;
+    }
+    try {
+      gameRef.current = new Chess(card.fen);
+    } catch {
+      gameRef.current = null;
+    }
+    setPhase("prompt");
+    setHighlight({});
+    setLineIndex(0);
+    setPlayedSan([]);
+    setWrongAttempt(null);
+    setIntervalHints(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cardKey]);
+
   const startPlanSession = useCallback(({ query, chipId, setName } = {}) => {
     setPlanQuery(query || "");
     setPlanChipId(chipId || null);
@@ -194,55 +233,158 @@ export default function ReviewPage() {
     };
   }, []);
 
+  // Multi-move play-out state.
+  //
+  //   lineIndex: how many UCI moves from card.lineMoves we've
+  //     already played (both player + opponent combined).
+  //   playedSan: array of SAN tokens we've played, surfaced under
+  //     the board so the user can scan their progress.
+  //   wrongAttempt: when set, contains the {from,to} of the move
+  //     the user just tried; used to flash a red square AND trigger
+  //     the "Try again / See answer" affordance without locking
+  //     them out the way the previous version did.
+  const [lineIndex, setLineIndex] = useState(0);
+  const [playedSan, setPlayedSan] = useState([]);
+  const [wrongAttempt, setWrongAttempt] = useState(null);
+  // Predicted intervals per rating button - real-Anki UX hint
+  // ("Again 1m / Hard 10m / Good 1d / Easy 4d"). Computed lazily
+  // when the user reaches the rating phase.
+  const [intervalHints, setIntervalHints] = useState(null);
+
   const resetCard = useCallback(() => {
     setPhase("prompt");
     setHighlight({});
+    setLineIndex(0);
+    setPlayedSan([]);
+    setWrongAttempt(null);
+    setIntervalHints(null);
     gameRef.current = null;
   }, []);
 
-  const handleMove = useCallback((move) => {
-    if (!card || phase !== "prompt") return false;
-    const answer = card.answerMove;
-    // Cards that store an explicit answer move (e.g. from puzzles) get
-    // automatic right/wrong feedback. Others fall through to manual
-    // "show answer" mode.
-    if (answer && move.from === answer.from && move.to === answer.to) {
+  // Advance the displayed FEN to whatever's currently in gameRef
+  // and surface the predicted intervals. Called after the line is
+  // fully played out (or revealed), at the rating-prompt phase.
+  const enterRatePhase = useCallback((nextPhase) => {
+    setPhase(nextPhase);
+    if (card) {
+      const id = cardId(card);
+      setIntervalHints(predictIntervalsFor(schedules, id));
+    }
+  }, [card, schedules]);
+
+  // Auto-play the opponent's reply (the next entry in lineMoves
+  // after a player move). Brief delay so the user sees the move
+  // animate in instead of teleporting. Returns whether a reply was
+  // actually queued so callers can decide what phase to enter when
+  // there isn't one (= line is done).
+  const playOpponentReply = useCallback((replyIdx) => {
+    if (!card?.lineMoves) return false;
+    const replyUci = card.lineMoves[replyIdx];
+    if (!replyUci) return false;
+    const reply = uciToMove(replyUci);
+    if (!reply) return false;
+    setTimeout(() => {
       try {
-        const g = new Chess(card.fen);
-        const result = g.move(move);
-        if (result) {
-          gameRef.current = g;
-          setHighlight({
-            [move.from]: { backgroundColor: "rgba(76,175,80,0.25)" },
-            [move.to]:   { backgroundColor: "rgba(76,175,80,0.35)" },
-          });
-          setPhase("correct");
-          playVictory();
-          return true;
-        }
-      } catch {}
-    }
-    if (answer) {
+        const g = gameRef.current;
+        if (!g) return;
+        const r = g.move(reply);
+        if (!r) return;
+        playMoveSound(r);
+        setPlayedSan((prev) => [...prev, r.san]);
+        setHighlight({
+          [r.from]: { backgroundColor: "rgba(255,255,255,0.06)" },
+          [r.to]:   { backgroundColor: "rgba(255,255,255,0.10)" },
+        });
+        setLineIndex(replyIdx + 1);
+      } catch { /* ignore - line corrupted */ }
+    }, 450);
+    return true;
+  }, [card]);
+
+  const handleMove = useCallback((move) => {
+    if (!card || phase === "rate" || phase === "revealed") return false;
+
+    // Resolve the expected next move. Prefer the multi-move line
+    // (puzzles), fall back to the single answerMove (analysis cards).
+    const lineUci = card.lineMoves?.[lineIndex];
+    const lineExpected = lineUci ? uciToMove(lineUci) : null;
+    const expected = lineExpected || card.answerMove;
+    if (!expected) return false;
+
+    const correct = move.from === expected.from
+      && move.to === expected.to
+      && (!expected.promotion || expected.promotion === move.promotion);
+
+    if (!correct) {
       playError();
+      setWrongAttempt({ from: move.from, to: move.to });
       setHighlight({
-        [answer.from]: { backgroundColor: "rgba(76,175,80,0.3)" },
-        [answer.to]:   { backgroundColor: "rgba(76,175,80,0.4)" },
+        [move.from]: { backgroundColor: "rgba(244,67,54,0.30)" },
+        [move.to]:   { backgroundColor: "rgba(244,67,54,0.40)" },
       });
-      setPhase("incorrect");
+      // Don't lock the user out the way the previous version did.
+      // They can dismiss the wrong-move flash and try another move,
+      // or hit "Show solution" / rate Again.
+      return false;
     }
-    return false;
-  }, [card, phase]);
+
+    // Correct. Apply the move on the working board, surface SAN,
+    // briefly green-highlight the played squares, and either play
+    // the opponent's reply (multi-move) or enter the rate phase
+    // (line done / single-move card).
+    try {
+      let g = gameRef.current;
+      if (!g) {
+        g = new Chess(card.fen);
+        gameRef.current = g;
+      }
+      const result = g.move({ from: move.from, to: move.to, promotion: move.promotion });
+      if (!result) return false;
+      playMoveSound(result);
+      setWrongAttempt(null);
+      setPlayedSan((prev) => [...prev, result.san]);
+      setHighlight({
+        [move.from]: { backgroundColor: "rgba(76,175,80,0.25)" },
+        [move.to]:   { backgroundColor: "rgba(76,175,80,0.35)" },
+      });
+      const nextIdx = lineIndex + 1;
+      setLineIndex(nextIdx);
+
+      // If there's a follow-up line move AND it's the opponent's
+      // (i.e. exists at all - puzzle lines alternate sides), play
+      // it. Otherwise the line is done.
+      const hasReply = !!card.lineMoves?.[nextIdx];
+      if (hasReply) {
+        playOpponentReply(nextIdx);
+        return true;
+      }
+
+      // Line complete. Brief flourish, then rating prompt.
+      playVictory();
+      setTimeout(() => enterRatePhase("correct"), 300);
+      return true;
+    } catch { return false; }
+  }, [card, phase, lineIndex, enterRatePhase, playOpponentReply]);
+
+  const dismissWrongAttempt = useCallback(() => {
+    setWrongAttempt(null);
+    setHighlight({});
+  }, []);
 
   const showAnswer = useCallback(() => {
     if (!card) return;
-    if (card.answerMove) {
+    // Highlight the next expected move so the user can see what
+    // they should have played, without applying it.
+    const lineUci = card.lineMoves?.[lineIndex];
+    const expected = (lineUci ? uciToMove(lineUci) : null) || card.answerMove;
+    if (expected) {
       setHighlight({
-        [card.answerMove.from]: { backgroundColor: "rgba(76,175,80,0.3)" },
-        [card.answerMove.to]:   { backgroundColor: "rgba(76,175,80,0.4)" },
+        [expected.from]: { backgroundColor: "rgba(76,175,80,0.3)" },
+        [expected.to]:   { backgroundColor: "rgba(76,175,80,0.4)" },
       });
     }
-    setPhase("revealed");
-  }, [card]);
+    enterRatePhase("revealed");
+  }, [card, lineIndex, enterRatePhase]);
 
   const rate = useCallback((rating) => {
     if (!card) return;
@@ -415,7 +557,13 @@ export default function ReviewPage() {
     );
   }
 
-  const fen = phase === "correct" && gameRef.current ? gameRef.current.fen() : card.fen;
+  // The displayed position follows the live board through every
+  // played move (player + opponent). When the user enters the rate
+  // phase the live board is at the post-line state; for prompt /
+  // unmoved cards we render the saved start FEN. The start FEN
+  // itself drives orientation so the user is always playing from
+  // the correct side.
+  const fen = gameRef.current ? gameRef.current.fen() : card.fen;
   const orientation = orientationFor(card);
 
   const inPlanSession = !!(planChipId || planQuery);
@@ -505,33 +653,74 @@ export default function ReviewPage() {
               fen={fen}
               onMove={handleMove}
               orientation={orientation}
-              interactive={phase === "prompt" && !!card.answerMove}
+              interactive={phase === "prompt" && !!(card.answerMove || card.lineMoves?.[lineIndex])}
               highlightSquares={highlight}
             />
 
+            {/* Played-line ledger surfaces the moves both sides have
+                actually played in this session below the board. Same
+                vibe as a normal game's move list, distinct from the
+                puzzle's saved SAN metadata. Stays present from prompt
+                through rate so the user can see the full sequence
+                they walked through before clicking a rating. */}
+            {playedSan.length > 0 && (
+              <div className="w-full mt-3 px-3 py-2 bg-surface-low border border-white/[0.04] flex items-center gap-2">
+                <span className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/30 shrink-0">
+                  Line
+                </span>
+                <span className="font-mono text-[12px] text-on-surface-variant/70 truncate">
+                  {playedSan.map((s, i) => (i % 2 === 0 ? `${Math.floor(i / 2) + 1}. ${s}` : s)).join(" ")}
+                </span>
+              </div>
+            )}
+
             <div className="w-full mt-4">
               {phase === "prompt" && (
-                <div className="flex gap-2">
-                  <button onClick={showAnswer}
-                    className="flex-1 py-3.5 bg-surface-low border border-white/[0.04] font-headline text-xs font-bold uppercase tracking-wide text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">
-                    {card.answerMove ? "Show Answer" : "Reveal & Rate"}
-                  </button>
-                  <span className="flex-[2] py-3.5 bg-primary/5 border border-primary/10 text-center font-headline text-xs font-bold uppercase tracking-wide text-primary/60">
-                    {card.answerMove ? "Make your move on the board" : "Recall - then rate yourself"}
-                  </span>
-                </div>
+                <>
+                  {/* Inline retry affordance when the user just
+                      played a wrong move. Lets them try again
+                      without having to click "Show answer" - fixes
+                      the previous behaviour where one wrong drag
+                      locked them into rate-only mode. */}
+                  {wrongAttempt && (
+                    <div className="anim-fade-up mb-2 flex items-center gap-2 px-3 py-2 bg-error/10 border border-error/20">
+                      <span className="font-headline text-[11px] font-bold uppercase tracking-wide text-error">
+                        Not quite - try again
+                      </span>
+                      <button onClick={dismissWrongAttempt}
+                        className="ml-auto text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+                        Reset board
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <button onClick={showAnswer}
+                      className="flex-1 py-3.5 bg-surface-low border border-white/[0.04] font-headline text-xs font-bold uppercase tracking-wide text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">
+                      {(card.answerMove || card.lineMoves) ? "Show Answer" : "Reveal & Rate"}
+                    </button>
+                    <span className="flex-[2] py-3.5 bg-primary/5 border border-primary/10 text-center font-headline text-xs font-bold uppercase tracking-wide text-primary/60">
+                      {card.lineMoves
+                        ? lineIndex === 0
+                          ? "Play out the line on the board"
+                          : "Keep going - find the next move"
+                        : card.answerMove
+                          ? "Make your move on the board"
+                          : "Recall - then rate yourself"}
+                    </span>
+                  </div>
+                </>
               )}
 
-              {(phase === "correct" || phase === "incorrect" || phase === "revealed") && (
+              {(phase === "correct" || phase === "revealed") && (
                 <>
                   {(card.answerText || card.notes) && (
                     <div className={`p-4 mb-3 border ${
                       phase === "correct" ? "bg-emerald-500/5 border-emerald-500/10" : "bg-surface-container border-white/[0.04]"
                     }`}>
                       <span className={`text-xs font-headline font-bold uppercase tracking-wide block mb-2 ${
-                        phase === "correct" ? "text-emerald-400" : phase === "incorrect" ? "text-error" : "text-on-surface-variant/50"
+                        phase === "correct" ? "text-emerald-400" : "text-on-surface-variant/50"
                       }`}>
-                        {phase === "correct" ? "Correct!" : phase === "incorrect" ? "Incorrect" : "Answer"}
+                        {phase === "correct" ? "Solved" : "Answer"}
                       </span>
                       <p className="text-sm text-on-surface-variant/60 leading-relaxed">{card.answerText || card.notes}</p>
                     </div>
@@ -539,8 +728,17 @@ export default function ReviewPage() {
                   <div className="grid grid-cols-4 gap-1.5 mb-2">
                     {RATING_BUTTONS.map((r) => (
                       <button key={r.value} onClick={() => rate(r.value)}
-                        className={`py-3 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${r.color}`}>
-                        {r.label}
+                        className={`py-3 flex flex-col items-center justify-center font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${r.color}`}>
+                        <span>{r.label}</span>
+                        {/* Real-Anki affordance: tell the user
+                            exactly when each rating will surface
+                            this card again. Shows up right under
+                            the label on its own line. */}
+                        {intervalHints && (
+                          <span className="font-mono text-[9px] opacity-60 mt-0.5 normal-case tracking-normal">
+                            {intervalHints[r.key] || ""}
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>

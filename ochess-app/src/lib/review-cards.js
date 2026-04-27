@@ -11,7 +11,14 @@
  * lives in `review-engine.js` and is unchanged.
  */
 
-import { createScheduleState, computeNextReview, isDue, RATING } from "./review-engine";
+import {
+  createScheduleState,
+  computeNextReview,
+  isDue,
+  RATING,
+  sanitize as sanitizeSchedule,
+  predictNextIntervals,
+} from "./review-engine";
 
 const CARDS_KEY = "ochess_review_cards";
 const SCHEDULE_KEY = "ochess_review_schedule";
@@ -56,28 +63,22 @@ export function saveSchedules(map) {
   try { localStorage.setItem(SCHEDULE_KEY, JSON.stringify(map)); } catch {}
 }
 
-/** Get the schedule for a card, lazily creating one on first review. */
+/**
+ * Get the schedule for a card, lazily creating one on first
+ * review. Pre-Anki schedules (without the `state` field) are
+ * migrated transparently by sanitizeSchedule: cards with a
+ * non-zero interval keep their progress as REVIEW state; brand
+ * new ones become NEW.
+ */
 export function getSchedule(map, id) {
   const s = map[id];
-  if (!s || !s.dueAt) return createScheduleState();
-  const dueAt = new Date(s.dueAt);
-  // If the persisted dueAt is corrupted (e.g. a non-ISO string), the
-  // resulting Date is Invalid and propagates NaN through every SM-2
-  // calculation - which would lock the card into "never due" forever.
-  // Reset to a fresh schedule in that case so the user can still
-  // review it.
+  if (!s) return createScheduleState();
+  const dueAt = s.dueAt ? new Date(s.dueAt) : new Date(0);
   if (Number.isNaN(dueAt.getTime())) return createScheduleState();
-  return {
-    ...s,
-    dueAt,
-    lastReviewedAt: s.lastReviewedAt && !Number.isNaN(new Date(s.lastReviewedAt).getTime())
-      ? new Date(s.lastReviewedAt)
-      : null,
-    easeFactor: Number.isFinite(s.easeFactor) ? s.easeFactor : 2.5,
-    intervalDays: Number.isFinite(s.intervalDays) ? s.intervalDays : 0,
-    repetitions: Number.isFinite(s.repetitions) ? s.repetitions : 0,
-    lapseCount: Number.isFinite(s.lapseCount) ? s.lapseCount : 0,
-  };
+  const lastReviewedAt = s.lastReviewedAt && !Number.isNaN(new Date(s.lastReviewedAt).getTime())
+    ? new Date(s.lastReviewedAt)
+    : null;
+  return sanitizeSchedule({ ...s, dueAt, lastReviewedAt });
 }
 
 export function setSchedule(map, id, schedule) {
@@ -98,6 +99,16 @@ export function rateCard(map, id, rating) {
   const current = getSchedule(map, id);
   const next = computeNextReview(current, rating);
   return setSchedule(map, id, next);
+}
+
+/**
+ * Look up "what would the next interval be for each rating button,
+ * if I clicked it right now" without mutating anything. Powers the
+ * real-Anki "Again 1m / Hard 10m / Good 1d / Easy 4d" hints under
+ * the rating buttons.
+ */
+export function predictIntervalsFor(map, id) {
+  return predictNextIntervals(getSchedule(map, id));
 }
 
 export { RATING };

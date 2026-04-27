@@ -9,6 +9,7 @@ vi.mock("./InteractiveBoard", () => ({
 vi.mock("./SocialPanel", () => ({ default: () => null }));
 
 vi.mock("../lib/sounds", () => ({
+  playMoveSound: vi.fn(),
   playVictory: vi.fn(),
   playError: vi.fn(),
 }));

@@ -599,9 +599,20 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
                     onClick={() => {
                       try {
                         const cards = JSON.parse(localStorage.getItem("ochess_review_cards") || "[]");
-                        // Save the position the player failed on, plus the
-                        // next correct UCI move so Review can validate it.
-                        const nextUci = puzzle.moves?.[moveIndex];
+                        // Save EVERYTHING the review flow needs to
+                        // replay this puzzle as a real chess line:
+                        //   - fen: position the player failed on.
+                        //   - answerMove: the immediate next correct
+                        //       move (back-compat with single-move
+                        //       review for older clients).
+                        //   - lineMoves: the full remaining UCI
+                        //       sequence from this position. Even
+                        //       indices are the player's moves, odd
+                        //       indices are the opponent's auto-
+                        //       responses. Review plays this out
+                        //       move by move.
+                        const remainingUci = (puzzle.moves || []).slice(moveIndex);
+                        const nextUci = remainingUci[0];
                         const answerMove = nextUci && nextUci.length >= 4
                           ? { from: nextUci.slice(0, 2), to: nextUci.slice(2, 4), promotion: nextUci.length > 4 ? nextUci[4] : undefined }
                           : null;
@@ -613,6 +624,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
                           rating: puzzle.rating,
                           themes: puzzle.themes,
                           answerMove: answerMove || undefined,
+                          lineMoves: remainingUci.length > 0 ? remainingUci : undefined,
                           ts: Date.now(),
                         });
                         localStorage.setItem("ochess_review_cards", JSON.stringify(cards));
