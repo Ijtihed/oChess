@@ -260,8 +260,21 @@ export default function Profile() {
         {/* Header */}
         <div className="anim-fade-up flex items-center gap-4 sm:gap-5 mb-6" style={{ "--delay": "0.05s" }}>
           <div className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-surface-high flex items-center justify-center shrink-0 group">
-            {profile?.avatar_url ? (
-              <img src={profile.avatar_url} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
+            {/*
+              Avatar fallback chain — must mirror what App.jsx feeds
+              the navbar so the picture is consistent across reloads.
+              For Google sign-ups, `handle_new_user` should populate
+              `profiles.avatar_url` via the trigger, but on accounts
+              created before that trigger ran, the metadata is the
+              only source. Keep both branches.
+            */}
+            {(profile?.avatar_url || authUser?.user_metadata?.avatar_url || authUser?.user_metadata?.picture) ? (
+              <img
+                src={profile?.avatar_url || authUser?.user_metadata?.avatar_url || authUser?.user_metadata?.picture}
+                alt=""
+                className="w-full h-full rounded-full object-cover"
+                referrerPolicy="no-referrer"
+              />
             ) : (
               <span className="font-headline text-2xl sm:text-3xl font-bold text-on-surface-variant/70 uppercase">
                 {userName[0]}

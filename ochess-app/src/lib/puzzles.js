@@ -27,7 +27,14 @@ async function loadPuzzles(count = 3000) {
   loading = true;
   loadPromise = (async () => {
     try {
-      const response = await fetch("/puzzledb/lichess_db_puzzle.csv");
+      // The deployed CSV (`puzzles.csv`) is a 10k-puzzle sample of the
+      // Lichess database, trimmed by `scripts/trim-puzzles.mjs`. The
+      // full 1 GB file is gitignored — we ship a curated subset so
+      // that Vercel deploys stay under the 100 MB asset limit.
+      const response = await fetch("/puzzledb/puzzles.csv");
+      if (!response.ok) {
+        throw new Error(`puzzle CSV fetch failed: HTTP ${response.status}`);
+      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -69,7 +76,8 @@ async function searchPuzzleById(id) {
   if (cached) return cached;
 
   try {
-    const response = await fetch("/puzzledb/lichess_db_puzzle.csv");
+    const response = await fetch("/puzzledb/puzzles.csv");
+    if (!response.ok) return null;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";

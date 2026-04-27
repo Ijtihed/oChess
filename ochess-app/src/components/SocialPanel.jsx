@@ -42,25 +42,35 @@ export default function SocialPanel() {
   const [addError, setAddError] = useState(null);
 
   const loadData = useCallback(async () => {
+    // No user OR offline: this is the resting state, not a load. Reset
+    // the spinner so the "Friends" panel never sits stuck on the loader
+    // when the auth context is still settling.
     if (!user || !isOnline()) {
       log("skip — user:", user?.id, "online:", isOnline());
+      setLoading(false);
+      setFriends([]);
+      setPending({ incoming: [], outgoing: [] });
+      setSentIds(new Set());
       return;
     }
     log("loading friends for user:", user.id);
     setLoading(true);
     setLoadError(null);
     try {
+      // 4 s upper bound — anything slower is effectively unusable, and
+      // a falsy fallback unblocks the spinner cleanly. The timeout
+      // never throws; it resolves with the fallback.
       const withTimeout = (p, ms, fallback) =>
         Promise.race([p, new Promise((r) => setTimeout(() => r(fallback), ms))]);
 
       const [f, p] = await Promise.all([
-        withTimeout(getFriends(user.id).catch((e) => { log("getFriends error:", e); return []; }), 6000, []),
-        withTimeout(getPendingRequests(user.id).catch((e) => { log("getPendingRequests error:", e); return null; }), 6000, null),
+        withTimeout(getFriends(user.id).catch((e) => { log("getFriends error:", e); return []; }), 4000, []),
+        withTimeout(getPendingRequests(user.id).catch((e) => { log("getPendingRequests error:", e); return null; }), 4000, null),
       ]);
 
       log("loaded — friends:", f?.length, "pending:", p);
       setFriends(f || []);
-      const pData = p || { incoming: [], outgoing: [] };
+      const pData = p || { incoming: [], outgoing: [], outgoingRequestIds: {} };
       setPending(pData);
       setSentIds(new Set(pData.outgoing || []));
     } catch (e) {

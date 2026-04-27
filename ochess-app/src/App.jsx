@@ -60,7 +60,10 @@ function AppShell() {
     id: authUser.id,
     name: profile?.display_name || profile?.username || authUser.email?.split("@")[0] || "Player",
     email: authUser.email,
-    avatar: profile?.avatar_url || authUser.user_metadata?.avatar_url || null,
+    // Avatar fallback chain: profiles row -> Google avatar_url -> Google picture.
+    // Google's user_metadata is keyed `avatar_url` for normalized providers
+    // and sometimes also exposes `picture` from the raw OAuth payload.
+    avatar: profile?.avatar_url || authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null,
     profile,
     guest: false,
   } : guest ? {
