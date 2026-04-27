@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import ReactDOM from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import { updateProfile, uploadAvatar, getRatings, getRecentGames, signOut } from "../lib/auth";
 import { isOnline } from "../lib/supabase";
@@ -246,7 +246,7 @@ export default function Profile() {
           <div className="text-center">
             <h1 className="font-headline text-2xl font-extrabold tracking-tighter text-on-surface-variant/55 mb-3">Not signed in</h1>
             <p className="text-[13px] text-on-surface-variant/55 mb-4">Sign in to view your profile</p>
-            <a href="/" className="btn btn-primary px-5 py-2 text-xs inline-block">Home</a>
+            <Link to="/" className="btn btn-primary px-5 py-2 text-xs inline-block">Home</Link>
           </div>
         </div>
         <SocialPanel />
@@ -300,7 +300,11 @@ export default function Profile() {
           <div className="flex-1 min-w-0">
             <h1 className="font-headline text-2xl sm:text-3xl font-extrabold tracking-tighter text-primary truncate">{userName}</h1>
             <p className="text-[12px] text-on-surface-variant/40">
-              {isLoggedIn ? (profile?.username ? <a href={`/u/${profile.username}`} className="hover:text-primary transition-colors">@{profile.username}</a> : authUser.email) : "Guest account"}
+              {isLoggedIn ? (
+                profile?.username
+                  ? <Link to={`/u/${profile.username}`} className="hover:text-primary transition-colors">@{profile.username}</Link>
+                  : authUser.email
+              ) : "Guest account"}
               {profile?.country && (() => { const c = COUNTRIES.find((x) => x.name === profile.country); return ` · ${c?.flag || ""} ${profile.country}`; })()}
             </p>
             {avatarError && <p className="text-[11px] text-error mt-1">{avatarError}</p>}
@@ -332,14 +336,28 @@ export default function Profile() {
           </div>
         </div>
 
-        {/* Profile link */}
-        {isLoggedIn && profile?.username && (
-          <div className="flex items-center gap-2 mb-4 px-1">
-            <span className="text-[11px] text-on-surface-variant/25 font-mono select-all">{window.location.origin}/u/{profile.username}</span>
-            <button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/u/${profile.username}`); setCopiedLink(true); setTimeout(() => setCopiedLink(false), 2000); }}
-              className={`px-2.5 py-1 font-headline text-[9px] font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${copiedLink ? "bg-emerald-500/20 text-emerald-400" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/40 hover:text-primary"}`}>
-              {copiedLink ? "Copied!" : "Copy Link"}
-            </button>
+        {/* Profile link
+            Reserves vertical space whether or not `profile` has hydrated.
+            Without this, the row vanishes during the brief window between
+            getSession() restoring the auth user and getProfile() returning
+            the username, which the user perceives as "the profile link
+            disappears on reload". A faded placeholder keeps the layout
+            stable and signals that the row is still loading. */}
+        {isLoggedIn && (
+          <div className="flex items-center gap-2 mb-4 px-1 min-h-[24px]">
+            {profile?.username ? (
+              <>
+                <span className="text-[11px] text-on-surface-variant/25 font-mono select-all">{window.location.origin}/u/{profile.username}</span>
+                <button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/u/${profile.username}`); setCopiedLink(true); setTimeout(() => setCopiedLink(false), 2000); }}
+                  className={`px-2.5 py-1 font-headline text-[9px] font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${copiedLink ? "bg-emerald-500/20 text-emerald-400" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/40 hover:text-primary"}`}>
+                  {copiedLink ? "Copied!" : "Copy Link"}
+                </button>
+              </>
+            ) : (
+              <span className="text-[11px] text-on-surface-variant/15 font-mono select-none" aria-hidden="true">
+                {window.location.origin}/u/loading…
+              </span>
+            )}
           </div>
         )}
 
