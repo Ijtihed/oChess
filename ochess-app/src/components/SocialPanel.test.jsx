@@ -43,21 +43,28 @@ describe("SocialPanel", () => {
     expect(container.textContent).toMatch(/Friends/);
   });
 
-  it("renders nothing on the bot game route", () => {
+  // Game routes now keep the panel mounted - users asked to see
+  // their friends list while playing so they can challenge a friend
+  // straight after the current game ends. Visibility is gated by
+  // Tailwind's `hidden 2xl:flex` on the outermost wrapper, so on
+  // narrow viewports it never steals layout.
+  it("renders the Friends heading on the bot game route", () => {
     const { container } = renderAt("/game");
-    expect(container.innerHTML).toBe("");
+    expect(container.textContent).toMatch(/Friends/);
   });
 
-  it("renders nothing on the online game route", () => {
+  it("renders the Friends heading on the online game route", () => {
     const { container } = renderAt("/game/online/abc-123");
-    expect(container.innerHTML).toBe("");
+    expect(container.textContent).toMatch(/Friends/);
   });
 
-  it("renders nothing on the variant game route", () => {
+  it("renders the Friends heading on the variant game route", () => {
     const { container } = renderAt("/variant-game");
-    expect(container.innerHTML).toBe("");
+    expect(container.textContent).toMatch(/Friends/);
   });
 
+  // Lobby pages (challenge create / accept) stay hidden because
+  // they're already centered cards.
   it("renders nothing on the create-challenge route", () => {
     const { container } = renderAt("/create-challenge");
     expect(container.innerHTML).toBe("");

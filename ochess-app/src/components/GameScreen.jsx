@@ -720,7 +720,7 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
 
           <div
             className="w-full flex gap-0 mx-auto"
-            style={{ maxWidth: "min(100%, calc(100dvh - 14rem))" }}
+            style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}
           >
             {/* Eval bar - only post-game */}
             {gameOver && (

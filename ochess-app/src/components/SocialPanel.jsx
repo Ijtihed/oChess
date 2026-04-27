@@ -21,13 +21,17 @@ export default function SocialPanel() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  // The panel is meant for navigation/social context - hide it on
-  // game-style routes so it doesn't steal focus or wrap layout.
+  // The panel renders on every signed-in route at >= 2xl - including
+  // game routes. Players asked for the friends list to stay visible
+  // while playing so they can issue rematches / start a new game
+  // with someone they just played without leaving the board screen.
+  // Width-gating already happens via Tailwind classes on the
+  // outermost wrapper (`hidden 2xl:flex`), so on smaller viewports
+  // it's never in the way.
   const path = location.pathname;
-  const isGameRoute =
-    path === "/game" ||
-    path === "/variant-game" ||
-    path.startsWith("/game/online/") ||
+  // Lobby pages (challenge create / accept) keep the side rail
+  // hidden because they're already centered cards.
+  const isLobbyRoute =
     path === "/create-challenge" ||
     path.startsWith("/challenge/");
   const [friends, setFriends] = useState([]);
@@ -157,7 +161,7 @@ export default function SocialPanel() {
     navigate("/create-challenge");
   }, [navigate]);
 
-  if (isGameRoute) return null;
+  if (isLobbyRoute) return null;
 
   const getUserStatus = (userId) => {
     if (friendIds.has(userId)) return "friends";

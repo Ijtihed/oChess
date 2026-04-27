@@ -202,7 +202,7 @@ export default function VariantGameScreen({ variantId, opponent, playerColor = "
               )}
             </div>
 
-            <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 14rem))" }}>
+            <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
               <InteractiveBoard
                 fen={displayFen}
                 onMove={handleMove}

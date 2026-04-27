@@ -6,18 +6,31 @@ Howler.volume(masterVolume);
 
 const THEME = "standard";
 
+// One Howl per logical event so we can use the right Lichess sound
+// for each context. The dedicated NewPM / NewChallenge / SocialNotify
+// files are intentionally distinct from Victory / Defeat / Draw so
+// players never confuse "opponent sent chat" with "you lost the
+// game" - which was the bug reported on the deployed build.
 const SOUNDS = {
-  move:      new Howl({ src: [`/sound/${THEME}/Move.mp3`],      preload: true }),
-  capture:   new Howl({ src: [`/sound/${THEME}/Capture.mp3`],   preload: true }),
-  check:     new Howl({ src: [`/sound/${THEME}/Check.mp3`],     preload: true }),
-  checkmate: new Howl({ src: [`/sound/${THEME}/Checkmate.mp3`], preload: true }),
-  victory:   new Howl({ src: [`/sound/${THEME}/Victory.mp3`],   preload: true }),
-  defeat:    new Howl({ src: [`/sound/${THEME}/Defeat.mp3`],    preload: true }),
-  draw:      new Howl({ src: [`/sound/${THEME}/Draw.mp3`],      preload: true }),
-  start:     new Howl({ src: [`/sound/${THEME}/Confirmation.mp3`], preload: true }),
-  error:     new Howl({ src: [`/sound/${THEME}/Error.mp3`],     preload: true }),
-  lowTime:   new Howl({ src: [`/sound/${THEME}/LowTime.mp3`],   preload: true }),
-  notify:    new Howl({ src: [`/sound/${THEME}/GenericNotify.mp3`], preload: true }),
+  move:           new Howl({ src: [`/sound/${THEME}/Move.mp3`],          preload: true }),
+  capture:        new Howl({ src: [`/sound/${THEME}/Capture.mp3`],       preload: true }),
+  check:          new Howl({ src: [`/sound/${THEME}/Check.mp3`],         preload: true }),
+  checkmate:      new Howl({ src: [`/sound/${THEME}/Checkmate.mp3`],     preload: true }),
+  victory:        new Howl({ src: [`/sound/${THEME}/Victory.mp3`],       preload: true }),
+  defeat:         new Howl({ src: [`/sound/${THEME}/Defeat.mp3`],        preload: true }),
+  draw:           new Howl({ src: [`/sound/${THEME}/Draw.mp3`],          preload: true }),
+  start:          new Howl({ src: [`/sound/${THEME}/Confirmation.mp3`],  preload: true }),
+  error:          new Howl({ src: [`/sound/${THEME}/Error.mp3`],         preload: true }),
+  lowTime:        new Howl({ src: [`/sound/${THEME}/LowTime.mp3`],       preload: true }),
+  // Inbound chat - lichess "private message" cue.
+  chatNotify:     new Howl({ src: [`/sound/${THEME}/NewPM.mp3`],         preload: true }),
+  // Draw offer / rematch offer / incoming challenge cue. Lichess uses
+  // this exact file for "someone is offering you a game".
+  offerNotify:    new Howl({ src: [`/sound/${THEME}/NewChallenge.mp3`],  preload: true }),
+  // Friend-system events (request received, accepted, removed).
+  socialNotify:   new Howl({ src: [`/sound/${THEME}/SocialNotify.mp3`],  preload: true }),
+  // Generic fallback if nothing more specific fits.
+  notify:         new Howl({ src: [`/sound/${THEME}/GenericNotify.mp3`], preload: true }),
 };
 
 if (typeof document !== "undefined") {
@@ -66,13 +79,16 @@ function playMoveSound(moveResult, { allowMateSound = false } = {}) {
   else                            play("move", 0.75);
 }
 
-function playGameStart() { play("start", 0.6); }
-function playVictory()   { play("victory", 0.9); }
-function playDefeat()    { play("defeat", 0.9); }
-function playDraw()      { play("draw", 0.7); }
-function playError()     { play("error", 0.7); }
-function playLowTime()   { play("lowTime", 0.8); }
-function playNotify()    { play("notify", 0.6); }
+function playGameStart()   { play("start",        0.6); }
+function playVictory()     { play("victory",      0.9); }
+function playDefeat()      { play("defeat",       0.9); }
+function playDraw()        { play("draw",         0.7); }
+function playError()       { play("error",        0.7); }
+function playLowTime()     { play("lowTime",      0.8); }
+function playChatNotify()  { play("chatNotify",   0.6); }
+function playOfferNotify() { play("offerNotify",  0.7); }
+function playSocialNotify() { play("socialNotify", 0.6); }
+function playNotify()      { play("notify",       0.6); }
 
 function setEnabled(v) { enabled = v; }
 function isEnabled() { return enabled; }
@@ -93,6 +109,9 @@ export {
   playDraw,
   playError,
   playLowTime,
+  playChatNotify,
+  playOfferNotify,
+  playSocialNotify,
   playNotify,
   setEnabled,
   isEnabled,

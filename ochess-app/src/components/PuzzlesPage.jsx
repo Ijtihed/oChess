@@ -533,7 +533,7 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
               doesn't overflow on short widescreens. */}
           <div
             className="w-full flex gap-2 mx-auto"
-            style={{ maxWidth: "min(100%, calc(100dvh - 14rem))" }}
+            style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}
           >
             {/* Rating bar (left of board, shows after puzzle) */}
             {isDone && posEval && (

@@ -7,7 +7,7 @@ import { useAuth } from "./AuthProvider";
 import { joinGameChannel, completeGame, saveGameStateToDB, createRematchGame, subscribeToGameRow } from "../lib/online-game";
 import { getOpeningName, resetOpeningCache } from "../lib/openings";
 import useClock, { formatTime } from "../hooks/useClock";
-import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, playLowTime, playNotify, preloadAll } from "../lib/sounds";
+import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, playLowTime, playChatNotify, playOfferNotify, preloadAll } from "../lib/sounds";
 import { supabase } from "../lib/supabase";
 import { createVariantGame } from "../lib/variants";
 
@@ -466,7 +466,10 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       },
       onDrawOffer: ({ userId }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
-        if (!gameOverRef.current) playNotify();
+        // Use the dedicated "incoming offer" cue (lichess
+        // NewChallenge.mp3) so the user isn't second-guessing whether
+        // they just lost the game.
+        if (!gameOverRef.current) playOfferNotify();
         setDrawIncoming(true);
       },
       onDrawAccept: ({ userId }) => {
@@ -499,18 +502,19 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       onChat: ({ userId, text, name }) => {
         if (!validPlayers.has(userId)) return;
         const fromMe = userId === authUserIdRef.current;
-        // Soft notify on incoming opponent chat. Skip self-echoes
-        // (your own messages already played on send) and skip when
-        // the game has ended (avoids overlapping with Victory/Defeat).
-        if (!fromMe && !gameOverRef.current) playNotify();
+        // Use the dedicated "private message" cue (NewPM.mp3) for
+        // chat so it sounds like chat - not the GenericNotify ding
+        // that previously made it feel game-over-ish.
+        if (!fromMe && !gameOverRef.current) playChatNotify();
         setChatMessages((prev) => [...prev.slice(-50), { fromId: userId, text, name: name || (fromMe ? "You" : "Opponent") }]);
         setTimeout(() => chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }), 50);
       },
       onRematchOffer: ({ userId }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
         // Rematch offers always come AFTER a game ends, so don't gate
-        // on gameOver here - that would suppress the cue every time.
-        playNotify();
+        // on gameOver - that would suppress the cue every time.
+        // Use the dedicated NewChallenge.mp3 cue.
+        playOfferNotify();
         setRematchIncoming(true);
       },
       onRematchAccept: (newGameData) => {
@@ -869,7 +873,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
               board stays within the viewport (minus navbar + player
               bars) on short widescreens. The aspect-square chessboard
               auto-sizes its width to match. */}
-          <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 14rem))" }}>
+          <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
             <InteractiveBoard
               fen={fen}
               onMove={handleMove}
