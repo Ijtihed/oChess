@@ -845,9 +845,13 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
 
       {/* ── Main body: game + social ── */}
       <div className="flex-1 flex">
-      <div className="flex-1 min-w-0 flex flex-col xl:flex-row px-4 sm:px-8 xl:pl-16 xl:pr-6 py-3 sm:py-4 gap-4 xl:gap-6">
-        {/* Board column */}
-        <div className="flex-1 flex flex-col items-center xl:items-start max-w-[720px]">
+      <div className="flex-1 min-w-0 flex flex-col xl:flex-row px-4 sm:px-6 md:px-10 xl:px-6 py-3 sm:py-4 gap-4 xl:gap-6 w-full mx-auto max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px]">
+        {/* Board column - grows with the viewport. The xl/2xl bumps
+            give widescreen users a board that fills most of the height
+            instead of sitting tiny in the corner. The 90vh clamp via
+            max-h on the inner wrapper prevents vertical overflow on
+            shorter screens. */}
+        <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
           {/* Opponent bar */}
           <PlayerBar
             name={opponentName}
@@ -861,7 +865,11 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
             online={opponentOnline}
           />
 
-          <div className="w-full">
+          {/* Inline mx-auto + max-h clamp on the board wrapper so the
+              board stays within the viewport (minus navbar + player
+              bars) on short widescreens. The aspect-square chessboard
+              auto-sizes its width to match. */}
+          <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 14rem))" }}>
             <InteractiveBoard
               fen={fen}
               onMove={handleMove}

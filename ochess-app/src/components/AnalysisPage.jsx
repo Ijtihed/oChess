@@ -828,10 +828,10 @@ export default function AnalysisPage() {
 
   return (
     <div className="flex min-h-[calc(100dvh-4rem)]">
-      <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-3 sm:py-4">
+      <div className="flex-1 min-w-0 px-4 sm:px-6 md:px-10 xl:px-6 py-3 sm:py-4 w-full mx-auto max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px]">
         <div className="flex flex-col xl:flex-row gap-4 xl:gap-6">
-          {/* ── Board column ── */}
-          <div className="flex-1 flex flex-col items-center xl:items-start max-w-[700px]">
+          {/* ── Board column - scales up at xl/2xl. ── */}
+          <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
             {/* Top bar */}
             <div className="w-full flex items-center justify-between mb-2">
               <div className="flex items-center gap-3">
@@ -886,8 +886,12 @@ export default function AnalysisPage() {
             {/* Material bar (top - opponent) */}
             <MaterialBar pieces={topIsBlack ? mat.bPieces : mat.wPieces} adv={topIsBlack ? (mat.diff < 0 ? Math.abs(mat.diff) : 0) : (mat.diff > 0 ? mat.diff : 0)} color={topIsBlack ? "b" : "w"} />
 
-            {/* Board + eval bar */}
-            <div className="w-full flex gap-0">
+            {/* Board + eval bar - clamp by viewport height so the
+                board doesn't overflow on short widescreens. */}
+            <div
+              className="w-full flex gap-0 mx-auto"
+              style={{ maxWidth: "min(100%, calc(100dvh - 14rem))" }}
+            >
               {/* Eval bar */}
               {engineOn && (
                 <div className="w-9 shrink-0 flex flex-col relative select-none" style={{ minHeight: "100%" }}>

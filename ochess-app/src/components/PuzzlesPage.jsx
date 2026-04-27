@@ -485,11 +485,11 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
     {!ready ? <div className="min-h-[60vh]" /> :
     <div className="flex min-h-[calc(100dvh-4rem)]">
       {/* Main content area */}
-      <div className="flex-1 min-w-0 px-4 sm:px-6 xl:pl-16 xl:pr-6 py-5 sm:py-8">
+      <div className="flex-1 min-w-0 px-4 sm:px-6 md:px-10 xl:px-6 py-5 sm:py-8 w-full mx-auto max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px]">
         <div className="flex flex-col xl:flex-row gap-5">
 
-        {/* ══ Left: Board ══ */}
-        <div className="flex-1 flex flex-col items-center xl:items-start max-w-[680px]">
+        {/* ══ Left: Board - scales with viewport breakpoint. ══ */}
+        <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
           {/* Header */}
           <div className="w-full flex items-center justify-between mb-2">
             <div>
@@ -529,8 +529,12 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
             </div>
           )}
 
-          {/* Board + rating bar */}
-          <div className="w-full flex gap-2">
+          {/* Board + rating bar - viewport-clamped so the board
+              doesn't overflow on short widescreens. */}
+          <div
+            className="w-full flex gap-2 mx-auto"
+            style={{ maxWidth: "min(100%, calc(100dvh - 14rem))" }}
+          >
             {/* Rating bar (left of board, shows after puzzle) */}
             {isDone && posEval && (
               <div className="hidden sm:flex flex-col items-center justify-between w-10 shrink-0 mt-3">

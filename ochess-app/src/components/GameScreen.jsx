@@ -700,9 +700,11 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
       {/* ── Main body: game + social ── */}
       <div className="flex-1 flex">
       {/* ── Game content ── */}
-      <div className="flex-1 min-w-0 flex flex-col xl:flex-row px-4 sm:px-8 xl:pl-16 xl:pr-6 py-3 sm:py-4 gap-4 xl:gap-6">
-        {/* Board column */}
-        <div className="flex-1 flex flex-col items-center xl:items-start max-w-[720px]">
+      <div className="flex-1 min-w-0 flex flex-col xl:flex-row px-4 sm:px-6 md:px-10 xl:px-6 py-3 sm:py-4 gap-4 xl:gap-6 w-full mx-auto max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px]">
+        {/* Board column - responsive max widths so the board fills
+            most of the viewport on widescreens and isn't dwarfed by
+            empty padding. */}
+        <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
           {/* Opponent bar */}
           <PlayerBar
             name={opponent.name}
@@ -716,7 +718,10 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
             isBot
           />
 
-          <div className="w-full flex gap-0">
+          <div
+            className="w-full flex gap-0 mx-auto"
+            style={{ maxWidth: "min(100%, calc(100dvh - 14rem))" }}
+          >
             {/* Eval bar - only post-game */}
             {gameOver && (
               <EvalBar
