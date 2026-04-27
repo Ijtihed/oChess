@@ -21,6 +21,9 @@ vi.mock("../lib/board-prefs", () => ({
 vi.mock("../lib/variants", () => ({
   // Only chess960 / kingOfTheHill / threeCheck / noCastling are bot-supported.
   isBotSupportedVariant: (id) => ["chess960", "kingOfTheHill", "threeCheck", "noCastling"].includes(id),
+  // Online-supported is the friend-challenge subset. Use a different
+  // set than bot-supported so the two CTAs can be tested independently.
+  isOnlineSupportedVariant: (id) => ["chess960", "kingOfTheHill", "threeCheck", "antichess", "horde", "racingKings", "fogOfWar", "standard"].includes(id),
 }));
 
 vi.mock("./SocialPanel", () => ({ default: () => null }));
@@ -37,22 +40,32 @@ describe("VariantsPage", () => {
     expect(screen.getByText(/Antichess/)).toBeDefined();
   });
 
-  it("shows a 'Friend matches coming soon' button for bot-unsupported variants", () => {
+  it("shows a disabled 'bot opponent unavailable' label for bot-unsupported variants", () => {
     render(<MemoryRouter><VariantsPage /></MemoryRouter>);
     fireEvent.click(screen.getByText(/^Atomic$/));
-    expect(screen.getByText(/Friend matches coming soon/i)).toBeDefined();
-    // Bot picker buttons should be disabled — we just verify Play is absent.
-    expect(screen.queryByText(/^Play$/)).toBeNull();
+    // Atomic isn't in our bot-supported mock list AND not in our
+    // online-supported mock list, so the only CTA shown is the
+    // disabled "Bot opponent unavailable" label.
+    expect(screen.getByText(/Bot opponent unavailable/i)).toBeDefined();
+    expect(screen.queryByText(/^Play vs Bot$/)).toBeNull();
   });
 
-  it("Play button on a bot-supported variant navigates to /variant-game with state", () => {
+  it("Play vs Bot button on a bot-supported variant navigates to /variant-game with state", () => {
     render(<MemoryRouter><VariantsPage /></MemoryRouter>);
     fireEvent.click(screen.getByText(/Chess960/));
-    fireEvent.click(screen.getByText(/^Play$/));
+    fireEvent.click(screen.getByText(/^Play vs Bot$/));
     expect(navigate).toHaveBeenCalled();
     const [path, opts] = navigate.mock.calls[0];
     expect(path).toBe("/variant-game");
     expect(opts.state.variantId).toBe("chess960");
     expect(opts.state.opponent).toBeDefined();
+  });
+
+  it("'Challenge a friend' button on online-supported variants navigates to /create-challenge with the variant", () => {
+    render(<MemoryRouter><VariantsPage /></MemoryRouter>);
+    fireEvent.click(screen.getByText(/Chess960/));
+    const friendBtn = screen.getByText(/Challenge a friend/i);
+    fireEvent.click(friendBtn);
+    expect(navigate).toHaveBeenCalledWith("/create-challenge?variant=chess960");
   });
 });

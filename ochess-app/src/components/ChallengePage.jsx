@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams, Link } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import { isOnline, supabase } from "../lib/supabase";
 import { getChallenge, acceptChallengeRPC, createChallenge, deleteChallenge, watchChallenge, pollChallenge } from "../lib/challenges";
 import { getRatings } from "../lib/auth";
 import { categoryFromTimeControl } from "../lib/glicko2";
+import { ONLINE_SUPPORTED_VARIANTS } from "../lib/variants";
 import SocialPanel from "./SocialPanel";
 
 // Match PlayPage's PRESETS so a user moving between Quick-match and
@@ -22,11 +23,36 @@ const TIME_CONTROLS = [
   { label: "30+0", cat: "Classical" },
 ];
 
+// Variants offered in the picker. The list is intentionally narrower
+// than `lib/variants.VARIANT_DEFS` — only variants that round-trip
+// cleanly across reload via PGN replay are exposed here. Atomic and
+// Crazyhouse stay bot-only for now (see ONLINE_SUPPORTED_VARIANTS in
+// lib/variants.js for the rationale).
+const VARIANT_OPTIONS = [
+  { id: "standard",      label: "Standard",       desc: "Classic chess." },
+  { id: "antichess",     label: "Antichess",      desc: "Lose all pieces to win." },
+  { id: "kingOfTheHill", label: "King of the Hill", desc: "Get your king to the center." },
+  { id: "threeCheck",    label: "Three-Check",    desc: "Three checks and you win." },
+  { id: "horde",         label: "Horde",          desc: "Pawns vs full army." },
+  { id: "racingKings",   label: "Racing Kings",   desc: "First king to rank 8." },
+  { id: "fogOfWar",      label: "Fog of War",     desc: "Only see what your pieces see." },
+  { id: "chess960",      label: "Chess 960",      desc: "Randomized back rank." },
+];
+
 export function CreateChallenge() {
   const navigate = useNavigate();
   const { user, profile } = useAuth();
+  const [searchParams] = useSearchParams();
+  // Allow deep-linking from VariantsPage with `?variant=antichess`. We
+  // sanitize against ONLINE_SUPPORTED_VARIANTS so a stale link to a
+  // bot-only variant falls back to standard rather than producing an
+  // unpickable challenge row.
+  const initialVariant = ONLINE_SUPPORTED_VARIANTS.has(searchParams.get("variant"))
+    ? searchParams.get("variant")
+    : "standard";
   const [tc, setTc] = useState("10+0");
   const [colorPref, setColorPref] = useState("random");
+  const [variant, setVariant] = useState(initialVariant);
   const [challenge, setChallenge] = useState(null);
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -64,7 +90,7 @@ export function CreateChallenge() {
       const ratings = await getRatings(user.id).catch(() => []);
       const r = ratings?.find((x) => x.category === category);
       const ch = await createChallenge(user.id, profile?.display_name || profile?.username || "Player", r ? Math.round(r.rating) : 1500, {
-        timeControl: tc, colorPref,
+        timeControl: tc, colorPref, variant,
       });
       setChallenge(ch);
 
@@ -102,7 +128,7 @@ export function CreateChallenge() {
       setError(err.message || "Failed to create challenge");
     }
     setCreating(false);
-  }, [isLoggedIn, user, profile, tc, colorPref, navigateToGame]);
+  }, [isLoggedIn, user, profile, tc, colorPref, variant, navigateToGame]);
 
   useEffect(() => () => {
     watchRef.current?.unsubscribe();
@@ -181,6 +207,18 @@ export function CreateChallenge() {
               </div>
             </div>
             <div>
+              <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Variant</h2>
+              <div className="grid grid-cols-2 gap-1.5">
+                {VARIANT_OPTIONS.map((v) => (
+                  <button key={v.id} onClick={() => setVariant(v.id)}
+                    className={`text-left px-3 py-2.5 transition-all duration-150 active:scale-[0.97] ${variant === v.id ? "bg-primary text-on-primary" : "bg-surface-low border border-white/[0.04] hover:bg-surface-high"}`}>
+                    <span className="font-headline text-[13px] font-extrabold block leading-tight">{v.label}</span>
+                    <span className={`text-[10px] block mt-0.5 ${variant === v.id ? "text-on-primary/60" : "text-on-surface-variant/40"}`}>{v.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
               <h2 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/30 mb-3">Play as</h2>
               <div className="flex gap-1.5">
                 {[{ id: "random", label: "Random" }, { id: "white", label: "White" }, { id: "black", label: "Black" }].map((c) => (
@@ -215,7 +253,11 @@ export function CreateChallenge() {
               <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
               <span className="text-[12px] text-on-surface-variant/40">Waiting for opponent to join...</span>
             </div>
-            <p className="text-[11px] text-on-surface-variant/25 text-center">{tc} · Casual · Expires in 15 min</p>
+            <p className="text-[11px] text-on-surface-variant/25 text-center">
+              {tc}
+              {variant && variant !== "standard" && ` · ${VARIANT_OPTIONS.find((v) => v.id === variant)?.label || variant}`}
+              {" · Casual · Expires in 15 min"}
+            </p>
             <button onClick={teardownAndExit}
               className="btn btn-secondary w-full py-2 text-[10px] hover:!text-error">
               Cancel
@@ -315,8 +357,20 @@ export function JoinChallenge() {
           <p className="text-[13px] text-on-surface-variant/50 mb-4">
             <span className="font-bold text-on-surface-variant/70">{challenge.creator_name}</span> wants to play!
           </p>
-          <div className="flex justify-center gap-4 mb-4 text-[12px] text-on-surface-variant/40">
-            <span>{challenge.time_control}</span><span>·</span><span>Casual</span><span>·</span><span>~{Math.round(challenge.creator_rating)}</span>
+          <div className="flex justify-center gap-3 flex-wrap mb-4 text-[12px] text-on-surface-variant/40">
+            <span>{challenge.time_control}</span>
+            <span>·</span>
+            <span>Casual</span>
+            <span>·</span>
+            <span>~{Math.round(challenge.creator_rating)}</span>
+            {challenge.variant && challenge.variant !== "standard" && (
+              <>
+                <span>·</span>
+                <span className="text-primary/70 font-bold">
+                  {VARIANT_OPTIONS.find((v) => v.id === challenge.variant)?.label || challenge.variant}
+                </span>
+              </>
+            )}
           </div>
           {error && <p className="text-[12px] text-error mb-3">{error}</p>}
           {isLoggedIn && user?.id === challenge.creator_id ? (

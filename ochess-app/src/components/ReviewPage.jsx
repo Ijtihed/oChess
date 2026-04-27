@@ -48,18 +48,46 @@ function orientationFor(card) {
   return (card?.fen || "").includes(" b ") ? "black" : "white";
 }
 
+// Deck filters mirror the card `type` field that PuzzlesPage /
+// AnalysisPage / GameScreen attach when saving. "all" is the default;
+// the others narrow the queue so a user who's accumulated 200 cards
+// can drill down to "just my failed puzzles" or "just analysis
+// positions" without rating-resetting the rest.
+const DECK_FILTERS = [
+  { id: "all",      label: "All",       match: () => true },
+  { id: "puzzle",   label: "Puzzles",   match: (c) => c.type === "puzzle" },
+  { id: "game",     label: "Games",     match: (c) => c.type === "game" || c.type === "mistake" },
+  { id: "analysis", label: "Analysis",  match: (c) => c.type === "analysis" },
+];
+
 export default function ReviewPage() {
   const [cards, setCards] = useState(() => loadCards());
   const [schedules, setSchedules] = useState(() => loadSchedules());
   const [phase, setPhase] = useState("prompt");
   const [highlight, setHighlight] = useState({});
   const [reviewed, setReviewed] = useState(0);
+  const [deckFilter, setDeckFilter] = useState("all");
   const gameRef = useRef(null);
+
+  // Per-deck breakdown of the FULL collection (not just due cards) so
+  // the filter chips can show "Puzzles 12 · Games 5 · Analysis 3"
+  // and the user knows where their deck mass is concentrated.
+  const deckCounts = useMemo(() => {
+    const counts = { all: cards.length, puzzle: 0, game: 0, analysis: 0 };
+    for (const c of cards) {
+      if (c.type === "puzzle") counts.puzzle += 1;
+      else if (c.type === "game" || c.type === "mistake") counts.game += 1;
+      else if (c.type === "analysis") counts.analysis += 1;
+    }
+    return counts;
+  }, [cards]);
+
+  const activeFilter = DECK_FILTERS.find((f) => f.id === deckFilter) || DECK_FILTERS[0];
 
   // Recompute the due queue on every render — cheap, ~tens of cards.
   const dueIds = useMemo(
-    () => cards.filter((c) => isCardDue(schedules, cardId(c))).map(cardId),
-    [cards, schedules]
+    () => cards.filter((c) => activeFilter.match(c) && isCardDue(schedules, cardId(c))).map(cardId),
+    [cards, schedules, activeFilter]
   );
   const card = useMemo(
     () => cards.find((c) => cardId(c) === dueIds[0]) || null,
@@ -192,14 +220,31 @@ export default function ReviewPage() {
   }
 
   if (!card) {
+    // The active filter has no due cards. If the user is on a narrow
+    // filter (Puzzles / Games / Analysis), offer to switch back to
+    // "All" so they can see whatever else might be due first. Avoids
+    // the dead-end where someone sees "All caught up" while another
+    // deck still has work waiting.
+    const otherDecksWithDue = DECK_FILTERS
+      .filter((f) => f.id !== deckFilter && f.id !== "all")
+      .filter((f) => cards.some((c) => f.match(c) && isCardDue(schedules, cardId(c))));
     return (
       <div className="flex">
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-12 text-center">
-          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-3">All caught up</h1>
+          <h1 className="font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-3">
+            {deckFilter === "all" ? "All caught up" : `No ${activeFilter.label.toLowerCase()} due`}
+          </h1>
           <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-6">
-            You've reviewed every card that's due right now. Come back tomorrow, or save more
-            positions from the Analysis board.
+            {deckFilter === "all"
+              ? "You've reviewed every card that's due right now. Come back tomorrow, or save more positions from the Analysis board."
+              : `No ${activeFilter.label.toLowerCase()} cards are due in this filter right now.`}
           </p>
+          {deckFilter !== "all" && otherDecksWithDue.length > 0 && (
+            <button onClick={() => setDeckFilter("all")}
+              className="btn btn-primary px-5 py-2 text-xs mb-6">
+              See all due cards
+            </button>
+          )}
           <p className="text-[11px] uppercase tracking-widest text-on-surface-variant/25">
             {totalCards} card{totalCards === 1 ? "" : "s"} in your deck
           </p>
@@ -215,12 +260,50 @@ export default function ReviewPage() {
   return (
     <div className="flex">
       <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+        {/* Deck filter chips. Click cycles the active filter; the
+            queue rebuilds on the next render. Counts are pulled from
+            `deckCounts` so the user knows what's available before
+            switching. The "all" chip never disables; the others gray
+            out when their bucket is empty. */}
+        <div className="anim-fade-up flex flex-wrap gap-1.5 mb-5" style={{ "--delay": "0.04s" }}>
+          {DECK_FILTERS.map((f) => {
+            const count = deckCounts[f.id] ?? 0;
+            const active = deckFilter === f.id;
+            const empty = count === 0 && f.id !== "all";
+            return (
+              <button
+                key={f.id}
+                disabled={empty}
+                onClick={() => setDeckFilter(f.id)}
+                className={`px-3 py-1.5 font-headline text-[11px] font-bold uppercase tracking-wide transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                  active
+                    ? "bg-primary text-on-primary"
+                    : "bg-surface-low border border-white/[0.04] text-on-surface-variant/55 hover:text-primary hover:bg-surface-high"
+                }`}
+              >
+                {f.label}
+                <span className={`ml-1.5 ${active ? "text-on-primary/55" : "text-on-surface-variant/30"}`}>{count}</span>
+              </button>
+            );
+          })}
+        </div>
+
         <div className="flex flex-col xl:flex-row gap-6 xl:gap-8">
           {/* Board column */}
           <div className="flex-1 flex flex-col items-center xl:items-start max-w-[700px]">
             <div className="w-full mb-3">
               <span className="text-[9px] font-label uppercase tracking-widest text-on-surface-variant/30 block mb-1">
                 {deckLabel(card)} · {reviewed + 1} of {reviewed + remaining}
+                {/* Surface card-source metadata if the writer attached
+                    any. Puzzle cards carry a numeric rating + tags;
+                    game cards carry the SAN that was played. Showing
+                    them gives the user useful context without taking
+                    up a whole sidebar block. */}
+                {card.rating ? ` · Rating ${card.rating}` : ""}
+                {card.san ? ` · ${card.san}` : ""}
+                {Array.isArray(card.themes) && card.themes.length > 0 && (
+                  ` · ${card.themes.slice(0, 3).join(", ")}`
+                )}
               </span>
               <h1 className="font-headline text-lg sm:text-xl font-extrabold tracking-tighter text-primary">
                 {promptText(card)}

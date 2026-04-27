@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import SocialPanel from "./SocialPanel";
 import { load as loadPrefs, getTheme } from "../lib/board-prefs";
-import { isBotSupportedVariant } from "../lib/variants";
+import { isBotSupportedVariant, isOnlineSupportedVariant } from "../lib/variants";
 
 const PLAYABLE = [
   {
@@ -319,17 +319,22 @@ export default function VariantsPage() {
                 {botSupported ? (
                   <button onClick={startGame}
                     className="btn btn-primary w-full py-3 text-sm">
-                    Play
+                    Play vs Bot
                   </button>
                 ) : (
-                  // Honest UX: friend challenges currently only carry
-                  // standard chess time controls, not the variant id.
-                  // Until the challenge model gains a variant field,
-                  // tell the user this is a future feature instead of
-                  // routing them to a misleading flow.
                   <button disabled aria-disabled="true"
                     className="btn btn-secondary w-full py-3 text-sm cursor-not-allowed">
-                    Friend matches coming soon
+                    Bot opponent unavailable
+                  </button>
+                )}
+                {/* Friend-challenge route — only offered for variants
+                    that round-trip cleanly via PGN online (see
+                    `ONLINE_SUPPORTED_VARIANTS` in lib/variants.js).
+                    Atomic / Crazyhouse stay bot-only for now. */}
+                {selectedVariant && isOnlineSupportedVariant(selectedVariant) && (
+                  <button onClick={() => navigate(`/create-challenge?variant=${selectedVariant}`)}
+                    className="btn btn-secondary w-full py-3 text-sm">
+                    Challenge a friend
                   </button>
                 )}
               </div>

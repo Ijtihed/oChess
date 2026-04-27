@@ -42,6 +42,7 @@ export async function createChallenge(userId, userName, userRating, options) {
       creator_rating: userRating,
       time_control: options.timeControl || "10+0",
       color_pref: options.colorPref || "random",
+      variant: options.variant || "standard",
       status: "waiting",
     }).select().single();
     if (!error) { log("createChallenge OK:", data.id, "code:", data.code); return data; }

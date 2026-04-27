@@ -24,7 +24,11 @@ describe("VARIANT_DEFS", () => {
     expect(ids).toContain("checkless");
     expect(ids).toContain("peasants");
     expect(ids).toContain("weakArmy");
-    expect(ids.length).toBe(20);
+    // The "standard" entry is intentionally a no-op so OnlineGameScreen
+    // can route every game through `createVariantGame` and avoid a
+    // second chess.js code path. Bump the count to 21 to lock that in.
+    expect(ids).toContain("standard");
+    expect(ids.length).toBe(21);
   });
 });
 

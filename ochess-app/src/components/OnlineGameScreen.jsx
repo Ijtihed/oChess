@@ -9,6 +9,7 @@ import { getOpeningName, resetOpeningCache } from "../lib/openings";
 import useClock, { formatTime } from "../hooks/useClock";
 import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, playLowTime, playNotify, preloadAll } from "../lib/sounds";
 import { supabase } from "../lib/supabase";
+import { createVariantGame } from "../lib/variants";
 
 const STARTING = { p: 8, n: 2, b: 2, r: 2, q: 1 };
 const PIECE_VAL = { p: 1, n: 3, b: 3, r: 5, q: 9 };
@@ -107,7 +108,13 @@ function getCaptured(fen) {
 export default function OnlineGameScreen({ gameData, playerColor }) {
   const navigate = useNavigate();
   const { user: authUser, profile } = useAuth();
-  const gameRef = useRef(new Chess());
+  // Use the variant wrapper for every online game — for `standard`
+  // it's a no-op shell around chess.js so the call sites below stay
+  // identical to the chess.js API. For other variants it injects the
+  // variant-specific rules (forcedCapture, kingOfTheHill end, etc.).
+  const variantId = gameData?.variant || "standard";
+  const gameRef = useRef(null);
+  if (!gameRef.current) gameRef.current = createVariantGame(variantId);
   const channelRef = useRef(null);
   const authUserIdRef = useRef(authUser?.id);
   authUserIdRef.current = authUser?.id;
@@ -214,6 +221,18 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
 
   const checkEnd = useCallback(() => {
     const g = gameRef.current;
+    // Variant-specific terminations (KOTH center, antichess "no
+    // moves", three-check threshold, racing-kings finish, etc.) come
+    // first so they win over a `chess.js`-only stalemate ruling. For
+    // standard chess `g.checkEnd()` returns `null` and we fall through
+    // to the chess.js check below.
+    if (typeof g.checkEnd === "function") {
+      const variantEnd = g.checkEnd();
+      if (variantEnd) {
+        endGame(variantEnd.result, variantEnd.reason);
+        return true;
+      }
+    }
     if (g.isCheckmate()) { endGame(g.turn() === "w" ? "0-1" : "1-0", "checkmate"); return true; }
     if (g.isStalemate()) { endGame("1/2-1/2", "stalemate"); return true; }
     if (g.isDraw()) { endGame("1/2-1/2", "draw"); return true; }
@@ -319,9 +338,12 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       const serverMoves = row.moves_count || 0;
       const movesAdvanced = row.pgn?.trim() && serverMoves > localMoves;
 
-      // Sync moves if server is ahead of us
+      // Sync moves if server is ahead of us. We rebuild the variant
+      // wrapper from scratch and replay the PGN through it so that
+      // variant-specific state (3-check counters, etc.) is restored
+      // alongside the move list.
       if (movesAdvanced) {
-        const g = new Chess();
+        const g = createVariantGame(variantId);
         try { g.loadPgn(row.pgn); } catch { return; }
         gameRef.current = g;
         const h = g.history({ verbose: true });

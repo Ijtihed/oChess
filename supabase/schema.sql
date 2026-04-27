@@ -137,10 +137,15 @@ create table if not exists challenges (
   creator_rating float default 1500,
   time_control text not null default '10+0',
   color_pref text default 'random',
+  variant text default 'standard',
   status text default 'waiting',
   game_id uuid references games(id),
   created_at timestamptz default now()
 );
+
+-- Backfill: in-place column add for projects that had the original
+-- challenges shape before variants. Idempotent.
+alter table challenges add column if not exists variant text default 'standard';
 
 -- ── puzzle_progress ──
 create table if not exists puzzle_progress (
@@ -613,7 +618,7 @@ begin
   insert into games (white_id, black_id, white_name, black_name, white_rating, black_rating,
                      pgn, time_control, category, variant, is_rated, status)
   values (v_white_id, v_black_id, v_white_name, v_black_name, v_white_rating, v_black_rating,
-          '', v_challenge.time_control, v_category, 'standard', false, 'active')
+          '', v_challenge.time_control, v_category, coalesce(v_challenge.variant, 'standard'), false, 'active')
   returning id into v_game_id;
 
   update challenges set status = 'accepted', game_id = v_game_id where id = p_challenge_id;

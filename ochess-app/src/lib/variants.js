@@ -120,7 +120,45 @@ const HORDE_FEN = "rnbqkbnr/pppppppp/8/1PP2PP1/PPPPPPPP/PPPPPPPP/PPPPPPPP/4K3 w 
 const RACING_FEN = "8/8/8/8/8/8/krbnNBRK/qrbnNBRQ w - - 0 1";
 const DUNSANY_FEN = "rnbqkbnr/pppppppp/8/8/PPPPPPPP/PPPPPPPP/PPPPPPPP/4K3 w kq - 0 1";
 
+/**
+ * Subset of variants that are supported in online play.
+ *
+ * To qualify, a variant must round-trip cleanly through chess.js'
+ * `loadPgn` so that a mid-game refresh / second tab / opponent's
+ * realtime sync rebuilds the same position. That excludes:
+ *
+ *   - atomic    — `afterMove` mutates the board; chess.js replay
+ *                 doesn't re-fire those mutations.
+ *   - crazyhouse — uses drop notation that chess.js doesn't parse.
+ *
+ * The shipped friend-challenge UI hides those two; bots-only stays
+ * supported on /variant-game.
+ */
+export const ONLINE_SUPPORTED_VARIANTS = new Set([
+  "standard",
+  "antichess",
+  "kingOfTheHill",
+  "threeCheck", // Check counts reset on refresh — minor degradation, not a blocker.
+  "horde",
+  "racingKings",
+  "fogOfWar",
+  "chess960",
+]);
+
+export function isOnlineSupportedVariant(variantId) {
+  return ONLINE_SUPPORTED_VARIANTS.has(variantId);
+}
+
 export const VARIANT_DEFS = {
+  // "standard" is intentionally a no-op definition so OnlineGameScreen
+  // can always go through the variant wrapper instead of branching
+  // chess.js vs createVariantGame at every call site. It just exposes
+  // raw chess.js with no extra rules.
+  standard: {
+    name: "Standard",
+    startFen: null,
+    checkCustomEnd: () => null,
+  },
   chess960: {
     name: "Chess960", startFen: () => generate960Position(),
     checkCustomEnd: () => null,
@@ -457,5 +495,35 @@ export function createVariantGame(variantId) {
 
     isMultiMove() { return !!def.movesPerTurn; },
     isFogOfWar() { return !!def.isFogOfWar; },
+
+    // ── chess.js proxy methods used by OnlineGameScreen's shared
+    //    code path. These keep the surface symmetric with `new Chess()`
+    //    so the same component logic drives both standard and variant
+    //    online games. State-tracking variants (e.g. threeCheck) lose
+    //    their counters across `loadPgn` because chess.js does not
+    //    re-run our `afterMove`; this is a documented degradation
+    //    (covered in `ONLINE_SUPPORTED_VARIANTS` comments).
+    loadPgn(pgn) {
+      chess.loadPgn(pgn);
+      // For state-tracking variants we replay through the wrapper so
+      // afterMove fires for each move and `state` is reconstructed.
+      if (def.afterMove) {
+        const moves = chess.history({ verbose: true });
+        chess.reset();
+        if (def.startFen) chess.load(typeof def.startFen === "function" ? def.startFen() : def.startFen);
+        // Reset wrapper state and replay through `move()`.
+        for (const k of Object.keys(state)) state[k] = typeof state[k] === "boolean" ? false : (typeof state[k] === "object" ? {} : 0);
+        for (const m of moves) {
+          try { chess.move({ from: m.from, to: m.to, promotion: m.promotion }); }
+          catch { break; }
+          if (def.afterMove) def.afterMove(chess, m);
+        }
+      }
+    },
+    isCheckmate() { return chess.isCheckmate(); },
+    isStalemate() { return chess.isStalemate(); },
+    isDraw() { return chess.isDraw(); },
+    inCheck() { return chess.inCheck(); },
+    moves(opts) { return chess.moves(opts); },
   };
 }
