@@ -64,7 +64,18 @@ interface CoachRequest {
 interface CoachResponse {
   ok: boolean;
   summary?: string;
-  plan?: { day: number; focus: string; explanation: string; card_count: number }[];
+  plan?: {
+    day: number;
+    focus: string;
+    explanation: string;
+    card_count: number;
+    // NEW: short filter phrase that narrows the user's mistake
+    // corpus to JUST the cards relevant for this day. Maps onto
+    // our client-side free-text filter (substring AND-match
+    // against phase/themes/played_san/best_san/opening/source).
+    // The client uses this to one-click-save a drill set.
+    query?: string;
+  }[];
   insights?: { game_id: string | null; ply: number | null; insight: string }[];
   error?: string;
   model?: string;
@@ -102,6 +113,24 @@ function buildPrompt(mistakes: MistakeInput[], query: string | undefined, dailyQ
   const focusLine = query
     ? `The user specifically wants to drill: "${query.slice(0, MAX_QUERY_CHARS)}".`
     : "Group by the weakness pattern you see most.";
+
+  // The client converts each day's "query" into a saveable drill
+  // set by passing it through a substring AND-match filter against
+  // these card fields: phase, themes (array), played_san, best_san,
+  // opening, source. So the model needs to pick query phrases from
+  // a vocabulary that actually matches stored card data, not just
+  // free poetic English. Listing the known values keeps drill sets
+  // from collapsing to "0 matching cards".
+  const filterVocabulary = `
+Filter vocabulary (use these in the "query" field):
+  Phase:    opening / middlegame / endgame
+  Themes:   blunder / mistake / missed_mate / missed_capture / capture_blunder /
+            hanging_queen / hanging_rook / hanging_bishop / hanging_knight
+  Source:   chesscom / lichess
+  You may also include a piece letter from played_san (Q, R, B, N, K) or an
+  opening name token if it appears in the corpus.
+`.trim();
+
   return `You are a chess coach reading one player's recent mistakes. Be direct and concrete.
 
 Mistakes:
@@ -109,26 +138,36 @@ ${corpus}
 
 ${focusLine}
 
+${filterVocabulary}
+
 Reply with ONLY a JSON object, no prose around it. Schema:
 
 {
   "summary": "1-3 sentences naming the player's most recurring weakness in plain English. No flattery.",
   "plan": [
-    { "day": 1, "focus": "specific theme name", "explanation": "1 sentence why this matters", "card_count": ${dailyQuota} },
-    { "day": 2, "focus": "...", "explanation": "...", "card_count": ${dailyQuota} },
-    { "day": 3, "focus": "...", "explanation": "...", "card_count": ${dailyQuota} }
+    {
+      "day": 1,
+      "focus": "Specific theme name as a human-readable title (e.g. 'Hanging knights in the middlegame')",
+      "explanation": "1 sentence why this matters",
+      "card_count": ${dailyQuota},
+      "query": "1-3 words from the filter vocabulary above that select the relevant mistakes (e.g. 'middlegame hanging_knight'). At least one token MUST come from the vocabulary."
+    },
+    { "day": 2, "focus": "...", "explanation": "...", "card_count": ${dailyQuota}, "query": "..." },
+    { "day": 3, "focus": "...", "explanation": "...", "card_count": ${dailyQuota}, "query": "..." }
   ],
   "insights": [
-    { "index": 1, "insight": "1 sentence — what went wrong + what to look for next time" },
+    { "index": 1, "insight": "1 sentence - what went wrong + what to look for next time" },
     { "index": 2, "insight": "..." }
   ]
 }
 
 Guidelines:
 - 3 to 5 days in the plan. Each day a different theme. Card counts must total <= ${dailyQuota * 5}.
+- The "query" for each day MUST match real cards above. Don't invent themes that aren't in the data.
+- Prefer compound queries over single tokens when possible (e.g. "endgame hanging_rook" beats just "endgame") because they pinpoint the user's actual weakness.
 - "insights" should cover the 5 most instructive mistakes (or all of them if there are fewer).
 - Indices in "insights" refer to the 1-based mistake list above.
-- Don't quote chess engine output verbatim — explain it.`;
+- Don't quote chess engine output verbatim - explain it.`;
 }
 
 // ── Groq call ──
@@ -180,6 +219,12 @@ function parseCoachJson(content: string): CoachResponse | null {
         focus: String(p.focus || "Mixed practice"),
         explanation: String(p.explanation || ""),
         card_count: Number(p.card_count) || 5,
+        // The client uses this to one-click-save / one-click-practice
+        // each day. Trim defensively - some models like to hand back
+        // wrapper quotes or leading "Query: " labels.
+        query: typeof p.query === "string"
+          ? String(p.query).trim().replace(/^["']|["']$/g, "").replace(/^query:\s*/i, "")
+          : "",
       })) : undefined,
       insights: Array.isArray(parsed.insights) ? parsed.insights.slice(0, 10).map((ins: Record<string, unknown>) => ({
         game_id: null,

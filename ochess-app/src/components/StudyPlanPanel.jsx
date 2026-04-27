@@ -260,6 +260,71 @@ export default function StudyPlanPanel({ onStartSession }) {
     setSavingDrill(true);
   }, []);
 
+  // Convert one AI plan-day into a saveable filter. The LLM is
+  // instructed to populate `query` from a fixed vocabulary that
+  // matches the same fields our free-text filter checks; if it
+  // forgets or sends garbage, fall back to extracting plausible
+  // tokens from the human-readable focus title.
+  const dayToFilter = useCallback((day) => {
+    const fromQuery = (day?.query || "").trim();
+    if (fromQuery) return { name: day.focus, query: fromQuery };
+    // Fallback: pull our known vocabulary words out of the focus
+    // title. Keeps "Hanging knights in the middlegame" -> "hanging
+    // middlegame" without us ever calling out to the LLM again.
+    const words = String(day?.focus || "").toLowerCase().split(/\s+/);
+    const vocab = ["opening", "middlegame", "endgame", "blunder", "mistake", "missed_mate", "missed_capture", "capture_blunder", "hanging", "queen", "rook", "bishop", "knight", "fork", "pin"];
+    const tokens = words.filter((w) => vocab.some((v) => w.startsWith(v.split("_")[0])));
+    return { name: day?.focus || "Coach plan", query: tokens.join(" ") || day?.focus || "" };
+  }, []);
+
+  // One-click "Save this AI day as a drill set" - the user can
+  // come back to it from the My Drill Sets list anytime.
+  const [coachToast, setCoachToast] = useState(null);
+  const showCoachToast = useCallback((text) => {
+    setCoachToast(text);
+    setTimeout(() => setCoachToast(null), 3000);
+  }, []);
+
+  const saveCoachDay = useCallback((day) => {
+    const { name, query: q } = dayToFilter(day);
+    if (!q) {
+      showCoachToast("Couldn't pick a filter for this day. Try Practice instead.");
+      return;
+    }
+    const { sets, id } = addDrillSet(drillSets, { name, query: q });
+    if (!id) return;
+    setDrillSets(sets);
+    saveDrillSets(sets);
+    showCoachToast(`Saved "${name}" to your drill sets.`);
+  }, [drillSets, dayToFilter, showCoachToast]);
+
+  const practiceCoachDay = useCallback((day) => {
+    const { name, query: q } = dayToFilter(day);
+    onStartSession?.({ query: q || "", chipId: null, setName: name });
+  }, [dayToFilter, onStartSession]);
+
+  // Save every day in the AI plan as a drill set in one click. Skips
+  // days that resolve to an empty filter so the user doesn't end up
+  // with garbage rows.
+  const saveCoachPlanAsDrills = useCallback(() => {
+    if (!coachData?.plan?.length) return;
+    let working = drillSets;
+    let saved = 0;
+    for (const day of coachData.plan) {
+      const { name, query: q } = dayToFilter(day);
+      if (!q) continue;
+      const { sets, id } = addDrillSet(working, { name, query: q });
+      if (id) { working = sets; saved += 1; }
+    }
+    if (saved === 0) {
+      showCoachToast("No filterable days in this plan. Try regenerating.");
+      return;
+    }
+    setDrillSets(working);
+    saveDrillSets(working);
+    showCoachToast(`Saved ${saved} drill set${saved === 1 ? "" : "s"} from this plan.`);
+  }, [coachData, drillSets, dayToFilter, showCoachToast]);
+
   const cancelImport = useCallback(() => {
     if (!abortRef.current) return;
     setCancelling(true);
@@ -709,22 +774,70 @@ export default function StudyPlanPanel({ onStartSession }) {
               )}
               {Array.isArray(coachData.plan) && coachData.plan.length > 0 && (
                 <div className="space-y-2">
-                  <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 block">
-                    Multi-day plan
-                  </span>
-                  {coachData.plan.map((d) => (
-                    <div key={d.day} className="px-3 py-2 bg-surface-container border border-white/[0.04]">
-                      <div className="flex items-baseline justify-between mb-0.5">
-                        <span className="font-headline text-[13px] font-bold text-primary">
-                          Day {d.day} · {d.focus}
-                        </span>
-                        <span className="text-[10px] text-on-surface-variant/30 tabular-nums">{d.card_count} cards</span>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 block">
+                      Multi-day plan
+                    </span>
+                    <button onClick={saveCoachPlanAsDrills}
+                      title="Save every day in this plan as its own drill set"
+                      className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
+                      Save all as drills
+                    </button>
+                  </div>
+                  {coachData.plan.map((d) => {
+                    const filter = dayToFilter(d);
+                    const matchCount = filter.query
+                      ? countDrillSetCards({ query: filter.query, chipId: null }, allCards, {
+                          chipFor: (id) => COMMON_WEAKNESS_CHIPS.find((c) => c.id === id),
+                          queryFilter: filterCardsByQuery,
+                        })
+                      : 0;
+                    return (
+                      <div key={d.day} className="px-3 py-2 bg-surface-container border border-white/[0.04]">
+                        <div className="flex items-baseline justify-between mb-0.5 gap-2">
+                          <span className="font-headline text-[13px] font-bold text-primary truncate">
+                            Day {d.day} · {d.focus}
+                          </span>
+                          <span className="text-[10px] text-on-surface-variant/30 tabular-nums shrink-0">
+                            {matchCount} card{matchCount === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        {d.explanation && (
+                          <p className="text-[12px] text-on-surface-variant/55 leading-relaxed mb-2">{d.explanation}</p>
+                        )}
+                        {/* Surface the actual filter the day will
+                            apply, so the user can sanity-check what
+                            "Practice" / "Save" will load before
+                            clicking. The fallback path strips this
+                            out (it's the same as focus). */}
+                        {filter.query && filter.query.toLowerCase() !== filter.name.toLowerCase() && (
+                          <span className="text-[10px] text-on-surface-variant/30 block mb-2">
+                            Filter: <span className="font-mono text-on-surface-variant/45">{filter.query}</span>
+                          </span>
+                        )}
+                        <div className="flex gap-1.5">
+                          <button onClick={() => practiceCoachDay(d)}
+                            disabled={matchCount === 0}
+                            className="btn btn-primary flex-1 py-1.5 text-[10px] disabled:opacity-30 disabled:pointer-events-none">
+                            Practice now
+                          </button>
+                          <button onClick={() => saveCoachDay(d)}
+                            disabled={matchCount === 0}
+                            className="btn btn-secondary flex-1 py-1.5 text-[10px] disabled:opacity-30 disabled:pointer-events-none">
+                            Save as drill
+                          </button>
+                        </div>
                       </div>
-                      {d.explanation && (
-                        <p className="text-[12px] text-on-surface-variant/55 leading-relaxed">{d.explanation}</p>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
+                </div>
+              )}
+              {/* Inline toast for save-as-drill / save-all results.
+                  Auto-clears after 3s. Lives inside the coach panel
+                  so it's visually close to the button that fired it. */}
+              {coachToast && (
+                <div className="anim-fade-up px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 text-[12px] text-emerald-400">
+                  {coachToast}
                 </div>
               )}
               {Array.isArray(coachData.insights) && coachData.insights.length > 0 && (

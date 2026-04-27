@@ -88,10 +88,22 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
     // Defensive: the LLM occasionally returns malformed JSON the
     // server tries to parse - if any of the structured fields are
     // missing, render whatever we got and skip the empty sections.
+    // We normalize each plan day's `query` field client-side too,
+    // because the new field arrived in a server bump that older
+    // deployments may still be missing - keep the UI working with
+    // either shape.
     return {
       ok: true,
       summary: typeof data.summary === "string" ? data.summary : null,
-      plan: Array.isArray(data.plan) ? data.plan : [],
+      plan: Array.isArray(data.plan)
+        ? data.plan.map((d) => ({
+            day: Number(d?.day) || 1,
+            focus: typeof d?.focus === "string" ? d.focus : "Mixed practice",
+            explanation: typeof d?.explanation === "string" ? d.explanation : "",
+            card_count: Number(d?.card_count) || 5,
+            query: typeof d?.query === "string" ? d.query.trim() : "",
+          }))
+        : [],
       insights: Array.isArray(data.insights) ? data.insights : [],
       model: data.model || null,
     };
