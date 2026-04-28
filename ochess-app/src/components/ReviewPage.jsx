@@ -22,7 +22,12 @@ import {
   predictIntervalsFor,
   summarizeDeck,
   forecastDeckNextDays,
+  loadAIExplanations,
+  saveAIExplanations,
+  getAIExplanation,
+  setAIExplanation,
 } from "../lib/review-cards";
+import { explainCardWithAI, isAIAvailable } from "../lib/coach-llm";
 import { loadDrillSets, removeDrillSet, saveDrillSets } from "../lib/drill-sets";
 import { listDecks, getDeckById } from "../lib/decks";
 import { getCardType, TONE_CLASSES } from "../lib/card-types";
@@ -124,6 +129,10 @@ export default function ReviewPage() {
   // - they're filter definitions, not new cards. The deck browser
   // listDecks() merges drill sets with type-based built-ins.
   const [drillSets, setDrillSets] = useState(() => loadDrillSets());
+  // Per-card AI explanations cache - keyed by cardId, persisted to
+  // localStorage. Hydrated once on mount so we don't refetch
+  // explanations the user already paid the rate-limit cost for.
+  const [aiExplanations, setAIExplanations] = useState(() => loadAIExplanations());
   const [phase, setPhase] = useState("prompt");
   const [highlight, setHighlight] = useState({});
   const [reviewed, setReviewed] = useState(0);
@@ -635,6 +644,56 @@ export default function ReviewPage() {
     resetCard();
   }, [card, resetCard]);
 
+  // ── AI explanation request state ──
+  // The "Explain with AI" button below the answer panel kicks off a
+  // request to the coach Edge Function in mode=explain. Result is
+  // cached per-card in localStorage so repeated reviews of the
+  // same card don't keep burning the rate limit. The cooldown
+  // mirrors the deck-generator UX so the user gets a single
+  // consistent feel for "how often can I push the AI button".
+  const [aiExplainLoading, setAIExplainLoading] = useState(false);
+  const [aiExplainError, setAIExplainError] = useState(null);
+  const [aiCooldownSec, setAICooldownSec] = useState(0);
+
+  useEffect(() => {
+    if (aiCooldownSec <= 0) return undefined;
+    const id = setTimeout(() => setAICooldownSec((s) => Math.max(0, s - 1)), 1000);
+    return () => clearTimeout(id);
+  }, [aiCooldownSec]);
+
+  // Clear transient AI-call error when navigating between cards so
+  // the previous card's failure message doesn't bleed into the
+  // next one's panel.
+  useEffect(() => {
+    setAIExplainError(null);
+  }, [cardKey]);
+
+  const requestAIExplanation = useCallback(async () => {
+    if (!card || aiExplainLoading) return;
+    setAIExplainLoading(true);
+    setAIExplainError(null);
+    try {
+      const result = await explainCardWithAI(card);
+      if (result.ok && result.explanation) {
+        const id = cardId(card);
+        setAIExplanations((prev) => {
+          const next = setAIExplanation(prev, id, result.explanation, result.model);
+          saveAIExplanations(next);
+          return next;
+        });
+      } else {
+        setAIExplainError(result.error || "Couldn't generate an explanation.");
+        if (result.rateLimited && result.retryAfterSeconds) {
+          setAICooldownSec(Math.ceil(Number(result.retryAfterSeconds)) || 0);
+        }
+      }
+    } catch (e) {
+      setAIExplainError(e?.message || "AI request failed.");
+    } finally {
+      setAIExplainLoading(false);
+    }
+  }, [card, aiExplainLoading]);
+
   const totalCards = cards.length;
   const remaining = dueIds.length;
   // Anki-style deck summary - drives the queue-breakdown widget
@@ -819,8 +878,8 @@ export default function ReviewPage() {
             losing schedule progress. The Plan-tab "Practice now"
             path uses the same banner for visual consistency. */}
         {(activeDeck || inPlanSession) && (
-          <div className="anim-fade-up mb-4">
-            <div className="flex items-center justify-between gap-3 px-3 py-2 bg-primary/5 border border-primary/15">
+          <div className="anim-fade-up mb-5">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 bg-primary/5 border border-primary/15">
               <span className="text-[12px] text-on-surface-variant/65">
                 Studying{" "}
                 <span className="font-bold text-primary">
@@ -839,7 +898,7 @@ export default function ReviewPage() {
                 )}
               </span>
               <button onClick={() => activeDeck ? closeDeck() : clearPlanSession()}
-                className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+                className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors shrink-0">
                 {activeDeck ? "Switch deck" : "Clear filter"}
               </button>
             </div>
@@ -850,7 +909,7 @@ export default function ReviewPage() {
                 time they study the deck without needing the Plan
                 tab. Hand-saved decks (no summary) skip this. */}
             {activeDeck?.summary && (
-              <p className="mt-2 px-3 py-2 text-[12px] text-on-surface-variant/65 bg-surface-low border border-white/[0.04] leading-relaxed">
+              <p className="mt-2 px-4 py-3 text-[12px] text-on-surface-variant/65 bg-surface-low border border-white/[0.04] leading-relaxed">
                 {activeDeck.summary}
               </p>
             )}
@@ -907,7 +966,7 @@ export default function ReviewPage() {
               <h1 className="font-headline text-xl sm:text-2xl font-extrabold tracking-tighter text-primary leading-tight">
                 {getCardType(card).prompt(card)}
               </h1>
-              <p className="text-[12px] text-on-surface-variant/45 mt-0.5 leading-snug">
+              <p className="text-[12px] text-on-surface-variant/55 mt-1.5 leading-snug">
                 {getCardType(card).instruction(card)}
               </p>
             </div>
@@ -979,25 +1038,67 @@ export default function ReviewPage() {
                 <>
                   {/* Explanation panel. Prefers a writer-supplied
                       answerText / notes, falls back to a coach-tone
-                      template using the card's metadata (themes,
-                      eval loss, opening, phase, played-vs-best
-                      SAN). Always shows for mistake / puzzle / game
-                      cards so the user gets feedback every solve,
-                      not only on cards that happened to ship with
-                      hand-written notes. */}
+                      template using the card's metadata. Always
+                      shows for mistake / puzzle / game cards so the
+                      user gets feedback every solve, not only on
+                      cards that happened to ship with hand-written
+                      notes.
+                      
+                      Below the templated note, the user can ask
+                      the coach Edge Function for a deeper, AI-
+                      generated explanation. Result is cached per-
+                      card so the rate limit doesn't fire on a
+                      card the user already asked about. */}
                   {(() => {
                     const explanation = explainCard(card);
-                    if (!explanation) return null;
+                    const cardKeyForAI = cardId(card);
+                    const aiExplanation = getAIExplanation(aiExplanations, cardKeyForAI);
+                    if (!explanation && !aiExplanation) return null;
+                    const canAskAI = isAIAvailable() && !!card.played_san && !!card.best_san;
                     return (
-                      <div className={`p-4 mb-3 border ${
+                      <div className={`p-4 mb-3 border space-y-3 ${
                         phase === "correct" ? "bg-emerald-500/5 border-emerald-500/10" : "bg-surface-container border-white/[0.04]"
                       }`}>
-                        <span className={`text-xs font-headline font-bold uppercase tracking-wide block mb-2 ${
-                          phase === "correct" ? "text-emerald-400" : "text-on-surface-variant/50"
-                        }`}>
-                          {phase === "correct" ? "Solved" : "Answer"}
-                        </span>
-                        <p className="text-sm text-on-surface-variant/65 leading-relaxed">{explanation}</p>
+                        <div>
+                          <span className={`text-xs font-headline font-bold uppercase tracking-wide block mb-2 ${
+                            phase === "correct" ? "text-emerald-400" : "text-on-surface-variant/50"
+                          }`}>
+                            {phase === "correct" ? "Solved" : "Answer"}
+                          </span>
+                          {explanation && (
+                            <p className="text-sm text-on-surface-variant/70 leading-relaxed">{explanation}</p>
+                          )}
+                        </div>
+
+                        {aiExplanation && (
+                          <div className="pt-3 border-t border-white/[0.05]">
+                            <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/60 block mb-1.5">
+                              Coach take
+                            </span>
+                            <p className="text-sm text-on-surface-variant/75 leading-relaxed">{aiExplanation}</p>
+                          </div>
+                        )}
+
+                        {canAskAI && !aiExplanation && (
+                          <div className="pt-3 border-t border-white/[0.05] flex items-center gap-3">
+                            <button
+                              onClick={requestAIExplanation}
+                              disabled={aiExplainLoading || aiCooldownSec > 0}
+                              className="px-3 py-1.5 bg-primary/10 border border-primary/20 font-headline text-[10px] font-bold uppercase tracking-widest text-primary/80 hover:bg-primary/15 hover:text-primary transition-colors active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none"
+                            >
+                              {aiExplainLoading
+                                ? "Asking coach..."
+                                : aiCooldownSec > 0
+                                  ? `Try again in ${aiCooldownSec}s`
+                                  : "Explain with AI"}
+                            </button>
+                            <span className="text-[11px] text-on-surface-variant/40 leading-snug">
+                              {aiExplainError
+                                ? aiExplainError
+                                : "Get a deeper, position-aware take from the coach."}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -1039,8 +1140,11 @@ export default function ReviewPage() {
               "cards due / total" block. */}
           <div className="w-full xl:w-[300px] shrink-0 space-y-4">
             {/* Card metadata - rating, themes, opening, source link.
-                All optional. Skipped if the card carries none. */}
-            <CardMetadata card={card} />
+                All optional. Skipped if the card carries none.
+                `revealed` gates the spoiler-bearing fields (engine
+                line, eval loss, themes) so the user can't read the
+                answer off the sidebar before solving. */}
+            <CardMetadata card={card} revealed={phase === "correct" || phase === "revealed"} />
 
             {/* Anki queue breakdown - Today's queue grouped by state
                 so the user knows whether they're seeing new cards
@@ -1077,10 +1181,17 @@ export default function ReviewPage() {
 /**
  * Card metadata strip. Pulls together everything the writer side
  * may have attached: puzzle rating, theme tags, opening name, eval
- * loss, source link, played-vs-best SAN. Each row only renders
- * when the underlying field is present.
+ * loss, source link, played-vs-best SAN.
+ *
+ * `revealed` controls spoilers. Until the user solves or clicks
+ * Show Answer, the engine line, eval loss, and theme tags are
+ * hidden - reading them off the sidebar before playing would give
+ * away the answer (e.g. "hanging bishop" tells you exactly what
+ * to capture). Played SAN, rating, opening, and source link are
+ * never spoilers (the user already saw their own move in the
+ * prompt; rating / opening are framing) so they show through.
  */
-function CardMetadata({ card }) {
+function CardMetadata({ card, revealed = false }) {
   if (!card) return null;
   const themes = Array.isArray(card.themes) ? card.themes.slice(0, 5) : [];
   // Treat 0 (or negative) eval-loss as "no real loss to show" for
@@ -1089,13 +1200,18 @@ function CardMetadata({ card }) {
   const evalLoss = Number.isFinite(card.eval_loss_cp) && card.eval_loss_cp > 0
     ? card.eval_loss_cp
     : null;
-  const hasAny = card.rating || card.opening || card.played_san || card.best_san
-    || themes.length > 0 || evalLoss != null || card.source_url || card.source;
+
+  // Spoiler-bearing fields are gated by `revealed`. The visible-now
+  // set is what determines whether the panel renders at all.
+  const showBest = revealed && !!card.best_san;
+  const showEvalLoss = revealed && evalLoss != null;
+  const showThemes = revealed && themes.length > 0;
+
+  const hasAny = card.rating || card.opening || card.played_san
+    || showBest || showEvalLoss || showThemes
+    || card.source_url || card.source;
   if (!hasAny) return null;
 
-  // Eval-loss bar shown for AI-detected mistake cards. Mapped onto
-  // a 0..600 cp scale (a "blunder" is ~300+ cp, so 600 is the
-  // visual saturation point).
   const lossPct = evalLoss != null ? Math.min(100, Math.round((evalLoss / 600) * 100)) : null;
   const lossTone = evalLoss == null ? "" : evalLoss >= 300 ? "bg-error" : evalLoss >= 100 ? "bg-amber-400" : "bg-on-surface-variant/40";
 
@@ -1105,15 +1221,15 @@ function CardMetadata({ card }) {
         Card details
       </h3>
 
-      {(card.played_san || card.best_san) && (
-        <div className={`grid gap-2 ${card.played_san && card.best_san ? "grid-cols-2" : "grid-cols-1"}`}>
+      {(card.played_san || showBest) && (
+        <div className={`grid gap-2 ${card.played_san && showBest ? "grid-cols-2" : "grid-cols-1"}`}>
           {card.played_san && (
             <div>
               <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30 block mb-0.5">You played</span>
               <span className="font-mono text-sm text-error/80">{card.played_san}</span>
             </div>
           )}
-          {card.best_san && (
+          {showBest && (
             <div>
               <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30 block mb-0.5">Engine line</span>
               <span className="font-mono text-sm text-emerald-400">{card.best_san}</span>
@@ -1122,7 +1238,7 @@ function CardMetadata({ card }) {
         </div>
       )}
 
-      {evalLoss != null && evalLoss > 0 && (
+      {showEvalLoss && (
         <div>
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30">Eval loss</span>
@@ -1148,10 +1264,10 @@ function CardMetadata({ card }) {
         </div>
       )}
 
-      {themes.length > 0 && (
+      {showThemes && (
         <div>
           <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30 block mb-1.5">Themes</span>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1.5">
             {themes.map((t) => (
               <span key={t} className="px-1.5 py-0.5 bg-surface-container border border-white/[0.04] text-[10px] text-on-surface-variant/60">
                 {t.replace(/_/g, " ")}
@@ -1159,6 +1275,15 @@ function CardMetadata({ card }) {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Pre-reveal hint that there are spoiler-tagged details
+          waiting. Tells the user the panel isn't broken or empty -
+          they're just looking at it before they're meant to. */}
+      {!revealed && (card.best_san || evalLoss != null || themes.length > 0) && (
+        <p className="text-[10px] text-on-surface-variant/35 italic leading-snug">
+          Engine line and themes appear after you solve or reveal.
+        </p>
       )}
 
       {(card.source_url || card.source) && (

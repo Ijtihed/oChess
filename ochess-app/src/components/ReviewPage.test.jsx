@@ -150,4 +150,38 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
     // zero-loss card.
     expect(screen.queryByText(/Eval loss/i)).toBeNull();
   });
+
+  it("hides spoiler fields (engine line, eval loss, themes) before the user solves or reveals", () => {
+    // Regression: the right-hand Card details panel was leaking
+    // best_san / eval_loss / themes into view on first render,
+    // letting the user read the answer off the sidebar before
+    // even attempting the position.
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "spoil1", type: "mistake",
+        fen: "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        played_san: "Bxe5", best_san: "Nxe5",
+        eval_loss_cp: 350, themes: ["blunder", "hanging_bishop"],
+        ts: 1 },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    const studyButton = screen.getAllByText(/^Study$/)[0];
+    fireEvent.click(studyButton);
+    // played_san is shown (the user already saw their own move in
+    // the prompt). The other three fields must NOT appear before
+    // the user has solved or hit Show Answer.
+    // played_san surfaces in both the prompt subtitle and the side
+    // panel, so getAllByText - getByText would error out as
+    // multiple matches.
+    expect(screen.getAllByText(/Bxe5/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Nxe5/)).toBeNull();
+    expect(screen.queryByText(/Eval loss/i)).toBeNull();
+    expect(screen.queryByText(/^hanging bishop$/i)).toBeNull();
+    // We do show a quiet placeholder so the panel doesn't look
+    // empty - matches the "appears after you solve" copy.
+    expect(screen.getByText(/Engine line and themes appear/i)).toBeDefined();
+  });
 });

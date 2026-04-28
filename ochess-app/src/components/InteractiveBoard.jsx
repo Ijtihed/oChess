@@ -198,6 +198,15 @@ export default function InteractiveBoard({
     setSelectedSq(null);
     setLegalTargets([]);
 
+    // User picked a piece up and dropped it back where it was
+    // (or never actually moved it). That's a "I changed my mind"
+    // gesture, NOT an attempted move - never flash red, never
+    // call onMove, never play the error sound. The previous
+    // version sent a from===to move to handleMove, which compared
+    // unequal to the expected move and tripped the wrong-attempt
+    // banner on Anki cards.
+    if (sourceSquare === targetSquare) return false;
+
     const pt = typeof piece === "string" ? piece : (piece?.pieceType || piece?.type || "");
     const pieceColor = pt[0]?.toLowerCase() === "b" ? "b" : "w";
     const pieceType = pt[1]?.toUpperCase() || "";

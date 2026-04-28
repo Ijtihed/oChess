@@ -25,6 +25,7 @@ import {
 
 const CARDS_KEY = "ochess_review_cards";
 const SCHEDULE_KEY = "ochess_review_schedule";
+const AI_EXPLAIN_KEY = "ochess_review_ai_explanations";
 
 /** Stable id for a card. Card writers may use shapes that don't include
  *  `id`, so we fall back to a hash of `fen + type + ts` so two cards
@@ -143,6 +144,47 @@ export function summarizeDeck(cards, map) {
 /** 7-day forecast strip data for the Plan tab. */
 export function forecastDeckNextDays(cards, map, days = 7) {
   return forecastNextDays(cards, map, days);
+}
+
+/**
+ * Per-card AI-generated move explanations, cached locally so we
+ * never re-spend the rate-limited coach call on a card the user
+ * already asked about. Stored separately from cards/schedules so
+ * the existing data shapes stay clean and a stale explanation
+ * (e.g. card metadata changed) is easy to evict by clearing this
+ * one key alone.
+ *
+ * Shape: { [cardId]: { explanation: string, model?: string, ts: number } }
+ */
+export function loadAIExplanations() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(AI_EXPLAIN_KEY) || "{}");
+    return raw && typeof raw === "object" ? raw : {};
+  } catch { return {}; }
+}
+
+export function saveAIExplanations(map) {
+  try { localStorage.setItem(AI_EXPLAIN_KEY, JSON.stringify(map)); } catch {}
+}
+
+export function getAIExplanation(map, id) {
+  const entry = map?.[id];
+  if (!entry || typeof entry !== "object") return null;
+  return typeof entry.explanation === "string" && entry.explanation.trim()
+    ? entry.explanation.trim()
+    : null;
+}
+
+export function setAIExplanation(map, id, explanation, model) {
+  if (!id) return map;
+  return {
+    ...map,
+    [id]: {
+      explanation: String(explanation || "").slice(0, 1000),
+      model: typeof model === "string" ? model : null,
+      ts: Date.now(),
+    },
+  };
 }
 
 export { RATING, STATE };

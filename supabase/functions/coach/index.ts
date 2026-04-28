@@ -62,32 +62,40 @@ interface MistakeInput {
 }
 
 interface CoachRequest {
-  mistakes: MistakeInput[];
+  /** "decks" (default, legacy) generates 1-3 focused decks from a
+   *  query + mistake corpus. "explain" generates a 2-3 sentence
+   *  per-card explanation of why the engine line is better. */
+  mode?: "decks" | "explain";
+  /** Decks mode: full mistake corpus. Explain mode: ignored. */
+  mistakes?: MistakeInput[];
+  /** Decks mode: natural-language search. Explain mode: ignored. */
   query?: string;
+  /** Explain mode: the single card we want a coach note on. */
+  card?: MistakeInput;
 }
 
 /**
  * Response from the AI deck generator.
  *
- * The function used to return a multi-day plan + per-mistake
- * insights; that surface was removed in favor of a deck-creation
- * model. The user types a natural-language query in the Plan tab,
- * clicks "Generate decks with AI", and receives 1-3 focused decks
- * back. Each deck has a name, a filter query (mapped against the
- * client-side card metadata index), and a 1-2 sentence summary
- * shown as a banner inside the review session.
+ * - mode=decks: returns `summary` + 1-3 `decks` (name/query/summary).
+ * - mode=explain: returns `explanation` (2-3 sentences of plain-
+ *   English coach feedback on the user's move vs the engine line).
+ *
+ * Both modes share the rate-limit envelope and CORS handling.
  */
 interface CoachResponse {
   ok: boolean;
-  /** Optional one-line interpretation of the user's query. */
+  /** Decks mode: one-line interpretation of the user's query.
+   *  Explain mode: unused. */
   summary?: string;
-  /** 1-3 focused decks. Empty array if the model couldn't pick any
-   *  reasonable angles from the user's corpus + query. */
+  /** Decks mode: 1-3 focused decks. */
   decks?: {
     name: string;
     query: string;
     summary: string;
   }[];
+  /** Explain mode: 2-3 sentence per-card explanation. */
+  explanation?: string;
   error?: string;
   model?: string;
   rate_limit?: {
@@ -172,6 +180,40 @@ function compactMistake(m: MistakeInput): string {
   const evalNote = m.eval_loss_cp ? ` -${(m.eval_loss_cp / 100).toFixed(1)}` : "";
   const opening = m.opening ? ` [${m.opening}]` : "";
   return `${m.phase || "?"} ${m.played_san || "?"} (best ${m.best_san || "?"})${evalNote} ${themes}${opening}`;
+}
+
+function buildExplainPrompt(card: MistakeInput): string {
+  // Tightest possible context window for the explain mode: just the
+  // one card. Stockfish has already done the analysis (eval_loss_cp,
+  // best_san), so the LLM's job is to explain WHY the engine line
+  // is better in plain language - not to redo the calculation.
+  const themes = (card.themes || []).slice(0, 4).join(", ");
+  const evalNote = card.eval_loss_cp
+    ? `${(card.eval_loss_cp / 100).toFixed(1)} pawns of evaluation`
+    : "some evaluation";
+  const phase = card.phase ? `${card.phase} position` : "position";
+  const opening = card.opening ? ` from the ${card.opening}` : "";
+
+  return `You are a chess coach giving short, concrete feedback on a single move.
+
+Position FEN: ${card.fen || "(unavailable)"}
+Phase: ${phase}${opening}
+Move played by the student: ${card.played_san || "(unknown)"}
+Engine recommendation: ${card.best_san || "(unknown)"}
+Eval loss: ${evalNote}
+Stockfish themes: ${themes || "(none)"}
+
+Reply with ONLY a JSON object, no prose around it:
+
+{
+  "explanation": "2-3 sentences. Explain WHY ${card.best_san || "the engine move"} is better than ${card.played_san || "the student's move"} in concrete chess terms (what gets attacked / defended / trapped / forced). Reference actual squares or pieces if the FEN supports it. Do NOT just rephrase the eval loss number. Address the student in second person, friendly but direct, no fluff."
+}
+
+Constraints:
+- 2-3 sentences total. Hard cap.
+- No engine-speak ("at depth 22", "centipawn loss", etc.).
+- No flattery, no apologies, no preamble - just the explanation.
+- If you genuinely can't tell why from the inputs given, say so in one sentence ("Without seeing the full position, the key idea is X.") rather than inventing details.`;
 }
 
 function buildPrompt(mistakes: MistakeInput[], query: string | undefined): string {
@@ -287,6 +329,21 @@ function parseCoachJson(content: string): CoachResponse | null {
   }
 }
 
+function parseExplainJson(content: string): { ok: boolean; explanation?: string } {
+  try {
+    const parsed = JSON.parse(content);
+    if (!parsed || typeof parsed !== "object") return { ok: false };
+    const explanation = typeof parsed.explanation === "string" ? parsed.explanation.trim() : "";
+    if (!explanation) return { ok: false };
+    // Hard cap on output length so a misbehaving model can't blow
+    // up the UI - the prompt asks for 2-3 sentences which sits
+    // well below this anyway.
+    return { ok: true, explanation: explanation.slice(0, 800) };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // ── CORS ──
 // Supabase JS sends `apikey`, `x-client-info`, and `authorization`
 // alongside `content-type` on every functions.invoke() call. The
@@ -331,7 +388,7 @@ Deno.serve(async (req) => {
   }
   if (!rate.allowed) {
     return jsonRateLimited(
-      `You're generating decks a lot. Try again in ${rate.retryAfterSeconds}s.`,
+      `Coach is rate-limited. Try again in ${rate.retryAfterSeconds}s.`,
       rate
     );
   }
@@ -343,6 +400,32 @@ Deno.serve(async (req) => {
     return jsonErr("Invalid JSON body", 400);
   }
 
+  const mode = body.mode === "explain" ? "explain" : "decks";
+  const rateMeta = {
+    calls_in_window: rate.callsInWindow,
+    max_calls: rate.maxCalls,
+    window_seconds: rate.windowSeconds,
+  };
+
+  // ── Explain mode: per-card move explanation ──
+  if (mode === "explain") {
+    if (!body.card || typeof body.card !== "object") {
+      return jsonErr("Provide a card to explain", 400);
+    }
+    const prompt = buildExplainPrompt(body.card);
+    let groq = await callGroq(prompt, MODEL);
+    let modelUsed = MODEL;
+    if (!groq.ok) {
+      const fb = await callGroq(prompt, FALLBACK_MODEL);
+      if (fb.ok) { groq = fb; modelUsed = FALLBACK_MODEL; }
+    }
+    if (!groq.ok) return jsonErr(groq.error || "Coach unavailable", 502);
+    const parsed = parseExplainJson(groq.content!);
+    if (!parsed.ok) return jsonErr("Coach returned malformed JSON", 502);
+    return jsonOk({ ok: true, explanation: parsed.explanation, model: modelUsed, rate_limit: rateMeta });
+  }
+
+  // ── Decks mode: 1-3 focused decks ──
   if (!Array.isArray(body.mistakes) || body.mistakes.length === 0) {
     return jsonErr("Provide at least 1 mistake", 400);
   }
@@ -362,11 +445,7 @@ Deno.serve(async (req) => {
   const parsed = parseCoachJson(groq.content!);
   if (!parsed) return jsonErr("Coach returned malformed JSON", 502);
 
-  return jsonOk({ ...parsed, model: modelUsed, rate_limit: {
-    calls_in_window: rate.callsInWindow,
-    max_calls: rate.maxCalls,
-    window_seconds: rate.windowSeconds,
-  }});
+  return jsonOk({ ...parsed, model: modelUsed, rate_limit: rateMeta });
 });
 
 function jsonOk(payload: CoachResponse): Response {

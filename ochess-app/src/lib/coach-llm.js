@@ -142,6 +142,108 @@ export async function generateAIDecks({ mistakes, query } = {}) {
   }
 }
 
+/**
+ * Per-card move explanation. Sends a single card (slim metadata
+ * + FEN) to the coach Edge Function in `mode: "explain"` and
+ * returns 2-3 sentences of plain-English coaching on why the
+ * engine line is better than the user's played move.
+ *
+ * Shares the same per-user rate limit as `generateAIDecks` so
+ * a runaway client can't spam the function from one surface.
+ *
+ * @param {Object} card  Card to explain. Must carry at least
+ *   `played_san` and `best_san`; FEN, themes, eval_loss_cp,
+ *   opening, and phase are forwarded if present.
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   explanation?: string,
+ *   model?: string|null,
+ *   rateLimit?: { callsInWindow, maxCalls, windowSeconds },
+ *   error?: string,
+ *   rateLimited?: boolean,
+ *   retryAfterSeconds?: number,
+ *   callsInWindow?: number,
+ *   maxCalls?: number,
+ *   windowSeconds?: number,
+ * }>}
+ */
+export async function explainCardWithAI(card) {
+  if (!supabase) return { ok: false, error: "Online features not configured." };
+  if (!card || typeof card !== "object") {
+    return { ok: false, error: "No card supplied." };
+  }
+  if (!card.played_san || !card.best_san) {
+    return { ok: false, error: "Need both played and engine moves to explain." };
+  }
+
+  const slim = {
+    fen: card.fen || null,
+    played_san: card.played_san,
+    best_san: card.best_san,
+    eval_loss_cp: card.eval_loss_cp || 0,
+    phase: card.phase || null,
+    themes: Array.isArray(card.themes) ? card.themes.slice(0, 4) : [],
+    opening: card.opening || null,
+  };
+
+  const timeoutMs = 30_000;
+  const timeout = new Promise((resolve) =>
+    setTimeout(() => resolve({ __timeout: true }), timeoutMs)
+  );
+
+  try {
+    const result = await Promise.race([
+      supabase.functions.invoke("coach", {
+        body: { mode: "explain", card: slim },
+      }),
+      timeout,
+    ]);
+    if (result?.__timeout) {
+      return { ok: false, error: "AI took too long. Try again in a moment." };
+    }
+    const { data, error } = result;
+    const rateData = data && typeof data === "object" && Number.isFinite(data.retry_after_seconds)
+      ? data
+      : null;
+    const isRateLimited = error?.context?.status === 429 || (rateData && rateData.ok === false && rateData.retry_after_seconds);
+    if (isRateLimited && rateData) {
+      return {
+        ok: false,
+        error: rateData.error || `Rate limit reached. Try again in ${rateData.retry_after_seconds}s.`,
+        rateLimited: true,
+        retryAfterSeconds: Number(rateData.retry_after_seconds) || 0,
+        callsInWindow: Number(rateData.calls_in_window) || 0,
+        maxCalls: Number(rateData.max_calls) || 0,
+        windowSeconds: Number(rateData.window_seconds) || 0,
+      };
+    }
+    if (error) {
+      const msg = data?.error || error.message || "AI unavailable";
+      return { ok: false, error: msg };
+    }
+    if (!data || typeof data !== "object") {
+      return { ok: false, error: "Empty response from AI." };
+    }
+    if (data.ok === false) return { ok: false, error: data.error || "AI failed" };
+    const explanation = typeof data.explanation === "string" ? data.explanation.trim() : "";
+    if (!explanation) return { ok: false, error: "AI returned an empty explanation." };
+    return {
+      ok: true,
+      explanation,
+      model: data.model || null,
+      rateLimit: data.rate_limit && typeof data.rate_limit === "object"
+        ? {
+            callsInWindow: Number(data.rate_limit.calls_in_window) || 0,
+            maxCalls: Number(data.rate_limit.max_calls) || 0,
+            windowSeconds: Number(data.rate_limit.window_seconds) || 0,
+          }
+        : null,
+    };
+  } catch (e) {
+    return { ok: false, error: e?.message || "AI unavailable" };
+  }
+}
+
 /** Lightweight helper: is the AI deck generator reachable from
  *  the client? True iff Supabase is configured. We intentionally
  *  don't ping the function here - that would cost a real call.

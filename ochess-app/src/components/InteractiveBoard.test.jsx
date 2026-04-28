@@ -69,6 +69,22 @@ describe("InteractiveBoard - drag/drop", () => {
     expect(opts.position).toBe(START_FEN);
     expect(opts.boardOrientation).toBe("black");
   });
+
+  it("treats a same-square drop (pick up + drop back) as a silent no-op", async () => {
+    // Regression: previously this would call onMove({from:e2,to:e2}),
+    // which in Anki review would compare unequal to the expected
+    // move and trigger the wrong-attempt red flash. Same-square
+    // drops are a "changed my mind" gesture - no move, no error.
+    const sounds = await import("../lib/sounds");
+    sounds.playError.mockClear();
+    const onMove = vi.fn();
+    render(<InteractiveBoard fen={START_FEN} onMove={onMove} playerColor="w" />);
+    const opts = lastProps.current;
+    const result = opts.onPieceDrop({ sourceSquare: "e2", targetSquare: "e2", piece: "wP" });
+    expect(result).toBe(false);
+    expect(onMove).not.toHaveBeenCalled();
+    expect(sounds.playError).not.toHaveBeenCalled();
+  });
 });
 
 describe("InteractiveBoard - square click sanity", () => {
