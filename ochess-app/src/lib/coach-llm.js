@@ -1,43 +1,52 @@
 /**
  * Client wrapper for the `coach` Supabase Edge Function.
  *
- * The heavy lifting (Groq call, prompt construction, JSON parsing) is
- * server-side. This file just packages the user's mistake corpus,
- * forwards it through the authenticated Supabase client, and returns
- * the structured plan.
+ * The function used to return a multi-day study plan + per-card
+ * insights. That surface was removed in favour of an AI-driven
+ * deck generator: the user types a natural-language query in the
+ * Plan tab, this wrapper forwards it to the Edge Function, and we
+ * receive 1-3 focused decks back ({ name, query, summary }) that
+ * the user can save into the deck browser.
  *
- * If Supabase is not configured (offline-only mode) or the function
- * isn't deployed yet, the wrapper returns `{ ok: false, error }` so
- * the UI can surface a clear "AI coach unavailable" state instead of
- * a thrown promise.
+ * If Supabase is not configured (offline-only mode) or the
+ * function isn't deployed yet, the wrapper returns
+ * `{ ok: false, error }` so the UI can surface a clear "AI
+ * unavailable" state instead of a thrown promise.
  */
 
 import { supabase } from "./supabase";
 
 /**
- * Send a mistake corpus + optional free-text query to the coach
- * function and return its structured response.
+ * Send a mistake corpus + a free-text query to the coach Edge
+ * Function and return its structured deck list.
  *
- * @param {Array} mistakes - cards from `ochess_review_cards` filtered
- *   to `type === "mistake"` (and optionally `type === "puzzle"`).
- *   We send a slim subset of fields per card; the FEN is intentionally
- *   omitted because it isn't needed for the natural-language plan
- *   and keeping it out lowers token cost.
- * @param {string} [query] - free-text drill query, e.g. "endgame fork".
- * @param {number} [dailyQuota] - cards per day in the generated plan.
+ * @param {Array}  mistakes  Cards filtered to type === "mistake"
+ *   or "puzzle". We send a slim subset of fields per card; the
+ *   FEN is intentionally omitted to lower token cost (the LLM
+ *   doesn't need it to pick filters).
+ * @param {string} [query]   Free-text drill query. The whole
+ *   point of this surface is the user steering with their own
+ *   words ("hanging knights in the najdorf"). Optional, but
+ *   strongly recommended.
+ *
  * @returns {Promise<{
  *   ok: boolean,
  *   summary?: string,
- *   plan?: { day: number, focus: string, explanation: string, card_count: number }[],
- *   insights?: { game_id: string|null, ply: number|null, insight: string }[],
- *   model?: string,
+ *   decks?: { name: string, query: string, summary: string }[],
+ *   model?: string|null,
+ *   rateLimit?: { callsInWindow: number, maxCalls: number, windowSeconds: number },
  *   error?: string,
+ *   rateLimited?: boolean,
+ *   retryAfterSeconds?: number,
+ *   callsInWindow?: number,
+ *   maxCalls?: number,
+ *   windowSeconds?: number,
  * }>}
  */
-export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
+export async function generateAIDecks({ mistakes, query } = {}) {
   if (!supabase) return { ok: false, error: "Online features not configured." };
   if (!Array.isArray(mistakes) || mistakes.length === 0) {
-    return { ok: false, error: "Need at least 1 mistake to coach." };
+    return { ok: false, error: "Run analysis first - the AI needs at least one mistake card to work from." };
   }
 
   const slim = mistakes.slice(0, 30).map((c) => ({
@@ -52,12 +61,12 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
     game_id: c.game_id || null,
   }));
 
-  // Hard timeout. Groq's free tier is fast (~3s typical) but if the
-  // function or network hangs we don't want the UI stuck on
-  // "Thinking…" forever. 30 s is generous and well under the
-  // user's patience threshold. supabase.functions.invoke doesn't
-  // accept an AbortSignal as of @supabase/supabase-js 2.x, so we
-  // race the invoke against a timer instead.
+  // Hard timeout. Groq's free tier is fast (~3 s typical) but if
+  // the function or network hangs we don't want the UI stuck
+  // forever. 30 s is generous and well under the user's patience
+  // threshold. supabase.functions.invoke doesn't accept an
+  // AbortSignal as of @supabase/supabase-js 2.x, so we race the
+  // invoke against a timer instead.
   const timeoutMs = 30_000;
   const timeout = new Promise((resolve) =>
     setTimeout(() => resolve({ __timeout: true }), timeoutMs)
@@ -66,18 +75,18 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
   try {
     const result = await Promise.race([
       supabase.functions.invoke("coach", {
-        body: { mistakes: slim, query: query || "", daily_quota: dailyQuota },
+        body: { mistakes: slim, query: query || "" },
       }),
       timeout,
     ]);
     if (result?.__timeout) {
-      return { ok: false, error: "Coach took too long. Try again in a moment." };
+      return { ok: false, error: "AI took too long. Try again in a moment." };
     }
     const { data, error } = result;
     // Rate-limit detection. Edge Function returns 429 with a
     // structured body when the user hits the cap; supabase-js
     // surfaces that as `error.context.status === 429` with the
-    // body still parseable in `data`. We pull the structured
+    // body still parseable in `data`. Pull the structured
     // retry-after fields off either side and pass them up so the
     // UI can render an exact countdown.
     const rateData = data && typeof data === "object" && Number.isFinite(data.retry_after_seconds)
@@ -96,35 +105,29 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
       };
     }
     if (error) {
-      // Generic error path. Falls back to error.message when no
-      // structured body is present.
-      const msg = data?.error || error.message || "Coach unavailable";
+      const msg = data?.error || error.message || "AI unavailable";
       return { ok: false, error: msg };
     }
     if (!data || typeof data !== "object") {
-      return { ok: false, error: "Empty response from coach." };
+      return { ok: false, error: "Empty response from AI." };
     }
-    if (data.ok === false) return { ok: false, error: data.error || "Coach failed" };
-    // Defensive: the LLM occasionally returns malformed JSON the
-    // server tries to parse - if any of the structured fields are
-    // missing, render whatever we got and skip the empty sections.
-    // We normalize each plan day's `query` field client-side too,
-    // because the new field arrived in a server bump that older
-    // deployments may still be missing - keep the UI working with
-    // either shape.
+    if (data.ok === false) return { ok: false, error: data.error || "AI failed" };
+
+    // Defensive: normalise per-deck fields. Some models hand back
+    // wrapper quotes, missing fields, or an empty decks array if
+    // the user's query genuinely doesn't match anything in the
+    // corpus - all should render as "0 decks generated, refine
+    // your query" instead of crashing the UI.
     return {
       ok: true,
       summary: typeof data.summary === "string" ? data.summary : null,
-      plan: Array.isArray(data.plan)
-        ? data.plan.map((d) => ({
-            day: Number(d?.day) || 1,
-            focus: typeof d?.focus === "string" ? d.focus : "Mixed practice",
-            explanation: typeof d?.explanation === "string" ? d.explanation : "",
-            card_count: Number(d?.card_count) || 5,
+      decks: Array.isArray(data.decks)
+        ? data.decks.map((d) => ({
+            name: typeof d?.name === "string" ? d.name.trim() : "Untitled deck",
             query: typeof d?.query === "string" ? d.query.trim() : "",
-          }))
+            summary: typeof d?.summary === "string" ? d.summary.trim() : "",
+          })).filter((d) => d.name && d.query)
         : [],
-      insights: Array.isArray(data.insights) ? data.insights : [],
       model: data.model || null,
       rateLimit: data.rate_limit && typeof data.rate_limit === "object"
         ? {
@@ -135,15 +138,21 @@ export async function callCoach({ mistakes, query, dailyQuota = 5 } = {}) {
         : null,
     };
   } catch (e) {
-    return { ok: false, error: e?.message || "Coach unavailable" };
+    return { ok: false, error: e?.message || "AI unavailable" };
   }
 }
 
-/** Lightweight helper: is the coach feature reachable from the
- *  client? True iff Supabase is configured. We intentionally don't
- *  ping the function here - that would cost a real call. The UI
- *  handles 4xx/5xx gracefully so an undeployed function still
- *  surfaces a clean error message rather than a hang. */
-export function isCoachAvailable() {
+/** Lightweight helper: is the AI deck generator reachable from
+ *  the client? True iff Supabase is configured. We intentionally
+ *  don't ping the function here - that would cost a real call.
+ *  The UI handles 4xx/5xx gracefully so an undeployed function
+ *  still surfaces a clean error message rather than a hang. */
+export function isAIAvailable() {
   return !!supabase;
 }
+
+// Backward-compat shims. Kept so old imports keep working until
+// the next round of cleanup. New callers should use
+// `generateAIDecks` / `isAIAvailable`.
+export const callCoach = generateAIDecks;
+export const isCoachAvailable = isAIAvailable;

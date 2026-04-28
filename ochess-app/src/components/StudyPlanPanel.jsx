@@ -19,7 +19,7 @@ import {
   loadSchedules,
   buildShareUrl,
 } from "../lib/review-cards";
-import { callCoach, isCoachAvailable } from "../lib/coach-llm";
+import { generateAIDecks, isAIAvailable } from "../lib/coach-llm";
 import {
   loadDrillSets,
   saveDrillSets,
@@ -185,29 +185,31 @@ export default function StudyPlanPanel({ onStartSession }) {
   const [editingSetId, setEditingSetId] = useState(null);
   const canSaveDrill = !!(query.trim() || activeChip);
 
-  // AI Coach state - populated by the Edge Function call. Stored
-  // alongside the cards so a user reading the plan and switching
-  // tabs doesn't lose what the LLM said. Cleared explicitly when the
-  // user re-analyzes (the corpus may have shifted) or when they hit
-  // the regenerate button.
-  const [coachLoading, setCoachLoading] = useState(false);
-  const [coachData, setCoachData] = useState(null);
-  const [coachError, setCoachError] = useState(null);
+  // AI deck-generator state. The user types a query, clicks
+  // "Generate decks with AI", we call the Edge Function, and a
+  // 1-3-element list of proposed decks comes back as
+  // `aiResults.decks`. Each row in the preview UI then lets the
+  // user save individual decks (with match-count visibility).
+  // Cleared by clicking "Dismiss" on the preview block.
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResults, setAiResults] = useState(null); // { summary, decks: [...] }
+  const [aiError, setAiError] = useState(null);
+  // Tracks which proposed decks the user has already saved (by
+  // their array index in the response) so the preview can show
+  // "Saved" instead of letting them double-save.
+  const [aiSavedIdx, setAiSavedIdx] = useState(new Set());
   // Per-user rate-limit cooldown surfaced from the Edge Function.
   // When the server returns a 429, we capture `retryAfterSeconds`
   // and tick down once per second until it hits 0. The Generate
   // button is disabled + relabeled while the countdown is active
   // so the user never has to retry-and-fail to learn the cap.
-  const [coachCooldownSec, setCoachCooldownSec] = useState(0);
-  // Last-known usage from a successful call: { callsInWindow,
-  // maxCalls, windowSeconds }. Lets us render "2/3 used" next to
-  // the button without an extra round-trip.
-  const [coachUsage, setCoachUsage] = useState(null);
+  const [aiCooldownSec, setAiCooldownSec] = useState(0);
+  const [aiUsage, setAiUsage] = useState(null);
   useEffect(() => {
-    if (coachCooldownSec <= 0) return;
-    const t = setTimeout(() => setCoachCooldownSec((n) => Math.max(0, n - 1)), 1000);
+    if (aiCooldownSec <= 0) return;
+    const t = setTimeout(() => setAiCooldownSec((n) => Math.max(0, n - 1)), 1000);
     return () => clearTimeout(t);
-  }, [coachCooldownSec]);
+  }, [aiCooldownSec]);
 
   const profileWeakness = useMemo(() => buildWeaknessProfile(allCards), [allCards]);
 
@@ -275,74 +277,6 @@ export default function StudyPlanPanel({ onStartSession }) {
     setSavingDrill(true);
   }, []);
 
-  // Convert one AI plan-day into a saveable filter. The LLM is
-  // instructed to populate `query` from a fixed vocabulary that
-  // matches the same fields our free-text filter checks; if it
-  // forgets or sends garbage, fall back to extracting plausible
-  // tokens from the human-readable focus title.
-  const dayToFilter = useCallback((day) => {
-    const fromQuery = (day?.query || "").trim();
-    if (fromQuery) return { name: day.focus, query: fromQuery };
-    // Fallback: pull our known vocabulary words out of the focus
-    // title. Keeps "Hanging knights in the middlegame" -> "hanging
-    // middlegame" without us ever calling out to the LLM again.
-    const words = String(day?.focus || "").toLowerCase().split(/\s+/);
-    const vocab = ["opening", "middlegame", "endgame", "blunder", "mistake", "missed_mate", "missed_capture", "capture_blunder", "hanging", "queen", "rook", "bishop", "knight", "fork", "pin"];
-    const tokens = words.filter((w) => vocab.some((v) => w.startsWith(v.split("_")[0])));
-    return { name: day?.focus || "Coach plan", query: tokens.join(" ") || day?.focus || "" };
-  }, []);
-
-  // One-click "Save this AI day as a drill set" - the user can
-  // come back to it from the My Drill Sets list anytime.
-  const [coachToast, setCoachToast] = useState(null);
-  const showCoachToast = useCallback((text) => {
-    setCoachToast(text);
-    setTimeout(() => setCoachToast(null), 3000);
-  }, []);
-
-  const saveCoachDay = useCallback((day) => {
-    const { name, query: q } = dayToFilter(day);
-    if (!q) {
-      showCoachToast("Couldn't pick a filter for this day. Try Practice instead.");
-      return;
-    }
-    // Tag coach-generated drills so the deck browser can badge
-    // them. Lets a returning user tell which decks were AI-
-    // suggested vs hand-saved.
-    const { sets, id } = addDrillSet(drillSets, { name, query: q, source: "coach" });
-    if (!id) return;
-    setDrillSets(sets);
-    saveDrillSets(sets);
-    showCoachToast(`Saved "${name}" to your decks.`);
-  }, [drillSets, dayToFilter, showCoachToast]);
-
-  const practiceCoachDay = useCallback((day) => {
-    const { name, query: q } = dayToFilter(day);
-    onStartSession?.({ query: q || "", chipId: null, setName: name });
-  }, [dayToFilter, onStartSession]);
-
-  // Save every day in the AI plan as a drill set in one click. Skips
-  // days that resolve to an empty filter so the user doesn't end up
-  // with garbage rows.
-  const saveCoachPlanAsDrills = useCallback(() => {
-    if (!coachData?.plan?.length) return;
-    let working = drillSets;
-    let saved = 0;
-    for (const day of coachData.plan) {
-      const { name, query: q } = dayToFilter(day);
-      if (!q) continue;
-      const { sets, id } = addDrillSet(working, { name, query: q, source: "coach" });
-      if (id) { working = sets; saved += 1; }
-    }
-    if (saved === 0) {
-      showCoachToast("No filterable days in this plan. Try regenerating.");
-      return;
-    }
-    setDrillSets(working);
-    saveDrillSets(working);
-    showCoachToast(`Saved ${saved} deck${saved === 1 ? "" : "s"} from this plan. Open Today to drill them.`);
-  }, [coachData, drillSets, dayToFilter, showCoachToast]);
-
   const cancelImport = useCallback(() => {
     if (!abortRef.current) return;
     setCancelling(true);
@@ -353,59 +287,107 @@ export default function StudyPlanPanel({ onStartSession }) {
     // we have partial cards or flicker between states.
   }, []);
 
-  const generateAICoach = useCallback(async () => {
-    // Pre-flight: respect the cooldown the server told us about
-    // last time. Avoids an unnecessary round-trip and matches the
-    // disabled-button UX.
-    if (coachCooldownSec > 0) return;
-    setCoachLoading(true);
-    setCoachError(null);
+  // ── AI deck generation ──
+  //
+  // Replaces the old "Generate AI plan" multi-day-plan flow. The
+  // user types a query in the search field (or picks a chip),
+  // clicks "Generate decks with AI", and the LLM proposes 1-3
+  // focused decks with a name + filter + one-line summary each.
+  //
+  // The proposals are PREVIEW-ONLY until the user clicks "Save"
+  // on the rows they want. 0-match decks get a "Save for later?"
+  // affordance per the agreed flow.
+
+  // Compute a deck's match count against the user's actual card
+  // collection. Used both for the preview UI and for the toast
+  // shown when saving.
+  const matchCountForQuery = useCallback((q) => {
+    if (!q) return 0;
+    return countDrillSetCards({ query: q, chipId: null }, allCards, {
+      chipFor: (id) => COMMON_WEAKNESS_CHIPS.find((c) => c.id === id),
+      queryFilter: filterCardsByQuery,
+    });
+  }, [allCards]);
+
+  const generateAIDecksFromQuery = useCallback(async () => {
+    if (aiCooldownSec > 0) return;
+    setAiLoading(true);
+    setAiError(null);
+    setAiResults(null);
+    setAiSavedIdx(new Set());
     try {
-      // Send the mistakes that match the *current filter* - that way
-      // a user who chipped "Endgame" gets an endgame-specific plan,
-      // not a generic one. If nothing's filtered, send the full
-      // mistake corpus (capped at 30 server-side).
-      const mistakes = (filteredCards.length > 0 ? filteredCards : allCards)
+      // Send the FULL mistake + puzzle corpus to the LLM (capped
+      // at 30 server-side). Don't pre-filter to the current
+      // chip/query selection - the AI is steering its own focus
+      // from the natural-language query, not from the chip
+      // narrowing. (The chips remain useful for substring
+      // search-as-you-type without the AI.)
+      const mistakes = allCards
         .filter((c) => c.type === "mistake" || c.type === "puzzle")
         .slice(0, 30);
       if (mistakes.length === 0) {
-        setCoachError("No mistake cards to coach yet. Run analysis first.");
+        setAiError("Run analysis first - the AI needs at least one mistake to work from.");
         return;
       }
-      const result = await callCoach({ mistakes, query, dailyQuota: 5 });
+      const result = await generateAIDecks({ mistakes, query });
       if (!result.ok) {
-        // Special-case the 429: arm the cooldown countdown and surface
-        // a friendly inline notice. Don't toss it on the generic
-        // error pile because the user CAN retry just not yet.
         if (result.rateLimited) {
-          setCoachCooldownSec(Math.max(1, result.retryAfterSeconds || 0));
-          setCoachUsage({
+          setAiCooldownSec(Math.max(1, result.retryAfterSeconds || 0));
+          setAiUsage({
             callsInWindow: result.callsInWindow || 0,
             maxCalls: result.maxCalls || 0,
             windowSeconds: result.windowSeconds || 0,
           });
-          setCoachError(null);
+          setAiError(null);
           return;
         }
-        setCoachError(result.error || "Coach unavailable.");
+        setAiError(result.error || "AI unavailable.");
         return;
       }
-      setCoachData(result);
-      // Refresh the usage badge from the success response so the
-      // next "x/y used" chip is accurate.
-      if (result.rateLimit) setCoachUsage(result.rateLimit);
+      setAiResults(result);
+      if (result.rateLimit) setAiUsage(result.rateLimit);
     } catch (e) {
-      setCoachError(e?.message || "Coach unavailable.");
+      setAiError(e?.message || "AI unavailable.");
     } finally {
-      setCoachLoading(false);
+      setAiLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredCards, allCards, query, coachCooldownSec]);
+  }, [allCards, query, aiCooldownSec]);
 
-  const dismissCoach = useCallback(() => {
-    setCoachData(null);
-    setCoachError(null);
+  const dismissAI = useCallback(() => {
+    setAiResults(null);
+    setAiError(null);
+    setAiSavedIdx(new Set());
   }, []);
+
+  // Save one of the proposed decks. Tagged with source="coach"
+  // and `summary` so the deck browser shows the AI badge and the
+  // session view renders the deck banner.
+  const saveProposedDeck = useCallback((deck, idx) => {
+    if (!deck?.query || !deck?.name) return;
+    const { sets, id } = addDrillSet(drillSets, {
+      name: deck.name,
+      query: deck.query,
+      source: "coach",
+      summary: deck.summary || "",
+    });
+    if (!id) return;
+    setDrillSets(sets);
+    saveDrillSets(sets);
+    setAiSavedIdx((prev) => {
+      const next = new Set(prev);
+      next.add(idx);
+      return next;
+    });
+  }, [drillSets]);
+
+  // "Practice now" - drop straight into a session for the
+  // proposed deck without saving it. Useful when the user wants
+  // to try a deck before committing.
+  const practiceProposedDeck = useCallback((deck) => {
+    if (!deck?.query || !deck?.name) return;
+    onStartSession?.({ query: deck.query, chipId: null, setName: deck.name });
+  }, [onStartSession]);
 
   const runImport = useCallback(async () => {
     if (!useChesscom && !useLichess) {
@@ -775,163 +757,6 @@ export default function StudyPlanPanel({ onStartSession }) {
         )}
       </div>
 
-      {/* AI Coach - opt-in. Reads the user's mistake corpus and
-          generates a natural-language plan via the `coach` Edge
-          Function. The button appears even before generation; once
-          we have a result we render summary + multi-day plan +
-          per-card insights. */}
-      {isCoachAvailable() && (
-        <div className="p-5 bg-surface-low border border-primary/15">
-          <div className="flex items-baseline justify-between mb-3">
-            <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-primary/80">AI Coach</h3>
-            {coachData && (
-              <button onClick={dismissCoach}
-                className="text-[10px] uppercase tracking-widest text-on-surface-variant/40 hover:text-on-surface-variant/70 transition-colors">
-                Dismiss
-              </button>
-            )}
-          </div>
-
-          {!coachData && !coachError && (
-            <p className="text-[12px] text-on-surface-variant/50 mb-3 leading-relaxed">
-              Ask a free Llama 3 model to read your mistakes, name your weakness in plain English,
-              and write you a multi-day plan. Inference happens on a free Groq API tier through a
-              Supabase Edge Function - no per-request cost.
-            </p>
-          )}
-          {coachError && (
-            <div className="p-3 bg-error/10 border border-error/20 text-[12px] text-error mb-3">
-              {coachError}
-            </div>
-          )}
-
-          {coachData && (
-            <div className="space-y-4 mb-4">
-              {coachData.summary && (
-                <p className="text-[13px] text-on-surface leading-relaxed">{coachData.summary}</p>
-              )}
-              {Array.isArray(coachData.plan) && coachData.plan.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 block">
-                      Multi-day plan
-                    </span>
-                    <button onClick={saveCoachPlanAsDrills}
-                      title="Save every day in this plan as its own drill set"
-                      className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
-                      Save all as drills
-                    </button>
-                  </div>
-                  {coachData.plan.map((d) => {
-                    const filter = dayToFilter(d);
-                    const matchCount = filter.query
-                      ? countDrillSetCards({ query: filter.query, chipId: null }, allCards, {
-                          chipFor: (id) => COMMON_WEAKNESS_CHIPS.find((c) => c.id === id),
-                          queryFilter: filterCardsByQuery,
-                        })
-                      : 0;
-                    return (
-                      <div key={d.day} className="px-3 py-2 bg-surface-container border border-white/[0.04]">
-                        <div className="flex items-baseline justify-between mb-0.5 gap-2">
-                          <span className="font-headline text-[13px] font-bold text-primary truncate">
-                            Day {d.day} · {d.focus}
-                          </span>
-                          <span className="text-[10px] text-on-surface-variant/30 tabular-nums shrink-0">
-                            {matchCount} card{matchCount === 1 ? "" : "s"}
-                          </span>
-                        </div>
-                        {d.explanation && (
-                          <p className="text-[12px] text-on-surface-variant/55 leading-relaxed mb-2">{d.explanation}</p>
-                        )}
-                        {/* Surface the actual filter the day will
-                            apply, so the user can sanity-check what
-                            "Practice" / "Save" will load before
-                            clicking. The fallback path strips this
-                            out (it's the same as focus). */}
-                        {filter.query && filter.query.toLowerCase() !== filter.name.toLowerCase() && (
-                          <span className="text-[10px] text-on-surface-variant/30 block mb-2">
-                            Filter: <span className="font-mono text-on-surface-variant/45">{filter.query}</span>
-                          </span>
-                        )}
-                        <div className="flex gap-1.5">
-                          <button onClick={() => practiceCoachDay(d)}
-                            disabled={matchCount === 0}
-                            className="btn btn-primary flex-1 py-1.5 text-[10px] disabled:opacity-30 disabled:pointer-events-none">
-                            Practice now
-                          </button>
-                          <button onClick={() => saveCoachDay(d)}
-                            disabled={matchCount === 0}
-                            className="btn btn-secondary flex-1 py-1.5 text-[10px] disabled:opacity-30 disabled:pointer-events-none">
-                            Save as drill
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {/* Inline toast for save-as-drill / save-all results.
-                  Auto-clears after 3s. Lives inside the coach panel
-                  so it's visually close to the button that fired it. */}
-              {coachToast && (
-                <div className="anim-fade-up px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 text-[12px] text-emerald-400">
-                  {coachToast}
-                </div>
-              )}
-              {Array.isArray(coachData.insights) && coachData.insights.length > 0 && (
-                <div className="space-y-1">
-                  <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 block">
-                    Per-mistake notes
-                  </span>
-                  {coachData.insights.map((ins, i) => (
-                    <p key={i} className="text-[12px] text-on-surface-variant/60 leading-relaxed">
-                      <span className="text-on-surface-variant/30 tabular-nums">{ins.ply ?? i + 1}.</span>{" "}
-                      {ins.insight}
-                    </p>
-                  ))}
-                </div>
-              )}
-              {coachData.model && (
-                <p className="text-[10px] text-on-surface-variant/20">via {coachData.model}</p>
-              )}
-            </div>
-          )}
-
-          {/* Cooldown notice - server-driven. When the user hits
-              the per-account rate limit, the Edge Function returns
-              a 429 with `retry_after_seconds`; we tick that down
-              once per second and disable the button until 0. */}
-          {coachCooldownSec > 0 && (
-            <div className="anim-fade-up mb-3 px-3 py-2 bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400">
-              You're using the AI coach a lot. Try again in {coachCooldownSec}s.
-              {coachUsage?.maxCalls
-                ? ` (Limit ${coachUsage.maxCalls} per ${Math.round(coachUsage.windowSeconds / 60)} min.)`
-                : ""}
-            </div>
-          )}
-          <button onClick={generateAICoach}
-            disabled={coachLoading || coachCooldownSec > 0}
-            className="btn btn-primary w-full py-2.5 text-xs">
-            {coachLoading
-              ? "Thinking..."
-              : coachCooldownSec > 0
-                ? `Wait ${coachCooldownSec}s`
-                : coachData
-                  ? "Regenerate"
-                  : "Generate AI plan"}
-          </button>
-          {/* Usage badge - keeps the user informed without us having
-              to surface the cap only when they hit it. Renders only
-              after at least one successful call so we have real
-              numbers to show. */}
-          {coachUsage?.maxCalls > 0 && coachCooldownSec === 0 && (
-            <p className="text-[10px] text-on-surface-variant/30 mt-2 text-center">
-              {coachUsage.callsInWindow}/{coachUsage.maxCalls} calls in the last {Math.round(coachUsage.windowSeconds / 60)} min
-            </p>
-          )}
-        </div>
-      )}
-
       {/* Saved drill sets - clickable rows the user can come back to.
           Lives ABOVE the ad-hoc filter so a returning user sees their
           saved drills first instead of having to re-type the
@@ -1043,6 +868,130 @@ export default function StudyPlanPanel({ onStartSession }) {
                 Cancel
               </button>
             </div>
+          </div>
+        )}
+
+        {/* AI deck generator. Reads the current `query` (and the
+            full mistake corpus, NOT chip-filtered) and proposes
+            1-3 focused decks via the coach Edge Function. The
+            response is rendered inline as a preview list with
+            per-deck Save buttons. */}
+        {isAIAvailable() && (
+          <div className="mt-4 pt-4 border-t border-white/[0.04]">
+            <div className="flex items-baseline justify-between mb-2">
+              <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">
+                Or let AI build decks for you
+              </span>
+              {aiUsage?.maxCalls > 0 && aiCooldownSec === 0 && (
+                <span className="text-[10px] text-on-surface-variant/30 tabular-nums">
+                  {aiUsage.callsInWindow}/{aiUsage.maxCalls} calls in last {Math.round(aiUsage.windowSeconds / 60)} min
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-on-surface-variant/35 mb-3 leading-relaxed">
+              Type what you want above (e.g. <span className="text-on-surface-variant/55 font-bold">"middlegame mistakes with rooks"</span>), then let the AI propose 1-3 focused decks pulled from your real cards.
+            </p>
+
+            {aiCooldownSec > 0 && (
+              <div className="anim-fade-up mb-3 px-3 py-2 bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400">
+                You're generating decks a lot. Try again in {aiCooldownSec}s.
+                {aiUsage?.maxCalls
+                  ? ` (Limit ${aiUsage.maxCalls} per ${Math.round(aiUsage.windowSeconds / 60)} min.)`
+                  : ""}
+              </div>
+            )}
+            {aiError && (
+              <div className="anim-fade-up mb-3 px-3 py-2 bg-error/10 border border-error/20 text-[12px] text-error">
+                {aiError}
+              </div>
+            )}
+
+            <button onClick={generateAIDecksFromQuery}
+              disabled={aiLoading || aiCooldownSec > 0}
+              className="btn btn-primary w-full py-2.5 text-xs">
+              {aiLoading
+                ? "Thinking..."
+                : aiCooldownSec > 0
+                  ? `Wait ${aiCooldownSec}s`
+                  : aiResults
+                    ? "Regenerate"
+                    : "Generate decks with AI"}
+            </button>
+
+            {aiResults && Array.isArray(aiResults.decks) && (
+              <div className="mt-4 space-y-3">
+                {aiResults.summary && (
+                  <p className="text-[12px] text-on-surface leading-relaxed">{aiResults.summary}</p>
+                )}
+                {aiResults.decks.length === 0 ? (
+                  <p className="text-[12px] text-on-surface-variant/45 leading-relaxed">
+                    The AI couldn't pick a focused deck from your query. Try rephrasing or running analysis on more games first.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">
+                        Proposed decks
+                      </span>
+                      <button onClick={dismissAI}
+                        className="text-[10px] uppercase tracking-widest text-on-surface-variant/40 hover:text-on-surface-variant/70 transition-colors">
+                        Dismiss
+                      </button>
+                    </div>
+                    {aiResults.decks.map((deck, idx) => {
+                      const matchCount = matchCountForQuery(deck.query);
+                      const saved = aiSavedIdx.has(idx);
+                      const hasMatches = matchCount > 0;
+                      return (
+                        <div key={idx} className="px-3 py-2.5 bg-surface-container border border-white/[0.04]">
+                          <div className="flex items-baseline justify-between mb-1 gap-2">
+                            <span className="font-headline text-[13px] font-bold text-primary truncate">
+                              {deck.name}
+                            </span>
+                            <span className={`text-[10px] tabular-nums shrink-0 ${hasMatches ? "text-on-surface-variant/60" : "text-amber-400/70"}`}>
+                              {matchCount} card{matchCount === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                          {deck.summary && (
+                            <p className="text-[12px] text-on-surface-variant/55 leading-relaxed mb-2">{deck.summary}</p>
+                          )}
+                          <span className="text-[10px] text-on-surface-variant/30 block mb-2">
+                            Filter: <span className="font-mono text-on-surface-variant/45">{deck.query}</span>
+                          </span>
+                          {!hasMatches && !saved && (
+                            <p className="text-[11px] text-amber-400/70 mb-2 leading-snug">
+                              No cards match this filter yet. Save it for future games?
+                            </p>
+                          )}
+                          <div className="flex gap-1.5">
+                            {saved ? (
+                              <span className="btn flex-1 py-1.5 text-[10px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                                Saved
+                              </span>
+                            ) : (
+                              <>
+                                <button onClick={() => practiceProposedDeck(deck)}
+                                  disabled={!hasMatches}
+                                  className="btn btn-primary flex-1 py-1.5 text-[10px] disabled:opacity-30 disabled:pointer-events-none">
+                                  Practice now
+                                </button>
+                                <button onClick={() => saveProposedDeck(deck, idx)}
+                                  className="btn btn-secondary flex-1 py-1.5 text-[10px]">
+                                  {hasMatches ? "Save deck" : "Save for later"}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {aiResults.model && (
+                  <p className="text-[10px] text-on-surface-variant/20 text-center">via {aiResults.model}</p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

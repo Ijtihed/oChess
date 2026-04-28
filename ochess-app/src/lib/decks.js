@@ -166,12 +166,20 @@ export function listDecks(cards, drillSets, schedules) {
   for (const set of safeDrills) {
     const predicate = (card) => matchDrillSet(set, card);
     const counts = deckCounts(safeCards, predicate, schedules);
+    // Two subtitles per deck:
+    //   - `short` is always present, machine-derived from the
+    //     filter (e.g. `"hanging_queen"`). Fits on one line in
+    //     the deck list.
+    //   - `summary` is optional, only set on AI-generated decks.
+    //     1-2 sentences in plain English. Surfaced as a banner
+    //     above the board when the user studies the deck.
     decks.push({
       id: `drill:${set.id}`,
       name: set.name,
       kind: "drill",
       color: "primary",
       short: drillSubtitle(set),
+      summary: typeof set.summary === "string" ? set.summary : null,
       isAICoach: !!set.source && set.source === "coach",
       match: predicate,
       filter: { query: set.query || "", chipId: set.chipId || null, typeFilter: null },

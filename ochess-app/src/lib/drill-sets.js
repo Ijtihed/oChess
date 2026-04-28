@@ -61,6 +61,10 @@ export function loadDrillSets() {
         query: typeof s.query === "string" ? s.query : "",
         chipId: typeof s.chipId === "string" ? s.chipId : null,
         source: typeof s.source === "string" ? s.source : null,
+        // Optional human-readable banner shown above the board
+        // when the user studies the deck. Populated by
+        // AI-generated decks; empty for hand-saved ones.
+        summary: typeof s.summary === "string" ? s.summary : null,
         createdAt: Number.isFinite(s.createdAt) ? s.createdAt : Date.now(),
         updatedAt: Number.isFinite(s.updatedAt) ? s.updatedAt : Date.now(),
       }))
@@ -79,7 +83,7 @@ export function saveDrillSets(sets) {
  *
  * @returns {{ sets: Array, id: string }} updated array + the saved id.
  */
-export function addDrillSet(existing, { id, name, query, chipId, source } = {}) {
+export function addDrillSet(existing, { id, name, query, chipId, source, summary } = {}) {
   // Reject genuinely-empty drills - we don't want a row in the list
   // that filters to "everything".
   if (!query && !chipId) return { sets: existing, id: null };
@@ -88,11 +92,14 @@ export function addDrillSet(existing, { id, name, query, chipId, source } = {}) 
   const finalName = sanitizeName(name, query, chipId);
   // `source` (optional, free-form) lets callers tag where a drill
   // came from. Currently used values:
-  //   "coach"   - generated from an AI coach plan day (or insight)
+  //   "coach"   - AI-generated deck from the Plan tab
   //   "manual"  - the user typed / chipped + clicked Save
   //   "import"  - placeholder for future "import deck" features
   // The browser surfaces an "AI" badge on coach-tagged decks.
   const finalSource = typeof source === "string" ? source : null;
+  // Optional 1-2 sentence "what this deck is" banner. Currently
+  // only AI-generated decks set it.
+  const finalSummary = typeof summary === "string" && summary.trim() ? summary.trim() : null;
   const idx = existing.findIndex((s) => s.id === finalId);
   if (idx >= 0) {
     const next = existing.slice();
@@ -102,6 +109,7 @@ export function addDrillSet(existing, { id, name, query, chipId, source } = {}) 
       query: query || "",
       chipId: chipId || null,
       source: finalSource ?? next[idx].source ?? null,
+      summary: finalSummary ?? next[idx].summary ?? null,
       updatedAt: now,
     };
     return { sets: next, id: finalId };
@@ -115,6 +123,7 @@ export function addDrillSet(existing, { id, name, query, chipId, source } = {}) 
         query: query || "",
         chipId: chipId || null,
         source: finalSource,
+        summary: finalSummary,
         createdAt: now,
         updatedAt: now,
       },

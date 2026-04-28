@@ -1,22 +1,28 @@
-// Deno-based Supabase Edge Function — chess study-plan coach.
+// Deno-based Supabase Edge Function - AI deck generator.
 //
-// Takes the user's recent mistake corpus + an optional free-text
-// query, calls Groq's free-tier Llama 3.1 70B, and returns:
+// Takes the user's recent mistake corpus + a natural-language
+// search query, calls Groq's free-tier Llama 3.3 70B, and returns
+// 1-3 focused deck definitions:
 //
-//   1. A short natural-language summary of the user's weakness
-//      profile ("you drop pieces in the middlegame, especially…")
-//   2. A multi-day study plan grouping the mistakes into themed
-//      sessions.
-//   3. Per-card one-line insights (rephrasing eval-loss + theme tags
-//      into something a human actually wants to read).
+//   - name:    short scannable title for the deck list
+//   - query:   filter phrase from a constrained vocabulary that
+//              maps onto the client-side card index
+//   - summary: 1-2 sentence "what this deck is and why it matters
+//              for THIS player" - shown as a banner above the
+//              board when they study the deck
+//
+// The earlier multi-day plan + per-card insights surface was
+// removed in favour of this deck-creation model. The client now
+// owns the "today" loop entirely; the Edge Function's only job is
+// to translate one query into focused decks the user can save.
 //
 // Why an Edge Function and not a direct browser call?
 //   - The Groq key stays on the platform side. Browser code can't
 //     leak it.
-//   - Lets us swap providers (Groq → OpenRouter → Gemini → …)
+//   - Lets us swap providers (Groq -> OpenRouter -> Gemini -> ...)
 //     without changing the client.
-//   - Centralises the prompt + JSON-shape contract; the client just
-//     consumes structured data.
+//   - Per-user rate limit is enforced server-side via the
+//     `record_coach_call` RPC.
 //
 // Deploy:
 //   1. Sign up at https://console.groq.com — free, no credit card.
@@ -58,30 +64,32 @@ interface MistakeInput {
 interface CoachRequest {
   mistakes: MistakeInput[];
   query?: string;
-  daily_quota?: number;
 }
 
+/**
+ * Response from the AI deck generator.
+ *
+ * The function used to return a multi-day plan + per-mistake
+ * insights; that surface was removed in favor of a deck-creation
+ * model. The user types a natural-language query in the Plan tab,
+ * clicks "Generate decks with AI", and receives 1-3 focused decks
+ * back. Each deck has a name, a filter query (mapped against the
+ * client-side card metadata index), and a 1-2 sentence summary
+ * shown as a banner inside the review session.
+ */
 interface CoachResponse {
   ok: boolean;
+  /** Optional one-line interpretation of the user's query. */
   summary?: string;
-  plan?: {
-    day: number;
-    focus: string;
-    explanation: string;
-    card_count: number;
-    // NEW: short filter phrase that narrows the user's mistake
-    // corpus to JUST the cards relevant for this day. Maps onto
-    // our client-side free-text filter (substring AND-match
-    // against phase/themes/played_san/best_san/opening/source).
-    // The client uses this to one-click-save a drill set.
-    query?: string;
+  /** 1-3 focused decks. Empty array if the model couldn't pick any
+   *  reasonable angles from the user's corpus + query. */
+  decks?: {
+    name: string;
+    query: string;
+    summary: string;
   }[];
-  insights?: { game_id: string | null; ply: number | null; insight: string }[];
   error?: string;
   model?: string;
-  // Surfaced on every successful response so the client UI can
-  // display "2/3 calls in this window" without having to track it
-  // separately.
   rate_limit?: {
     calls_in_window: number;
     max_calls: number;
@@ -166,21 +174,21 @@ function compactMistake(m: MistakeInput): string {
   return `${m.phase || "?"} ${m.played_san || "?"} (best ${m.best_san || "?"})${evalNote} ${themes}${opening}`;
 }
 
-function buildPrompt(mistakes: MistakeInput[], query: string | undefined, dailyQuota: number): string {
+function buildPrompt(mistakes: MistakeInput[], query: string | undefined): string {
   const corpus = mistakes.slice(0, MAX_MISTAKES_PER_CALL).map((m, i) => `${i + 1}. ${compactMistake(m)}`).join("\n");
   const focusLine = query
-    ? `The user specifically wants to drill: "${query.slice(0, MAX_QUERY_CHARS)}".`
-    : "Group by the weakness pattern you see most.";
+    ? `The user typed this query in the search: "${query.slice(0, MAX_QUERY_CHARS)}".`
+    : "The user didn't type a query - pick the strongest pattern in the corpus.";
 
-  // The client converts each day's "query" into a saveable drill
+  // The client converts each deck's "query" into a saveable drill
   // set by passing it through a substring AND-match filter against
   // these card fields: phase, themes (array), played_san, best_san,
   // opening, source. So the model needs to pick query phrases from
   // a vocabulary that actually matches stored card data, not just
-  // free poetic English. Listing the known values keeps drill sets
-  // from collapsing to "0 matching cards".
+  // free poetic English. Listing the known values keeps decks from
+  // collapsing to "0 matching cards".
   const filterVocabulary = `
-Filter vocabulary (use these in the "query" field):
+Filter vocabulary (use these in each deck's "query" field):
   Phase:    opening / middlegame / endgame
   Themes:   blunder / mistake / missed_mate / missed_capture / capture_blunder /
             hanging_queen / hanging_rook / hanging_bishop / hanging_knight
@@ -189,9 +197,9 @@ Filter vocabulary (use these in the "query" field):
   opening name token if it appears in the corpus.
 `.trim();
 
-  return `You are a chess coach reading one player's recent mistakes. Be direct and concrete.
+  return `You are a chess coach helping a player turn their natural-language search into focused study decks.
 
-Mistakes:
+Mistake corpus (their recent mistakes):
 ${corpus}
 
 ${focusLine}
@@ -201,31 +209,23 @@ ${filterVocabulary}
 Reply with ONLY a JSON object, no prose around it. Schema:
 
 {
-  "summary": "1-3 sentences naming the player's most recurring weakness in plain English. No flattery.",
-  "plan": [
+  "summary": "1 sentence interpreting the user's query against this player's actual weaknesses. No flattery.",
+  "decks": [
     {
-      "day": 1,
-      "focus": "Specific theme name as a human-readable title (e.g. 'Hanging knights in the middlegame')",
-      "explanation": "1 sentence why this matters",
-      "card_count": ${dailyQuota},
-      "query": "1-3 words from the filter vocabulary above that select the relevant mistakes (e.g. 'middlegame hanging_knight'). At least one token MUST come from the vocabulary."
-    },
-    { "day": 2, "focus": "...", "explanation": "...", "card_count": ${dailyQuota}, "query": "..." },
-    { "day": 3, "focus": "...", "explanation": "...", "card_count": ${dailyQuota}, "query": "..." }
-  ],
-  "insights": [
-    { "index": 1, "insight": "1 sentence - what went wrong + what to look for next time" },
-    { "index": 2, "insight": "..." }
+      "name": "Short, scannable deck title (3-5 words). Will appear in the user's deck list (e.g. 'Hanging queens in the middlegame').",
+      "query": "1-3 tokens from the filter vocabulary above that select the relevant cards (e.g. 'middlegame hanging_queen'). At least one token MUST come from the vocabulary.",
+      "summary": "1-2 sentences. WHAT this deck contains and WHY it matters for this player. Plain English, concrete, no chess-engine speak. Shown as a banner above the board when they study the deck."
+    }
   ]
 }
 
 Guidelines:
-- 3 to 5 days in the plan. Each day a different theme. Card counts must total <= ${dailyQuota * 5}.
-- The "query" for each day MUST match real cards above. Don't invent themes that aren't in the data.
-- Prefer compound queries over single tokens when possible (e.g. "endgame hanging_rook" beats just "endgame") because they pinpoint the user's actual weakness.
-- "insights" should cover the 5 most instructive mistakes (or all of them if there are fewer).
-- Indices in "insights" refer to the 1-based mistake list above.
-- Don't quote chess engine output verbatim - explain it.`;
+- Return 1, 2, or 3 decks. Prefer 1 sharp deck over 3 broad ones.
+- ONLY return more than one deck if the user's query is broad (e.g. "my middlegame mistakes" can split into "Hanging pieces" + "Bad trades" + "Missed tactics"). For a focused query like "hanging queens", return exactly one deck.
+- Each deck's "query" MUST match real cards above. Don't invent themes that aren't in the data.
+- Prefer compound queries (e.g. "endgame hanging_rook") over single tokens - they pinpoint the actual weakness.
+- The "summary" is the most important field. It's the user's daily reminder of what they're working on. Make it personal and specific to THIS player's corpus, not generic chess advice.
+- Don't quote engine output verbatim - explain it in plain English.`;
 }
 
 // ── Groq call ──
@@ -272,23 +272,15 @@ function parseCoachJson(content: string): CoachResponse | null {
     return {
       ok: true,
       summary: typeof parsed.summary === "string" ? parsed.summary : undefined,
-      plan: Array.isArray(parsed.plan) ? parsed.plan.slice(0, 5).map((p: Record<string, unknown>) => ({
-        day: Number(p.day) || 1,
-        focus: String(p.focus || "Mixed practice"),
-        explanation: String(p.explanation || ""),
-        card_count: Number(p.card_count) || 5,
-        // The client uses this to one-click-save / one-click-practice
-        // each day. Trim defensively - some models like to hand back
-        // wrapper quotes or leading "Query: " labels.
-        query: typeof p.query === "string"
-          ? String(p.query).trim().replace(/^["']|["']$/g, "").replace(/^query:\s*/i, "")
+      decks: Array.isArray(parsed.decks) ? parsed.decks.slice(0, 3).map((d: Record<string, unknown>) => ({
+        name: typeof d?.name === "string" ? d.name.trim() : "Untitled deck",
+        // Trim defensively - some models like to hand back wrapper
+        // quotes or leading "Query:" labels.
+        query: typeof d?.query === "string"
+          ? String(d.query).trim().replace(/^["']|["']$/g, "").replace(/^query:\s*/i, "")
           : "",
-      })) : undefined,
-      insights: Array.isArray(parsed.insights) ? parsed.insights.slice(0, 10).map((ins: Record<string, unknown>) => ({
-        game_id: null,
-        ply: typeof ins.index === "number" ? ins.index : null,
-        insight: String(ins.insight || ""),
-      })) : undefined,
+        summary: typeof d?.summary === "string" ? d.summary.trim() : "",
+      })).filter((d) => d.name && d.query) : [],
     };
   } catch {
     return null;
@@ -339,7 +331,7 @@ Deno.serve(async (req) => {
   }
   if (!rate.allowed) {
     return jsonRateLimited(
-      `You're using the AI coach a lot. Try again in ${rate.retryAfterSeconds}s.`,
+      `You're generating decks a lot. Try again in ${rate.retryAfterSeconds}s.`,
       rate
     );
   }
@@ -355,8 +347,7 @@ Deno.serve(async (req) => {
     return jsonErr("Provide at least 1 mistake", 400);
   }
 
-  const dailyQuota = Math.min(20, Math.max(1, Number(body.daily_quota) || 5));
-  const prompt = buildPrompt(body.mistakes, body.query, dailyQuota);
+  const prompt = buildPrompt(body.mistakes, body.query);
 
   // Try the bigger model first; fall back to the smaller (faster +
   // higher rate limit) model if the 70B model is unavailable.

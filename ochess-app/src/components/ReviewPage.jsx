@@ -764,28 +764,41 @@ export default function ReviewPage() {
             losing schedule progress. The Plan-tab "Practice now"
             path uses the same banner for visual consistency. */}
         {(activeDeck || inPlanSession) && (
-          <div className="anim-fade-up flex items-center justify-between gap-3 mb-4 px-3 py-2 bg-primary/5 border border-primary/15">
-            <span className="text-[12px] text-on-surface-variant/65">
-              Studying{" "}
-              <span className="font-bold text-primary">
-                {activeDeck
-                  ? activeDeck.name
-                  : planSetName
-                    ? planSetName
-                    : planChipId
-                      ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
-                      : `"${planQuery}"`}
-              </span>
-              {activeDeck?.isAICoach && (
-                <span className="ml-2 px-1.5 py-0.5 bg-primary/15 text-primary font-headline text-[9px] font-bold uppercase tracking-widest">
-                  AI
+          <div className="anim-fade-up mb-4">
+            <div className="flex items-center justify-between gap-3 px-3 py-2 bg-primary/5 border border-primary/15">
+              <span className="text-[12px] text-on-surface-variant/65">
+                Studying{" "}
+                <span className="font-bold text-primary">
+                  {activeDeck
+                    ? activeDeck.name
+                    : planSetName
+                      ? planSetName
+                      : planChipId
+                        ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
+                        : `"${planQuery}"`}
                 </span>
-              )}
-            </span>
-            <button onClick={() => activeDeck ? closeDeck() : clearPlanSession()}
-              className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
-              {activeDeck ? "Switch deck" : "Clear filter"}
-            </button>
+                {activeDeck?.isAICoach && (
+                  <span className="ml-2 px-1.5 py-0.5 bg-primary/15 text-primary font-headline text-[9px] font-bold uppercase tracking-widest">
+                    AI
+                  </span>
+                )}
+              </span>
+              <button onClick={() => activeDeck ? closeDeck() : clearPlanSession()}
+                className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+                {activeDeck ? "Switch deck" : "Clear filter"}
+              </button>
+            </div>
+            {/* Deck-level summary banner for AI-generated decks.
+                The AI writes a 1-2 sentence "what this deck is and
+                why it matters for you" line when generating;
+                surfacing it here gives the user that context every
+                time they study the deck without needing the Plan
+                tab. Hand-saved decks (no summary) skip this. */}
+            {activeDeck?.summary && (
+              <p className="mt-2 px-3 py-2 text-[12px] text-on-surface-variant/65 bg-surface-low border border-white/[0.04] leading-relaxed">
+                {activeDeck.summary}
+              </p>
+            )}
           </div>
         )}
 
