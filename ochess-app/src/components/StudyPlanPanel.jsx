@@ -306,11 +306,14 @@ export default function StudyPlanPanel({ onStartSession }) {
       showCoachToast("Couldn't pick a filter for this day. Try Practice instead.");
       return;
     }
-    const { sets, id } = addDrillSet(drillSets, { name, query: q });
+    // Tag coach-generated drills so the deck browser can badge
+    // them. Lets a returning user tell which decks were AI-
+    // suggested vs hand-saved.
+    const { sets, id } = addDrillSet(drillSets, { name, query: q, source: "coach" });
     if (!id) return;
     setDrillSets(sets);
     saveDrillSets(sets);
-    showCoachToast(`Saved "${name}" to your drill sets.`);
+    showCoachToast(`Saved "${name}" to your decks.`);
   }, [drillSets, dayToFilter, showCoachToast]);
 
   const practiceCoachDay = useCallback((day) => {
@@ -328,7 +331,7 @@ export default function StudyPlanPanel({ onStartSession }) {
     for (const day of coachData.plan) {
       const { name, query: q } = dayToFilter(day);
       if (!q) continue;
-      const { sets, id } = addDrillSet(working, { name, query: q });
+      const { sets, id } = addDrillSet(working, { name, query: q, source: "coach" });
       if (id) { working = sets; saved += 1; }
     }
     if (saved === 0) {
@@ -337,7 +340,7 @@ export default function StudyPlanPanel({ onStartSession }) {
     }
     setDrillSets(working);
     saveDrillSets(working);
-    showCoachToast(`Saved ${saved} drill set${saved === 1 ? "" : "s"} from this plan.`);
+    showCoachToast(`Saved ${saved} deck${saved === 1 ? "" : "s"} from this plan. Open Today to drill them.`);
   }, [coachData, drillSets, dayToFilter, showCoachToast]);
 
   const cancelImport = useCallback(() => {

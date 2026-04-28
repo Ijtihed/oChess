@@ -60,6 +60,7 @@ export function loadDrillSets() {
         name: String(s.name || "Untitled drill"),
         query: typeof s.query === "string" ? s.query : "",
         chipId: typeof s.chipId === "string" ? s.chipId : null,
+        source: typeof s.source === "string" ? s.source : null,
         createdAt: Number.isFinite(s.createdAt) ? s.createdAt : Date.now(),
         updatedAt: Number.isFinite(s.updatedAt) ? s.updatedAt : Date.now(),
       }))
@@ -78,13 +79,20 @@ export function saveDrillSets(sets) {
  *
  * @returns {{ sets: Array, id: string }} updated array + the saved id.
  */
-export function addDrillSet(existing, { id, name, query, chipId } = {}) {
+export function addDrillSet(existing, { id, name, query, chipId, source } = {}) {
   // Reject genuinely-empty drills - we don't want a row in the list
   // that filters to "everything".
   if (!query && !chipId) return { sets: existing, id: null };
   const now = Date.now();
   const finalId = id || newDrillSetId();
   const finalName = sanitizeName(name, query, chipId);
+  // `source` (optional, free-form) lets callers tag where a drill
+  // came from. Currently used values:
+  //   "coach"   - generated from an AI coach plan day (or insight)
+  //   "manual"  - the user typed / chipped + clicked Save
+  //   "import"  - placeholder for future "import deck" features
+  // The browser surfaces an "AI" badge on coach-tagged decks.
+  const finalSource = typeof source === "string" ? source : null;
   const idx = existing.findIndex((s) => s.id === finalId);
   if (idx >= 0) {
     const next = existing.slice();
@@ -93,6 +101,7 @@ export function addDrillSet(existing, { id, name, query, chipId } = {}) {
       name: finalName,
       query: query || "",
       chipId: chipId || null,
+      source: finalSource ?? next[idx].source ?? null,
       updatedAt: now,
     };
     return { sets: next, id: finalId };
@@ -105,6 +114,7 @@ export function addDrillSet(existing, { id, name, query, chipId } = {}) {
         name: finalName,
         query: query || "",
         chipId: chipId || null,
+        source: finalSource,
         createdAt: now,
         updatedAt: now,
       },

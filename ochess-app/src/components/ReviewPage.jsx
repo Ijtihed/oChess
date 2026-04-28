@@ -23,6 +23,8 @@ import {
   summarizeDeck,
   forecastDeckNextDays,
 } from "../lib/review-cards";
+import { loadDrillSets, removeDrillSet, saveDrillSets } from "../lib/drill-sets";
+import { listDecks, getDeckById } from "../lib/decks";
 import { getCardType, TONE_CLASSES } from "../lib/card-types";
 
 // Convert a 4/5-character UCI string ("e2e4" / "e7e8q") to a chess.js
@@ -101,9 +103,22 @@ const DECK_FILTERS = [
 export default function ReviewPage() {
   const [cards, setCards] = useState(() => loadCards());
   const [schedules, setSchedules] = useState(() => loadSchedules());
+  // Drill sets feed the deck browser. Stored separately from cards
+  // - they're filter definitions, not new cards. The deck browser
+  // listDecks() merges drill sets with type-based built-ins.
+  const [drillSets, setDrillSets] = useState(() => loadDrillSets());
   const [phase, setPhase] = useState("prompt");
   const [highlight, setHighlight] = useState({});
   const [reviewed, setReviewed] = useState(0);
+  // Deck browser: the deck the user is currently studying. null
+  // means "show the deck list, not a single-card session". Today
+  // tab opens with `activeDeckId === null` so the user lands on
+  // the browser; clicking a deck flips this to its id.
+  const [activeDeckId, setActiveDeckId] = useState(null);
+  // Legacy chip filter, kept for the Plan-tab "Practice now" path
+  // and the in-session deck filters at the top of the board area.
+  // It's redundant with the deck browser for normal navigation but
+  // useful as a quick narrowing inside an active deck.
   const [deckFilter, setDeckFilter] = useState("all");
   // Top-level tab: "today" runs the standard SM-2 flow you've always
   // had; "plan" surfaces the new pulled-from-your-games study plan
@@ -184,20 +199,41 @@ export default function ReviewPage() {
 
   const activeFilter = DECK_FILTERS.find((f) => f.id === deckFilter) || DECK_FILTERS[0];
 
+  // Deck list for the browser view. Always recomputed from the
+  // current card collection + schedules + drill sets so counts stay
+  // accurate after every rate / save / drill-set change. Cheap (<
+  // few-thousand-card scale).
+  const decks = useMemo(
+    () => listDecks(cards, drillSets, schedules),
+    [cards, drillSets, schedules]
+  );
+  const activeDeck = useMemo(
+    () => getDeckById(decks, activeDeckId),
+    [decks, activeDeckId]
+  );
+
   // Recompute the due queue on every render - cheap, ~tens of cards.
-  // The deck-chip filter (puzzle / game / analysis) gates first; the
-  // plan-driven filter (set by Plan tab's "Start session") narrows
-  // further if present. The two compose so a Plan-tab session can
-  // still show the deck chips for context.
+  //
+  // Filter precedence inside a session:
+  //   1. The active deck's match predicate (browser navigation)
+  //   2. The legacy deck-chip filter (in-session quick narrow)
+  //   3. The plan-driven filter (Plan-tab "Practice now")
+  //
+  // For the Plan-tab path, activeDeckId is left null and we fall
+  // straight through the chip + plan layers - so an unsaved
+  // "Practice now" session still works without going through the
+  // deck browser.
   const dueIds = useMemo(() => {
-    let pool = cards.filter((c) => activeFilter.match(c) && isCardDue(schedules, cardId(c)));
+    let pool = cards.filter((c) => isCardDue(schedules, cardId(c)));
+    if (activeDeck?.match) pool = pool.filter(activeDeck.match);
+    else pool = pool.filter((c) => activeFilter.match(c));
     if (planChipId) {
       const chip = COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId);
       if (chip) pool = pool.filter(chip.match);
     }
     if (planQuery) pool = filterCardsByQuery(pool, planQuery);
     return pool.map(cardId);
-  }, [cards, schedules, activeFilter, planChipId, planQuery]);
+  }, [cards, schedules, activeDeck, activeFilter, planChipId, planQuery]);
   const card = useMemo(
     () => cards.find((c) => cardId(c) === dueIds[0]) || null,
     [cards, dueIds]
@@ -238,6 +274,9 @@ export default function ReviewPage() {
     setPlanChipId(chipId || null);
     setPlanSetName(setName || "");
     setDeckFilter("all"); // Don't double-narrow; Plan filter takes over.
+    // Plan-tab sessions are deliberately ephemeral - skip the deck
+    // browser and drop straight into the focused queue.
+    setActiveDeckId(null);
     setTopTab("today");
     setPhase("prompt");
     setHighlight({});
@@ -250,6 +289,39 @@ export default function ReviewPage() {
     setPlanSetName("");
   }, []);
 
+  // Open a deck from the browser. Clears any plan-driven filter so
+  // the deck's match predicate is the only thing narrowing the
+  // queue.
+  const openDeck = useCallback((deckId) => {
+    setActiveDeckId(deckId);
+    setPlanQuery("");
+    setPlanChipId(null);
+    setPlanSetName("");
+    setDeckFilter("all");
+    setPhase("prompt");
+    setHighlight({});
+    setReviewed(0);
+  }, []);
+
+  // Return to the deck browser without losing scheduling progress.
+  const closeDeck = useCallback(() => {
+    setActiveDeckId(null);
+    setPhase("prompt");
+    setHighlight({});
+    setReviewed(0);
+  }, []);
+
+  // Delete a user-created drill set deck. Built-in decks (puzzle /
+  // mistake / etc.) can't be deleted - they auto-disappear when
+  // the type has zero cards.
+  const deleteDeck = useCallback((deck) => {
+    if (!deck || deck.kind !== "drill" || !deck.drillSetId) return;
+    const next = removeDrillSet(drillSets, deck.drillSetId);
+    setDrillSets(next);
+    saveDrillSets(next);
+    if (activeDeckId === deck.id) setActiveDeckId(null);
+  }, [drillSets, activeDeckId]);
+
   // If localStorage is mutated by another page (e.g. user adds a card
   // from the analysis board in another tab), refresh on focus or
   // visibilitychange. Both listeners are removed on unmount.
@@ -257,6 +329,7 @@ export default function ReviewPage() {
     const refresh = () => {
       setCards(loadCards());
       setSchedules(loadSchedules());
+      setDrillSets(loadDrillSets());
     };
     const onVis = () => { if (!document.hidden) refresh(); };
     window.addEventListener("focus", refresh);
@@ -266,6 +339,14 @@ export default function ReviewPage() {
       document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
+
+  // Re-pull drill sets when the user toggles back to the Today tab.
+  // The Plan tab can save new drills (AI coach Save-as-drill /
+  // Save-all-as-drills); without this they only show up after a
+  // tab refocus.
+  useEffect(() => {
+    if (topTab === "today") setDrillSets(loadDrillSets());
+  }, [topTab]);
 
   // Multi-move play-out state.
   //
@@ -503,9 +584,17 @@ export default function ReviewPage() {
   const remaining = dueIds.length;
   // Anki-style deck summary - drives the queue-breakdown widget
   // and the still-due counter on the sidebar.
-  const deckSummary = useMemo(() => summarizeDeck(cards, schedules), [cards, schedules]);
+  // Stats are scoped to the active deck when one is open, so the
+  // sidebar tells you about THIS pile of cards, not the global
+  // collection. Falls back to the full deck for the legacy /
+  // Plan-tab "Practice now" path where activeDeck is null.
+  const scopedCards = useMemo(
+    () => (activeDeck?.match ? cards.filter(activeDeck.match) : cards),
+    [cards, activeDeck]
+  );
+  const deckSummary = useMemo(() => summarizeDeck(scopedCards, schedules), [scopedCards, schedules]);
   // 7-day forecast for the upcoming-reviews chart.
-  const deckForecast = useMemo(() => forecastDeckNextDays(cards, schedules, 7), [cards, schedules]);
+  const deckForecast = useMemo(() => forecastDeckNextDays(scopedCards, schedules, 7), [scopedCards, schedules]);
 
   // Top-level tab strip is shared across every state - the Plan tab is
   // useful even before the user has any cards (so they can build the
@@ -578,16 +667,39 @@ export default function ReviewPage() {
     );
   }
 
+  // Deck browser - the default Today view. The user picks a deck
+  // from the list (or starts a Plan-tab "Practice now" session via
+  // the StudyPlanPanel which routes through startPlanSession and
+  // skips this branch). Only shown when no deck / plan filter is
+  // active.
+  const inPlanSession = !!(planChipId || planQuery);
+  if (topTab === "today" && !activeDeck && !inPlanSession) {
+    return (
+      <div className="flex">
+        <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+          <h1 className="anim-fade-up font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1" style={{ "--delay": "0.05s" }}>Review</h1>
+          <p className="anim-fade-up text-sm text-on-surface-variant/40 mb-6" style={{ "--delay": "0.06s" }}>
+            Pick a focused deck. Each deck pulls from your real cards.
+          </p>
+          {TopTabs}
+          {ShareToast}
+          <DeckBrowser
+            decks={decks}
+            onOpen={openDeck}
+            onDelete={deleteDeck}
+            onOpenPlan={() => setTopTab("plan")}
+          />
+        </div>
+        <SocialPanel />
+      </div>
+    );
+  }
+
   if (!card) {
-    // The active filter has no due cards. If the user is on a narrow
-    // filter (Puzzles / Games / Analysis), offer to switch back to
-    // "All" so they can see whatever else might be due first. Avoids
-    // the dead-end where someone sees "All caught up" while another
-    // deck still has work waiting.
-    const otherDecksWithDue = DECK_FILTERS
-      .filter((f) => f.id !== deckFilter && f.id !== "all")
-      .filter((f) => cards.some((c) => f.match(c) && isCardDue(schedules, cardId(c))));
-    const inPlanSession = !!(planChipId || planQuery);
+    // We're inside a session (an open deck or a Plan-tab Practice
+    // session) and the queue is empty. Offer the right escape -
+    // back to the deck browser, or back to the plan, depending on
+    // how the session started.
     return (
       <div className="flex">
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
@@ -596,28 +708,24 @@ export default function ReviewPage() {
           {ShareToast}
           <div className="text-center py-6">
             <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">
-              {inPlanSession
-                ? "Done with this drill"
-                : deckFilter === "all" ? "All caught up" : `No ${activeFilter.label.toLowerCase()} due`}
+              {activeDeck ? `Done with ${activeDeck.name}` : "Done with this drill"}
             </h2>
             <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-6">
-              {inPlanSession
-                ? "Every card matching this filter is reviewed. Try a different filter or come back tomorrow."
-                : deckFilter === "all"
-                  ? "You've reviewed every card that's due right now. Come back tomorrow, or save more positions from the Analysis board."
-                  : `No ${activeFilter.label.toLowerCase()} cards are due in this filter right now.`}
+              {activeDeck
+                ? `Every card in ${activeDeck.name} is reviewed for now. Pick another deck or come back tomorrow.`
+                : "Every card matching this filter is reviewed. Try another deck or come back tomorrow."}
             </p>
             <div className="flex flex-wrap gap-2 justify-center mb-6">
-              {inPlanSession && (
-                <button onClick={clearPlanSession}
+              {activeDeck && (
+                <button onClick={closeDeck}
                   className="btn btn-primary px-5 py-2 text-xs">
-                  Show all cards
+                  Pick another deck
                 </button>
               )}
-              {!inPlanSession && deckFilter !== "all" && otherDecksWithDue.length > 0 && (
-                <button onClick={() => setDeckFilter("all")}
+              {inPlanSession && (
+                <button onClick={() => { clearPlanSession(); setActiveDeckId(null); }}
                   className="btn btn-primary px-5 py-2 text-xs">
-                  See all due cards
+                  Pick another deck
                 </button>
               )}
               <button onClick={() => setTopTab("plan")}
@@ -626,7 +734,7 @@ export default function ReviewPage() {
               </button>
             </div>
             <p className="text-[11px] uppercase tracking-widest text-on-surface-variant/25">
-              {totalCards} card{totalCards === 1 ? "" : "s"} in your deck
+              {totalCards} card{totalCards === 1 ? "" : "s"} in your collection
             </p>
           </div>
         </div>
@@ -644,44 +752,48 @@ export default function ReviewPage() {
   const fen = gameRef.current ? gameRef.current.fen() : card.fen;
   const orientation = orientationFor(card);
 
-  const inPlanSession = !!(planChipId || planQuery);
-
   return (
     <div className="flex">
       <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
         {TopTabs}
         {ShareToast}
 
-        {/* If a Plan-driven filter is active, show a chip describing
-            it with a clear way out. Helps the user remember they're
-            in a focused drill, not the full deck. */}
-        {inPlanSession && (
+        {/* Active-deck header. When the user is studying a deck
+            from the browser, show its name + a "Switch deck"
+            button so they can return to the browser without
+            losing schedule progress. The Plan-tab "Practice now"
+            path uses the same banner for visual consistency. */}
+        {(activeDeck || inPlanSession) && (
           <div className="anim-fade-up flex items-center justify-between gap-3 mb-4 px-3 py-2 bg-primary/5 border border-primary/15">
             <span className="text-[12px] text-on-surface-variant/65">
-              Drilling{" "}
+              Studying{" "}
               <span className="font-bold text-primary">
-                {/* Prefer the saved-set name when present; fall back
-                    to the chip label or the raw query for an ad-hoc
-                    session. */}
-                {planSetName
-                  ? planSetName
-                  : planChipId
-                    ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
-                    : `"${planQuery}"`}
+                {activeDeck
+                  ? activeDeck.name
+                  : planSetName
+                    ? planSetName
+                    : planChipId
+                      ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
+                      : `"${planQuery}"`}
               </span>
+              {activeDeck?.isAICoach && (
+                <span className="ml-2 px-1.5 py-0.5 bg-primary/15 text-primary font-headline text-[9px] font-bold uppercase tracking-widest">
+                  AI
+                </span>
+              )}
             </span>
-            <button onClick={clearPlanSession}
+            <button onClick={() => activeDeck ? closeDeck() : clearPlanSession()}
               className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
-              Clear filter
+              {activeDeck ? "Switch deck" : "Clear filter"}
             </button>
           </div>
         )}
 
-        {/* Deck filter chips. Click cycles the active filter; the
-            queue rebuilds on the next render. Counts are pulled from
-            `deckCounts` so the user knows what's available before
-            switching. The "all" chip never disables; the others gray
-            out when their bucket is empty. */}
+        {/* Legacy deck-filter chips - only shown when there's NO
+            active deck, since the deck browser is the primary
+            navigation now. Kept for the Plan-tab "Practice now"
+            path so users still have a quick narrow there. */}
+        {!activeDeck && (
         <div className="anim-fade-up flex flex-wrap gap-1.5 mb-5" style={{ "--delay": "0.04s" }}>
           {DECK_FILTERS.map((f) => {
             const count = deckCounts[f.id] ?? 0;
@@ -704,6 +816,7 @@ export default function ReviewPage() {
             );
           })}
         </div>
+        )}
 
         <div className="flex flex-col xl:flex-row gap-6 xl:gap-8">
           {/* Board column */}
@@ -1058,6 +1171,168 @@ function Forecast({ forecast }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── Deck browser ─────────────────────────────────────────────────
+
+/**
+ * Today-tab deck list. Each row is a focused, clickable deck.
+ *
+ * Sectioned: built-in type-decks first (Puzzles, Game mistakes,
+ * Analysis, ...), then user-created drill sets, then the catch-all
+ * "All cards" deck at the bottom for the "actually I want to see
+ * everything" use case.
+ *
+ * Drill sets show a delete button. Built-ins don't (they're
+ * type-derived, they auto-disappear when the type has zero cards).
+ * Coach-tagged drill sets get a subtle "AI" pill.
+ */
+function DeckBrowser({ decks, onOpen, onDelete, onOpenPlan }) {
+  const builtins = decks.filter((d) => d.kind === "builtin" && d.id !== "builtin:all");
+  const drills = decks.filter((d) => d.kind === "drill");
+  const allDeck = decks.find((d) => d.id === "builtin:all");
+
+  if (decks.length === 0) {
+    return (
+      <div className="text-center py-10 anim-fade-up">
+        <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">No decks yet</h2>
+        <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-5">
+          Save positions from the analysis board, fail a puzzle, or open the Plan tab to import games and auto-extract mistakes.
+        </p>
+        <button onClick={onOpenPlan} className="btn btn-primary px-5 py-2 text-xs">
+          Open Plan
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 anim-fade-up">
+      {builtins.length > 0 && (
+        <DeckSection title="Built-in" subtitle="Type-based decks pulled from your card collection">
+          {builtins.map((d) => (
+            <DeckCard key={d.id} deck={d} onClick={() => onOpen(d.id)} />
+          ))}
+        </DeckSection>
+      )}
+
+      <DeckSection
+        title="My decks"
+        subtitle={drills.length > 0
+          ? "Saved drills - click to study, or open the Plan tab to add more"
+          : "No saved drills yet. Open the Plan tab to generate decks from your weakness profile"}
+        action={(
+          <button onClick={onOpenPlan}
+            className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
+            + New deck (Plan)
+          </button>
+        )}
+      >
+        {drills.map((d) => (
+          <DeckCard key={d.id} deck={d} onClick={() => onOpen(d.id)} onDelete={() => onDelete(d)} />
+        ))}
+      </DeckSection>
+
+      {allDeck && (
+        <DeckSection title="Everything" subtitle="Fall back to the full collection if you want one big queue">
+          <DeckCard deck={allDeck} onClick={() => onOpen(allDeck.id)} muted />
+        </DeckSection>
+      )}
+    </div>
+  );
+}
+
+function DeckSection({ title, subtitle, action, children }) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-2">
+        <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">{title}</h3>
+        {action}
+      </div>
+      {subtitle && <p className="text-[11px] text-on-surface-variant/30 mb-3 leading-snug">{subtitle}</p>}
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
+
+function DeckCard({ deck, onClick, onDelete, muted }) {
+  const counts = deck.counts || {};
+  const dueCount = counts.due || 0;
+  const totalCount = counts.total || 0;
+  const isEmpty = totalCount === 0;
+  const isDone = !isEmpty && dueCount === 0;
+
+  const dotRows = [
+    { label: "New", count: counts.new || 0, dot: "bg-blue-400" },
+    { label: "Learning", count: counts.learning || 0, dot: "bg-amber-400" },
+    { label: "Review", count: counts.review || 0, dot: "bg-emerald-400" },
+    { label: "Relearning", count: counts.relearning || 0, dot: "bg-error" },
+  ].filter((r) => r.count > 0);
+
+  return (
+    <div className={`group flex items-center gap-3 px-4 py-3 ${muted ? "bg-surface-lowest/50" : "bg-surface-low"} border border-white/[0.04] hover:border-primary/30 transition-colors`}>
+      <button onClick={onClick}
+        disabled={isEmpty}
+        className="flex-1 min-w-0 text-left disabled:cursor-default disabled:opacity-50">
+        <div className="flex items-baseline gap-2 flex-wrap mb-1">
+          <span className="font-headline text-[14px] font-bold text-on-surface truncate">
+            {deck.name}
+          </span>
+          {deck.isAICoach && (
+            <span className="px-1.5 py-0.5 bg-primary/15 text-primary font-headline text-[9px] font-bold uppercase tracking-widest">
+              AI
+            </span>
+          )}
+          {deck.kind === "drill" && !deck.isAICoach && (
+            <span className="px-1.5 py-0.5 bg-surface-container text-on-surface-variant/50 font-headline text-[9px] font-bold uppercase tracking-widest">
+              Drill
+            </span>
+          )}
+        </div>
+        <span className="text-[11px] text-on-surface-variant/40 block truncate mb-1.5">
+          {deck.short}
+        </span>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30">
+            {totalCount} card{totalCount === 1 ? "" : "s"}
+          </span>
+          {dueCount > 0 && (
+            <span className="text-[10px] uppercase tracking-widest text-primary font-bold">
+              {dueCount} due
+            </span>
+          )}
+          {dotRows.length > 0 && (
+            <span className="flex items-center gap-2 text-[10px] text-on-surface-variant/45">
+              {dotRows.map((r) => (
+                <span key={r.label} className="flex items-center gap-1">
+                  <span className={`w-1.5 h-1.5 ${r.dot}`} />
+                  <span className="tabular-nums">{r.count}</span>
+                </span>
+              ))}
+            </span>
+          )}
+          {isDone && (
+            <span className="text-[10px] uppercase tracking-widest text-emerald-400/80">
+              Caught up
+            </span>
+          )}
+        </div>
+      </button>
+      {onDelete && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          title="Delete this deck"
+          className="px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/30 hover:text-error transition-colors opacity-0 group-hover:opacity-100"
+        >
+          Delete
+        </button>
+      )}
+      <button onClick={onClick} disabled={isEmpty}
+        className="px-3 py-1.5 font-headline text-[11px] font-bold uppercase tracking-widest text-primary/80 hover:text-primary transition-colors disabled:opacity-30 disabled:cursor-default">
+        {dueCount > 0 ? "Study" : "Open"}
+      </button>
     </div>
   );
 }
