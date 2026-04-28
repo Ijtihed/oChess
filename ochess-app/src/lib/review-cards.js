@@ -105,6 +105,23 @@ export function rateCard(map, id, rating) {
 }
 
 /**
+ * Defer a card without altering its state, ease, or interval - the
+ * "skip for now" gesture in the review UI. The card's dueAt is
+ * pushed `delayMin` minutes into the future so it falls out of the
+ * current queue, then returns later in the session.
+ *
+ * Distinct from rating the card AGAIN, which would lapse a review
+ * card to relearning, drop ease by 0.20, and bump lapseCount. Skip
+ * should be cost-free.
+ */
+export function bumpCardDue(map, id, delayMin = 5) {
+  const current = getSchedule(map, id);
+  const minutes = Math.max(1, Math.round(delayMin));
+  const dueAt = new Date(Date.now() + minutes * 60_000);
+  return setSchedule(map, id, { ...current, dueAt });
+}
+
+/**
  * Look up "what would the next interval be for each rating button,
  * if I clicked it right now" without mutating anything. Powers the
  * real-Anki "Again 1m / Hard 10m / Good 1d / Easy 4d" hints under

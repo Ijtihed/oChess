@@ -32,6 +32,57 @@ describe("VARIANT_DEFS", () => {
   });
 });
 
+describe("chess960 deterministic seed", () => {
+  // Regression: before the seed parameter, generate960Position
+  // used Math.random() unconditionally, so two browser clients in
+  // an online match would get DIFFERENT starting positions until
+  // the first PGN write synced. Now the same seed -> the same
+  // back rank.
+
+  it("produces the same starting position for the same seed", () => {
+    const a = createVariantGame("chess960", { seed: "game-uuid-abc-123" });
+    const b = createVariantGame("chess960", { seed: "game-uuid-abc-123" });
+    expect(a.fen()).toBe(b.fen());
+  });
+
+  it("produces different starting positions for different seeds", () => {
+    const a = createVariantGame("chess960", { seed: "game-uuid-abc-123" });
+    const b = createVariantGame("chess960", { seed: "game-uuid-different" });
+    // Not technically guaranteed (60+ valid 960 positions could
+    // collide on hash), but for these two literal strings it's
+    // fine and pins the contract.
+    expect(a.fen()).not.toBe(b.fen());
+  });
+
+  it("falls back to randomized positions when no seed is given (bot / local games)", () => {
+    // Sample a handful and confirm at least 2 distinct outputs.
+    // 960 positions, hash randomness -> collisions over 10 trials
+    // are vanishingly small.
+    const seen = new Set();
+    for (let i = 0; i < 10; i++) {
+      seen.add(createVariantGame("chess960").fen());
+    }
+    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  it("yields a Chess960-shaped position (8 distinct files, kings between rooks, bishops opposite colours)", () => {
+    const fen = createVariantGame("chess960", { seed: "x" }).fen();
+    const back = fen.split(" ")[0].split("/")[7]; // white back rank
+    expect(back).toHaveLength(8);
+    // Same piece set as standard, just in a different order.
+    const sorted = back.split("").sort().join("");
+    expect(sorted).toBe("BBKNNQRR");
+    // King between the rooks.
+    const kIdx = back.indexOf("K");
+    const rIdxs = [...back].map((c, i) => c === "R" ? i : -1).filter((i) => i >= 0);
+    expect(kIdx).toBeGreaterThan(rIdxs[0]);
+    expect(kIdx).toBeLessThan(rIdxs[1]);
+    // Bishops on opposite-coloured squares.
+    const bIdxs = [...back].map((c, i) => c === "B" ? i : -1).filter((i) => i >= 0);
+    expect((bIdxs[0] + bIdxs[1]) % 2).toBe(1);
+  });
+});
+
 describe("createVariantGame", () => {
   it("returns a game object with required methods", () => {
     const vg = createVariantGame("chess960");

@@ -7,6 +7,7 @@ import {
   loadSchedules,
   saveSchedules,
   rateCard,
+  bumpCardDue,
   isCardDue,
   RATING,
   serializeCardForShare,
@@ -197,5 +198,38 @@ describe("addCardIfNew", () => {
     const existing = [{ fen: "f1", type: "shared", played_san: "Bg5" }];
     const out = addCardIfNew(existing, { fen: "f1", type: "shared", played_san: "Nf3" });
     expect(out).toHaveLength(2);
+  });
+});
+
+describe("bumpCardDue (skip)", () => {
+  it("defers the card without dropping ease, lapses, or interval", () => {
+    // Build a mature card via rateCard, then skip it. Skip should
+    // NOT lapse (don't bump lapseCount), NOT drop ease, and NOT
+    // reset the interval - just push dueAt forward.
+    let map = rateCard({}, "c1", RATING.GOOD); // step 1
+    map = rateCard(map, "c1", RATING.GOOD); // -> REVIEW, 1d
+    for (let i = 0; i < 3; i++) map = rateCard(map, "c1", RATING.GOOD);
+    const before = map["c1"];
+    const after = bumpCardDue(map, "c1", 5)["c1"];
+    expect(after.state).toBe(before.state);
+    expect(after.intervalDays).toBe(before.intervalDays);
+    expect(after.easeFactor).toBe(before.easeFactor);
+    expect(after.lapseCount).toBe(before.lapseCount);
+    expect(after.repetitions).toBe(before.repetitions);
+    // dueAt is bumped forward.
+    expect(new Date(after.dueAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("removes the card from the due queue temporarily", () => {
+    const map = bumpCardDue({}, "c1", 5);
+    expect(isCardDue(map, "c1")).toBe(false);
+  });
+
+  it("works on a brand-new card with no prior schedule", () => {
+    // No-op state corruption: a NEW card skipped must still be a
+    // valid (just-deferred) card afterward.
+    const map = bumpCardDue({}, "fresh", 5);
+    expect(isCardDue(map, "fresh")).toBe(false);
+    expect(map.fresh.dueAt).toBeInstanceOf(Date);
   });
 });

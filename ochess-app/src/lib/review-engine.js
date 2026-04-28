@@ -89,6 +89,25 @@ function applyFuzz(intervalDays) {
   return Math.max(1, intervalDays + delta);
 }
 
+/**
+ * Anki's `_constrainedIvl`: never let an interval slip below the
+ * previous one by more than 0 days, AND never let it equal the
+ * previous one (forces strict growth). The `floor` argument is
+ * the lower bound (typically prev_interval for HARD with
+ * factor>1, or the previous rating's interval for GOOD/EASY to
+ * keep them strictly ordered).
+ *
+ * Without this, fuzz + a small ease can produce e.g. Hard=8d,
+ * Good=8d, Easy=7d on the same card - which is both wrong (Easy
+ * should be longest) and confusing UX. Real Anki forces
+ * Hard < Good < Easy by construction.
+ */
+function constrainedIvl(rawIvl, floor) {
+  const f = Number.isFinite(floor) ? Math.max(0, Math.round(floor)) : 0;
+  const r = Number.isFinite(rawIvl) ? Math.max(1, Math.round(rawIvl)) : 1;
+  return Math.max(r, f + 1, 1);
+}
+
 const RATING = Object.freeze({
   AGAIN: 1,
   HARD: 2,
@@ -153,7 +172,7 @@ function createScheduleState() {
  */
 function sanitize(schedule) {
   const s = schedule && typeof schedule === "object" ? schedule : {};
-  const intervalDays = Number.isFinite(s.intervalDays) ? s.intervalDays : 0;
+  const intervalDays = Number.isFinite(s.intervalDays) ? Math.max(0, Math.floor(s.intervalDays)) : 0;
   const repetitions = Number.isFinite(s.repetitions) ? s.repetitions : 0;
   const inferredState = intervalDays > 0 || repetitions > 0 ? STATE.REVIEW : STATE.NEW;
   // Validate the persisted state against the known set; anything
@@ -163,12 +182,12 @@ function sanitize(schedule) {
     : inferredState;
   return {
     state: validState,
-    step: Number.isFinite(s.step) ? Math.max(0, s.step) : 0,
+    step: Number.isFinite(s.step) ? Math.max(0, Math.floor(s.step)) : 0,
     easeFactor: clampEase(s.easeFactor),
     intervalDays,
-    intervalMs: Number.isFinite(s.intervalMs) ? s.intervalMs : 0,
-    repetitions,
-    lapseCount: Number.isFinite(s.lapseCount) ? s.lapseCount : 0,
+    intervalMs: Number.isFinite(s.intervalMs) ? Math.max(0, s.intervalMs) : 0,
+    repetitions: Math.max(0, Math.floor(repetitions)),
+    lapseCount: Number.isFinite(s.lapseCount) ? Math.max(0, Math.floor(s.lapseCount)) : 0,
     dueAt: s.dueAt || new Date(),
     lastReviewedAt: s.lastReviewedAt || null,
   };
@@ -218,7 +237,8 @@ function transitionLearning(s, r) {
   }
 }
 
-function transitionReview(s, r) {
+function transitionReview(s, r, opts) {
+  const fuzz = opts?.noFuzz ? (x) => x : applyFuzz;
   if (r === RATING.AGAIN) {
     s.lapseCount += 1;
     s.easeFactor = clampEase(s.easeFactor + EASE_DELTA_AGAIN);
@@ -231,29 +251,48 @@ function transitionReview(s, r) {
     s.dueAt = dateInMinutes(RELEARNING_STEPS_MIN[0]);
     return;
   }
+  // For HARD / GOOD / EASY we mirror Anki's _nextRevIvl: compute
+  // each candidate interval using the previous rating's result as
+  // a strict lower bound. That's what makes Hard < Good < Easy
+  // hold even after fuzz - without it, a 5d card could come out
+  // as Hard 6d / Good 6d / Easy 5d depending on which way fuzz
+  // jittered each.
+  const prev = Math.max(1, s.intervalDays || 0);
+  // Hard floor = prev (so Hard >= prev + 1 day). Anki uses prev
+  // when hardFactor > 1, and 0 otherwise; ours is always > 1.
+  const hardRaw = prev * HARD_INTERVAL_FACTOR;
+  const hardIvl = clampInterval(fuzz(constrainedIvl(hardRaw, prev)));
   if (r === RATING.HARD) {
     s.easeFactor = clampEase(s.easeFactor + EASE_DELTA_HARD);
-    s.intervalDays = clampInterval(applyFuzz(s.intervalDays * HARD_INTERVAL_FACTOR));
+    s.intervalDays = hardIvl;
     s.repetitions += 1;
     s.dueAt = dateInDays(s.intervalDays);
     return;
   }
+  // Good floor = hardIvl. Use the post-update easeFactor for
+  // Good/Easy so the displayed "Good 6d" tracks the actual ease
+  // delta the rating applies (Anki does the same).
+  const easeForGood = clampEase(s.easeFactor + EASE_DELTA_GOOD);
+  const goodRaw = prev * easeForGood;
+  const goodIvl = clampInterval(fuzz(constrainedIvl(goodRaw, hardIvl)));
   if (r === RATING.GOOD) {
-    s.easeFactor = clampEase(s.easeFactor + EASE_DELTA_GOOD);
-    s.intervalDays = clampInterval(applyFuzz(s.intervalDays * s.easeFactor));
+    s.easeFactor = easeForGood;
+    s.intervalDays = goodIvl;
     s.repetitions += 1;
     s.dueAt = dateInDays(s.intervalDays);
     return;
   }
   if (r === RATING.EASY) {
     s.easeFactor = clampEase(s.easeFactor + EASE_DELTA_EASY);
-    s.intervalDays = clampInterval(applyFuzz(s.intervalDays * s.easeFactor * EASY_BONUS));
+    const easyRaw = prev * s.easeFactor * EASY_BONUS;
+    s.intervalDays = clampInterval(fuzz(constrainedIvl(easyRaw, goodIvl)));
     s.repetitions += 1;
     s.dueAt = dateInDays(s.intervalDays);
   }
 }
 
-function transitionRelearning(s, r) {
+function transitionRelearning(s, r, opts) {
+  const fuzz = opts?.noFuzz ? (x) => x : applyFuzz;
   if (r === RATING.AGAIN) {
     s.step = 0;
     s.intervalMs = RELEARNING_STEPS_MIN[0] * 60_000;
@@ -280,7 +319,7 @@ function transitionRelearning(s, r) {
       s.step = 0;
       const lapsedFrom = Math.max(1, s.intervalDays || 1);
       const punished = Math.max(LAPSE_MIN_INTERVAL_DAYS, Math.round(lapsedFrom * LAPSE_NEW_INTERVAL_PCT));
-      s.intervalDays = clampInterval(applyFuzz(punished));
+      s.intervalDays = clampInterval(fuzz(punished));
       s.intervalMs = 0;
       s.repetitions += 1;
       s.dueAt = dateInDays(s.intervalDays);
@@ -300,14 +339,22 @@ function transitionRelearning(s, r) {
     s.step = 0;
     const lapsedFrom = Math.max(1, s.intervalDays || 1);
     const restored = Math.max(EASY_GRADUATING_INTERVAL_DAYS, Math.round(lapsedFrom * LAPSE_NEW_INTERVAL_PCT * 2));
-    s.intervalDays = clampInterval(applyFuzz(restored));
+    s.intervalDays = clampInterval(fuzz(restored));
     s.intervalMs = 0;
     s.repetitions += 1;
     s.dueAt = dateInDays(s.intervalDays);
   }
 }
 
-function computeNextReview(schedule, rating) {
+/**
+ * @param {object} schedule  Card's current scheduling state.
+ * @param {number} rating    RATING.AGAIN / HARD / GOOD / EASY.
+ * @param {object} [opts]    { noFuzz?: boolean } - skip the
+ *   randomized day-jitter. Used by `predictNextIntervals` so the
+ *   button-hint UI shows a stable, deterministic value that
+ *   matches what the user will see (within fuzz) when they click.
+ */
+function computeNextReview(schedule, rating, opts) {
   const s = sanitize(schedule);
   s.lastReviewedAt = new Date();
   const r = clampRating(rating);
@@ -318,9 +365,9 @@ function computeNextReview(schedule, rating) {
     s.state = STATE.LEARNING;
     transitionLearning(s, r);
   } else if (s.state === STATE.REVIEW) {
-    transitionReview(s, r);
+    transitionReview(s, r, opts);
   } else {
-    transitionRelearning(s, r);
+    transitionRelearning(s, r, opts);
   }
   return s;
 }
@@ -337,6 +384,13 @@ function isDue(schedule) {
  * card's actual schedule. Used by the rating-button UI to show
  * "Again 1m / Hard 10m / Good 1d / Easy 4d" - real Anki UX.
  *
+ * Passes `noFuzz: true` so the displayed labels are deterministic
+ * across re-renders. The actual click goes through `rate()` →
+ * `computeNextReview()` with fuzz on, so the persisted interval
+ * may differ by ±~5-15% (within the documented fuzz band) - but
+ * the displayed value always reflects the intent of each button
+ * (Hard < Good < Easy).
+ *
  * @returns {{ AGAIN: string, HARD: string, GOOD: string, EASY: string }}
  *          Human-readable interval per rating ("1m", "10m", "3d",
  *          "1.5mo"). Strings, not numbers, so the UI can render
@@ -350,7 +404,7 @@ function predictNextIntervals(schedule) {
     ["GOOD", RATING.GOOD],
     ["EASY", RATING.EASY],
   ]) {
-    const next = computeNextReview(schedule, rating);
+    const next = computeNextReview(schedule, rating, { noFuzz: true });
     result[label] = formatInterval(next);
   }
   return result;

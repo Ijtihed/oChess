@@ -114,7 +114,12 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   // variant-specific rules (forcedCapture, kingOfTheHill end, etc.).
   const variantId = gameData?.variant || "standard";
   const gameRef = useRef(null);
-  if (!gameRef.current) gameRef.current = createVariantGame(variantId);
+  // Pass the game id as a deterministic seed so chess960 and any
+  // future random-startfen variants yield the same starting
+  // position on both browsers in an online match. Without this,
+  // each client used its own Math.random() and saw a different
+  // back rank until the first PGN write synced.
+  if (!gameRef.current) gameRef.current = createVariantGame(variantId, { seed: gameData?.id });
   const channelRef = useRef(null);
   const authUserIdRef = useRef(authUser?.id);
   authUserIdRef.current = authUser?.id;
@@ -358,7 +363,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       // variant-specific state (3-check counters, etc.) is restored
       // alongside the move list.
       if (movesAdvanced) {
-        const g = createVariantGame(variantId);
+        const g = createVariantGame(variantId, { seed: gameData?.id });
         try { g.loadPgn(row.pgn); } catch { return; }
         gameRef.current = g;
         const h = g.history({ verbose: true });
@@ -522,7 +527,18 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         // chat so it sounds like chat - not the GenericNotify ding
         // that previously made it feel game-over-ish.
         if (!fromMe && !gameOverRef.current) playChatNotify();
-        setChatMessages((prev) => [...prev.slice(-50), { fromId: userId, text, name: name || (fromMe ? "You" : "Opponent") }]);
+        setChatMessages((prev) => {
+          // Dedupe against the DB sync path. If the postgres-changes
+          // feed delivers the persisted chat row before the
+          // broadcast for the same message arrives, the broadcast
+          // would otherwise re-append it. Compare against the most
+          // recent entry on (fromId + text) - chat messages aren't
+          // ordered for repeated identical phrases close together,
+          // so this is the simplest sufficient guard.
+          const last = prev[prev.length - 1];
+          if (last && last.fromId === userId && last.text === text) return prev;
+          return [...prev.slice(-50), { fromId: userId, text, name: name || (fromMe ? "You" : "Opponent") }];
+        });
         setTimeout(() => chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }), 50);
       },
       onRematchOffer: ({ userId }) => {

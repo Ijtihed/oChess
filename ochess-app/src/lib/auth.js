@@ -113,6 +113,24 @@ export async function uploadAvatar(userId, file) {
   const url = data?.publicUrl;
   if (!url) throw new Error("Couldn't read public URL for the uploaded image");
 
+  // Best-effort: drop any older avatar files for this user so the
+  // bucket doesn't accumulate one orphan per re-upload. Storage RLS
+  // already restricts the user to their own folder, so the list +
+  // delete here is scoped automatically. Failures don't block the
+  // upload itself - the new avatar is already live, this is purely
+  // disk-hygiene.
+  try {
+    const { data: existing } = await supabase.storage.from("avatars").list(userId, { limit: 100 });
+    if (Array.isArray(existing)) {
+      const orphans = existing
+        .filter((f) => f && f.name && `${userId}/${f.name}` !== path)
+        .map((f) => `${userId}/${f.name}`);
+      if (orphans.length > 0) {
+        await supabase.storage.from("avatars").remove(orphans);
+      }
+    }
+  } catch { /* ignore - hygiene only */ }
+
   await updateProfile(userId, { avatar_url: url });
   return url;
 }

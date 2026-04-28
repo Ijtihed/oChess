@@ -475,4 +475,61 @@ describe("computeNextReview - hardening", () => {
     expect(s.intervalDays).toBeLessThanOrEqual(365 * 5);
     expect(s.intervalDays).toBe(365 * 5); // cap is hit
   });
+
+  it("forces strict ordering Hard < Good < Easy on a review card", () => {
+    // Real Anki's _constrainedIvl uses each rating's interval as
+    // a floor for the next - so even with fuzz, Hard < Good <
+    // Easy holds strictly. This pins that contract.
+    let s = createScheduleState();
+    s = computeNextReview(s, RATING.GOOD);
+    s = computeNextReview(s, RATING.GOOD); // REVIEW @ 1d
+    for (let i = 0; i < 5; i++) s = computeNextReview(s, RATING.GOOD); // grow
+    // Sample many times so fuzz can't hide an ordering violation.
+    for (let i = 0; i < 50; i++) {
+      const hard = computeNextReview(s, RATING.HARD).intervalDays;
+      const good = computeNextReview(s, RATING.GOOD).intervalDays;
+      const easy = computeNextReview(s, RATING.EASY).intervalDays;
+      expect(good).toBeGreaterThan(hard);
+      expect(easy).toBeGreaterThan(good);
+    }
+  });
+
+  it("Hard never produces a non-increasing interval (Anki's _constrainedIvl rule)", () => {
+    // 1d * 1.2 = 1.2 rounds to 1, which would leave Hard at the
+    // same interval - but Anki's rule says Hard >= prev + 1.
+    let s = createScheduleState();
+    s = computeNextReview(s, RATING.GOOD);
+    s = computeNextReview(s, RATING.GOOD); // REVIEW, 1d
+    expect(s.intervalDays).toBe(1);
+    const hard = computeNextReview(s, RATING.HARD);
+    expect(hard.intervalDays).toBeGreaterThan(s.intervalDays);
+  });
+
+  it("predictNextIntervals is deterministic across repeated calls (no fuzz drift)", () => {
+    // Real-Anki UX: the displayed "Good 17d" hint must stay
+    // stable while the user is hovering or re-rendering. fuzz
+    // is for the persisted interval, not the prediction.
+    let s = createScheduleState();
+    s = computeNextReview(s, RATING.GOOD);
+    s = computeNextReview(s, RATING.GOOD);
+    for (let i = 0; i < 4; i++) s = computeNextReview(s, RATING.GOOD); // big interval
+    const a = predictNextIntervals(s);
+    const b = predictNextIntervals(s);
+    const c = predictNextIntervals(s);
+    expect(a).toEqual(b);
+    expect(b).toEqual(c);
+  });
+
+  it("predictNextIntervals shows Hard < Good < Easy as days even on a long-interval card", () => {
+    // Pin the user-facing ordering of the rating-button hints.
+    let s = createScheduleState();
+    s = computeNextReview(s, RATING.GOOD);
+    s = computeNextReview(s, RATING.GOOD);
+    for (let i = 0; i < 4; i++) s = computeNextReview(s, RATING.GOOD); // multi-day
+    const out = predictNextIntervals(s);
+    // All three should be day-scale on a multi-day card.
+    expect(out.HARD).toMatch(/d$|mo$|y$/);
+    expect(out.GOOD).toMatch(/d$|mo$|y$/);
+    expect(out.EASY).toMatch(/d$|mo$|y$/);
+  });
 });

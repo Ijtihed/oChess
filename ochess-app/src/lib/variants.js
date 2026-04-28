@@ -8,12 +8,53 @@ import { Chess } from "chess.js";
 
 // ── Helpers ──
 
-function generate960Position() {
+/**
+ * Hash a string seed into a 32-bit unsigned integer. Plain string
+ * accumulator suitable for non-crypto seeding - the goal is just
+ * to make `generate960Position(gameId)` deterministic across two
+ * browser clients.
+ */
+function seedToUint32(seed) {
+  if (!seed || typeof seed !== "string") return 0;
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = ((h << 5) - h) + seed.charCodeAt(i);
+    h |= 0; // 32-bit cast
+  }
+  return h >>> 0;
+}
+
+/** Tiny seeded PRNG (xorshift32). Good enough for picking 960
+ *  positions deterministically from a game id; not for crypto. */
+function makeSeededRandom(seed) {
+  let state = seedToUint32(seed);
+  if (state === 0) state = 0x9e3779b9; // any non-zero constant
+  return function next() {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 0xFFFFFFFF;
+  };
+}
+
+/**
+ * Generate a Chess960 / Fischer Random starting position.
+ *
+ * If `seed` is provided (e.g. the gameData.id of an online match)
+ * the same seed always yields the same position - both clients in
+ * an online game pass the same game id, so they construct the same
+ * board even before the first PGN syncs. Without a seed we fall
+ * back to `Math.random()` which is the right behavior for local /
+ * bot games.
+ */
+function generate960Position(seed) {
+  const rand = seed ? makeSeededRandom(seed) : Math.random;
   const pieces = Array(8).fill(null);
   const place = (piece, filter) => {
     const open = [];
     for (let i = 0; i < 8; i++) if (pieces[i] === null && (!filter || filter(i))) open.push(i);
-    pieces[open[Math.floor(Math.random() * open.length)]] = piece;
+    pieces[open[Math.floor(rand() * open.length)]] = piece;
   };
   place("b", (i) => i % 2 === 0);
   place("b", (i) => i % 2 === 1);
@@ -160,7 +201,13 @@ export const VARIANT_DEFS = {
     checkCustomEnd: () => null,
   },
   chess960: {
-    name: "Chess960", startFen: () => generate960Position(),
+    name: "Chess960",
+    // Accepts an optional seed string. createVariantGame passes
+    // the gameData.id from OnlineGameScreen so both browsers in an
+    // online match deterministically construct the same start
+    // position; bot / local games leave it undefined and get a
+    // fresh random one each time.
+    startFen: (seed) => generate960Position(seed),
     checkCustomEnd: () => null,
   },
 
@@ -392,10 +439,21 @@ export function isBotSupportedVariant(variantId) {
 
 // ── Game wrapper ──
 
-export function createVariantGame(variantId) {
+/**
+ * Build a variant-aware game wrapper.
+ *
+ * @param {string} variantId  one of the keys in VARIANT_DEFS
+ * @param {object} [opts]
+ * @param {string} [opts.seed]  Optional deterministic seed for
+ *   variants whose startFen is a function (currently chess960).
+ *   Online games pass `gameData.id` so both clients construct the
+ *   same starting position before any PGN has synced; local /
+ *   bot games leave it unset and get a fresh random position.
+ */
+export function createVariantGame(variantId, opts = {}) {
   const def = VARIANT_DEFS[variantId];
-  if (!def) return createVariantGame("chess960");
-  const fen = typeof def.startFen === "function" ? def.startFen() : def.startFen;
+  if (!def) return createVariantGame("chess960", opts);
+  const fen = typeof def.startFen === "function" ? def.startFen(opts?.seed) : def.startFen;
   const chess = fen ? new Chess(fen) : new Chess();
   const state = { checksOnWhite: 0, checksOnBlack: 0, whiteReached8: false, progressiveCount: 0, turnMoveNum: 0, totalMoveNum: 0 };
 

@@ -17,7 +17,9 @@ select cron.schedule(
 );
 ```
 
-Re-running `schema.sql` in the SQL Editor sets up the schedule idempotently. Verify in `Database → Cron Jobs`.
+Re-running `schema.sql` in the SQL Editor sets up the schedule idempotently. Verify in `Database -> Cron Jobs` that `ochess-cleanup-stale-seeks` exists.
+
+A second job, `ochess-cleanup-stale-games`, runs every 6 hours and marks active timed games with no move in 24 hours as `aborted`. It uses the `cleanup_stale_games()` RPC (also `service_role` only).
 
 That is the launch path. The Edge Function below is optional.
 

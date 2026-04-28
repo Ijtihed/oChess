@@ -14,6 +14,7 @@ import {
   loadSchedules,
   saveSchedules,
   rateCard,
+  bumpCardDue,
   isCardDue,
   RATING,
   deserializeSharedCard,
@@ -469,11 +470,14 @@ export default function ReviewPage() {
 
   const skip = useCallback(() => {
     if (!card) return;
-    // Treat skip as "Hard" without ratcheting interval up - just reset
-    // the prompt and move on without crediting it as a review.
+    // Skip is cost-free: defer the card by 5 minutes so it falls
+    // out of the current queue but doesn't get penalised. The
+    // user explicitly didn't want to rate this one - we honor
+    // that, instead of rating it AGAIN (which would lapse a
+    // review card to relearning and trash its schedule).
     resetCard();
     setSchedules((prev) => {
-      const next = rateCard(prev, cardId(card), RATING.AGAIN);
+      const next = bumpCardDue(prev, cardId(card), 5);
       saveSchedules(next);
       return next;
     });
