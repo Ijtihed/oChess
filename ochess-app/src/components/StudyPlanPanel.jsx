@@ -750,38 +750,43 @@ export default function StudyPlanPanel({ onStartSession }) {
           </div>
         )}
 
-        {/* AI inline messaging. Cooldown / error live here so they
-            don't take up space when the AI is idle. */}
-        {aiCooldownSec > 0 && (
-          <p className="anim-fade-up mt-3 text-[11px] text-amber-400/80 leading-snug">
-            Limit reached. Try again in {aiCooldownSec}s.
-            {aiUsage?.maxCalls
-              ? ` (${aiUsage.maxCalls} per ${Math.round(aiUsage.windowSeconds / 60)} min.)`
-              : ""}
-          </p>
-        )}
-        {aiError && (
-          <p className="anim-fade-up mt-3 text-[11px] text-error/80 leading-snug">{aiError}</p>
-        )}
-        {aiUsage?.maxCalls > 0 && aiCooldownSec === 0 && !aiError && (
-          <p className="mt-3 text-[10px] text-on-surface-variant/30 tabular-nums">
-            {aiUsage.callsInWindow}/{aiUsage.maxCalls} AI calls in last {Math.round(aiUsage.windowSeconds / 60)} min
+        {/* Single-line AI status. Replaces the previous three
+            stacked notices (cooldown / error / usage) with one
+            row that priority-orders them: error wins, then
+            cooldown, then quiet usage chip. Empty when idle. */}
+        {(aiError || aiCooldownSec > 0 || (aiUsage?.maxCalls > 0)) && (
+          <p className={`mt-2.5 text-[10px] leading-snug ${
+            aiError ? "text-error/80"
+              : aiCooldownSec > 0 ? "text-amber-400/80"
+              : "text-on-surface-variant/30"
+          }`}>
+            {aiError ? aiError
+              : aiCooldownSec > 0 ? `AI cooldown - wait ${aiCooldownSec}s`
+              : `${aiUsage.callsInWindow}/${aiUsage.maxCalls} AI calls in last ${Math.round(aiUsage.windowSeconds / 60)} min`}
           </p>
         )}
       </div>
 
-      {/* AI deck preview. Renders only after the user generates;
-          kept in its own block so the search panel above stays
-          scannable when AI is idle. */}
-      {aiResults && Array.isArray(aiResults.decks) && (
-        <AIPreview
-          aiResults={aiResults}
-          aiSavedIdx={aiSavedIdx}
-          matchCountForQuery={matchCountForQuery}
-          practiceProposedDeck={practiceProposedDeck}
-          saveProposedDeck={saveProposedDeck}
-          dismissAI={dismissAI}
-        />
+      {/* Loading skeleton + result preview. Renders during the
+          in-flight AI call AND when results land, so the user
+          always knows something happened after clicking Generate.
+          Without this the button just said "Thinking..." for a
+          few seconds and the new results popped in below with no
+          context - users couldn't tell whether anything was
+          actually happening. */}
+      {(aiLoading || (aiResults && Array.isArray(aiResults.decks))) && (
+        aiLoading ? (
+          <AIPreviewSkeleton />
+        ) : (
+          <AIPreview
+            aiResults={aiResults}
+            aiSavedIdx={aiSavedIdx}
+            matchCountForQuery={matchCountForQuery}
+            practiceProposedDeck={practiceProposedDeck}
+            saveProposedDeck={saveProposedDeck}
+            dismissAI={dismissAI}
+          />
+        )
       )}
 
       {/* ── Re-analyze footer ── */}
@@ -850,6 +855,39 @@ function CompactStats({ profileWeakness }) {
  * "search panel" stays compact and the preview section reads as a
  * distinct block when the user has just generated decks.
  */
+/**
+ * Loading-state version of AIPreview. Renders the same panel
+ * outline (border, header bar, three deck-row placeholders) with
+ * shimmer / pulse styling so the user can see WHERE the AI's
+ * output will land. Without this skeleton the call felt invisible
+ * for the 3-5s of LLM latency.
+ */
+function AIPreviewSkeleton() {
+  return (
+    <div className="anim-fade-up p-5 bg-surface-low border border-primary/20 space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-primary/80">
+          AI is reading your cards
+        </h3>
+        <span className="text-[10px] text-on-surface-variant/30 tabular-nums">Usually 3-5s</span>
+      </div>
+      <div className="h-3 w-3/4 bg-surface-container animate-pulse" />
+      <div className="space-y-2">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="px-3 py-2.5 bg-surface-container border border-white/[0.04] space-y-1.5">
+            <div className="flex items-baseline justify-between">
+              <div className="h-3 w-1/3 bg-surface-low animate-pulse" />
+              <div className="h-2 w-12 bg-surface-low animate-pulse" />
+            </div>
+            <div className="h-2 w-full bg-surface-low animate-pulse" />
+            <div className="h-2 w-5/6 bg-surface-low animate-pulse" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AIPreview({ aiResults, aiSavedIdx, matchCountForQuery, practiceProposedDeck, saveProposedDeck, dismissAI }) {
   return (
     <div className="anim-fade-up p-5 bg-surface-low border border-primary/20 space-y-3">

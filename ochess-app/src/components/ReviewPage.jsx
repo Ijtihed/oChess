@@ -26,6 +26,7 @@ import {
 import { loadDrillSets, removeDrillSet, saveDrillSets } from "../lib/drill-sets";
 import { listDecks, getDeckById } from "../lib/decks";
 import { getCardType, TONE_CLASSES } from "../lib/card-types";
+import { explainCard } from "../lib/card-explain";
 
 // Convert a 4/5-character UCI string ("e2e4" / "e7e8q") to a chess.js
 // move object. Centralized here so review and the puzzle replay
@@ -48,6 +49,22 @@ const RATING_BUTTONS = [
 
 function orientationFor(card) {
   return (card?.fen || "").includes(" b ") ? "black" : "white";
+}
+
+/**
+ * The user's color in a review card. Determined by who's to move
+ * at the saved FEN: if the card is "Black to move - find the
+ * best move", the user IS Black for the duration of this card.
+ * Multi-move puzzle lines preserve the user's color across the
+ * opponent reply (the user always replies after the auto-played
+ * opponent move).
+ *
+ * Without this, InteractiveBoard's default playerColor="w"
+ * silently blocks drag attempts on black pieces - which made
+ * black-to-move cards literally unplayable.
+ */
+function playerColorFor(card) {
+  return (card?.fen || "").includes(" b ") ? "b" : "w";
 }
 
 /** Card-type chip rendered above the prompt - icon + label in
@@ -861,6 +878,7 @@ export default function ReviewPage() {
               fen={fen}
               onMove={handleMove}
               orientation={orientation}
+              playerColor={playerColorFor(card)}
               interactive={phase === "prompt" && !!(card.answerMove || card.lineMoves?.[lineIndex])}
               highlightSquares={highlight}
             />
@@ -921,18 +939,30 @@ export default function ReviewPage() {
 
               {(phase === "correct" || phase === "revealed") && (
                 <>
-                  {(card.answerText || card.notes) && (
-                    <div className={`p-4 mb-3 border ${
-                      phase === "correct" ? "bg-emerald-500/5 border-emerald-500/10" : "bg-surface-container border-white/[0.04]"
-                    }`}>
-                      <span className={`text-xs font-headline font-bold uppercase tracking-wide block mb-2 ${
-                        phase === "correct" ? "text-emerald-400" : "text-on-surface-variant/50"
+                  {/* Explanation panel. Prefers a writer-supplied
+                      answerText / notes, falls back to a coach-tone
+                      template using the card's metadata (themes,
+                      eval loss, opening, phase, played-vs-best
+                      SAN). Always shows for mistake / puzzle / game
+                      cards so the user gets feedback every solve,
+                      not only on cards that happened to ship with
+                      hand-written notes. */}
+                  {(() => {
+                    const explanation = explainCard(card);
+                    if (!explanation) return null;
+                    return (
+                      <div className={`p-4 mb-3 border ${
+                        phase === "correct" ? "bg-emerald-500/5 border-emerald-500/10" : "bg-surface-container border-white/[0.04]"
                       }`}>
-                        {phase === "correct" ? "Solved" : "Answer"}
-                      </span>
-                      <p className="text-sm text-on-surface-variant/60 leading-relaxed">{card.answerText || card.notes}</p>
-                    </div>
-                  )}
+                        <span className={`text-xs font-headline font-bold uppercase tracking-wide block mb-2 ${
+                          phase === "correct" ? "text-emerald-400" : "text-on-surface-variant/50"
+                        }`}>
+                          {phase === "correct" ? "Solved" : "Answer"}
+                        </span>
+                        <p className="text-sm text-on-surface-variant/65 leading-relaxed">{explanation}</p>
+                      </div>
+                    );
+                  })()}
                   <div className="grid grid-cols-4 gap-1.5 mb-2">
                     {RATING_BUTTONS.map((r) => (
                       <button key={r.value} onClick={() => rate(r.value)}
