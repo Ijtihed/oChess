@@ -264,6 +264,14 @@ export default function ReviewPage() {
   // previous card can't bleed into the next prompt.
   const cardKey = card ? cardId(card) : null;
   useEffect(() => {
+    // Drain any opponent-reply / phase-handoff timeouts left over
+    // from the previous card. Without this, switching deck (or
+    // tabbing back so the focus listener pulls fresh state) mid-
+    // line could fire the OLD card's setTimeout against the NEW
+    // card's gameRef.
+    const set = timeoutsRef.current;
+    for (const id of set) clearTimeout(id);
+    set.clear();
     if (!card) {
       gameRef.current = null;
       return;
@@ -383,44 +391,24 @@ export default function ReviewPage() {
   // when the user reaches the rating phase.
   const [intervalHints, setIntervalHints] = useState(null);
 
-  const resetCard = useCallback(() => {
-    setPhase("prompt");
-    setHighlight({});
-    setLineIndex(0);
-    setPlayedSan([]);
-    setWrongAttempt(null);
-    setIntervalHints(null);
-    awaitingOpponentRef.current = false;
-    gameRef.current = null;
-  }, []);
-
-  // Advance the displayed FEN to whatever's currently in gameRef
-  // and surface the predicted intervals. Called after the line is
-  // fully played out (or revealed), at the rating-prompt phase.
-  // Clears any leftover wrong-attempt flash so the rate UI doesn't
-  // render the red "Not quite" banner alongside the rating buttons
-  // (the banner is supposed to be a transient prompt-phase
-  // affordance only).
-  const enterRatePhase = useCallback((nextPhase) => {
-    setPhase(nextPhase);
-    setWrongAttempt(null);
-    if (card) {
-      const id = cardId(card);
-      setIntervalHints(predictIntervalsFor(schedules, id));
-    }
-  }, [card, schedules]);
-
   // Tracker for outstanding setTimeouts so the cleanup effect can
-  // cancel them on unmount. Without this, a user who navigates
-  // away mid-line would still trigger an opponent move animation
-  // 450 ms later (or, more importantly, mutate gameRef.current
-  // after the next card was already loaded).
+  // cancel them on unmount AND so we can flush them on every card
+  // transition. Without this, a user who navigates away (or skips,
+  // or rates) mid-line would still trigger an opponent move
+  // animation 450 ms later - and in the rare case the same UCI
+  // happens to be legal on the *next* card it would silently
+  // corrupt state.
   const timeoutsRef = useRef(new Set());
 
-  useEffect(() => {
+  // Drains every pending timeout immediately. Safe to call as
+  // many times as we like.
+  const clearPendingTimeouts = useCallback(() => {
     const set = timeoutsRef.current;
-    return () => { for (const id of set) clearTimeout(id); set.clear(); };
+    for (const id of set) clearTimeout(id);
+    set.clear();
   }, []);
+
+  useEffect(() => () => clearPendingTimeouts(), [clearPendingTimeouts]);
 
   const scheduleTimeout = useCallback((fn, delay) => {
     const id = setTimeout(() => {
@@ -430,6 +418,38 @@ export default function ReviewPage() {
     timeoutsRef.current.add(id);
     return id;
   }, []);
+
+  const resetCard = useCallback(() => {
+    clearPendingTimeouts();
+    setPhase("prompt");
+    setHighlight({});
+    setLineIndex(0);
+    setPlayedSan([]);
+    setWrongAttempt(null);
+    setIntervalHints(null);
+    awaitingOpponentRef.current = false;
+    gameRef.current = null;
+  }, [clearPendingTimeouts]);
+
+  // Advance the displayed FEN to whatever's currently in gameRef
+  // and surface the predicted intervals. Called after the line is
+  // fully played out (or revealed), at the rating-prompt phase.
+  // Clears any leftover wrong-attempt flash so the rate UI doesn't
+  // render the red "Not quite" banner alongside the rating buttons
+  // (the banner is supposed to be a transient prompt-phase
+  // affordance only). Also flushes any queued opponent-reply
+  // timeout - the user has either solved or revealed, so further
+  // automated mutations of gameRef would just race the rate UI.
+  const enterRatePhase = useCallback((nextPhase) => {
+    clearPendingTimeouts();
+    awaitingOpponentRef.current = false;
+    setPhase(nextPhase);
+    setWrongAttempt(null);
+    if (card) {
+      const id = cardId(card);
+      setIntervalHints(predictIntervalsFor(schedules, id));
+    }
+  }, [card, schedules, clearPendingTimeouts]);
 
   // Auto-play the opponent's reply (the next entry in lineMoves
   // after a player move). Brief delay so the user sees the move
@@ -541,9 +561,27 @@ export default function ReviewPage() {
 
   const showAnswer = useCallback(() => {
     if (!card) return;
-    // Highlight the next expected move so the user can see what
-    // they should have played, without applying it.
-    const lineUci = card.lineMoves?.[lineIndex];
+    // If the user clicks Show Answer during the brief opponent-
+    // reply window, lineIndex points at the opponent's move - not
+    // theirs. Highlighting that would show the wrong square. Apply
+    // the queued opp move synchronously first so the highlight
+    // lands on the user's actual next expected move instead.
+    let cursor = lineIndex;
+    if (awaitingOpponentRef.current && card.lineMoves?.[cursor]) {
+      try {
+        const reply = uciToMove(card.lineMoves[cursor]);
+        const g = gameRef.current;
+        if (g && reply) {
+          const r = g.move(reply);
+          if (r) {
+            setPlayedSan((prev) => [...prev, r.san]);
+            cursor = cursor + 1;
+            setLineIndex(cursor);
+          }
+        }
+      } catch { /* ignore - line corrupted */ }
+    }
+    const lineUci = card.lineMoves?.[cursor];
     const expected = (lineUci ? uciToMove(lineUci) : null) || card.answerMove;
     if (expected) {
       setHighlight({
