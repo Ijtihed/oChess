@@ -8,23 +8,14 @@ import {
   buildWeaknessProfile,
   filterCardsByQuery,
   COMMON_WEAKNESS_CHIPS,
-  buildDailyPlan,
-  planCacheKey,
   MISTAKE_CP_THRESHOLD,
 } from "../lib/study-plan";
-import {
-  loadCards,
-  saveCards,
-  cardId,
-  loadSchedules,
-  buildShareUrl,
-} from "../lib/review-cards";
+import { loadCards, saveCards } from "../lib/review-cards";
 import { generateAIDecks, isAIAvailable } from "../lib/coach-llm";
 import {
   loadDrillSets,
   saveDrillSets,
   addDrillSet,
-  removeDrillSet,
   countDrillSetCards,
 } from "../lib/drill-sets";
 
@@ -61,8 +52,6 @@ const GAME_LIMIT_OPTIONS = [
   { value: 1000, label: "1000", warn: true },
 ];
 const DEFAULT_GAME_LIMIT = 100;
-const DAILY_QUOTA = 5;
-
 const PHASE_LABELS = { opening: "Opening", middlegame: "Middlegame", endgame: "Endgame" };
 
 function detectUserColor(pgn, chesscomUsername, lichessUsername) {
@@ -171,8 +160,6 @@ export default function StudyPlanPanel({ onStartSession }) {
   // Card store - re-read on every build/refresh so the Today tab and
   // this tab stay in lockstep.
   const [allCards, setAllCards] = useState(() => loadCards());
-  const [schedules] = useState(() => loadSchedules());
-
   // Filter UI state. `query` and `activeChip` describe the current
   // ad-hoc drill (the one the "Start session" button kicks off).
   // Saved drill sets live separately in `drillSets`; clicking one
@@ -213,21 +200,6 @@ export default function StudyPlanPanel({ onStartSession }) {
 
   const profileWeakness = useMemo(() => buildWeaknessProfile(allCards), [allCards]);
 
-  const filteredCards = useMemo(() => {
-    let pool = allCards.filter((c) => c.type === "mistake" || c.type === "puzzle");
-    if (activeChip) {
-      const chip = COMMON_WEAKNESS_CHIPS.find((c) => c.id === activeChip);
-      if (chip) pool = pool.filter(chip.match);
-    }
-    if (query) pool = filterCardsByQuery(pool, query);
-    return pool;
-  }, [allCards, query, activeChip]);
-
-  const todayPlan = useMemo(
-    () => buildDailyPlan(allCards, schedules, { quota: DAILY_QUOTA, query, chipId: activeChip }),
-    [allCards, schedules, query, activeChip]
-  );
-
   // Save the current ad-hoc filter as a persistent named drill set.
   // If an existing set is being edited (clicked "rename"), updates
   // it in place; otherwise creates a new one. Either way the new
@@ -249,33 +221,6 @@ export default function StudyPlanPanel({ onStartSession }) {
     setDrillName("");
   }, [drillSets, editingSetId, drillName, query, activeChip, canSaveDrill]);
 
-  const startDrillSet = useCallback((set) => {
-    if (!set) return;
-    onStartSession?.({
-      query: set.query || "",
-      chipId: set.chipId || null,
-      setName: set.name,
-    });
-  }, [onStartSession]);
-
-  const deleteDrillSet = useCallback((setId) => {
-    const next = removeDrillSet(drillSets, setId);
-    setDrillSets(next);
-    saveDrillSets(next);
-    if (editingSetId === setId) {
-      setEditingSetId(null);
-      setSavingDrill(false);
-      setDrillName("");
-    }
-  }, [drillSets, editingSetId]);
-
-  const beginEditDrillSet = useCallback((set) => {
-    setQuery(set.query || "");
-    setActiveChip(set.chipId || null);
-    setDrillName(set.name);
-    setEditingSetId(set.id);
-    setSavingDrill(true);
-  }, []);
 
   const cancelImport = useCallback(() => {
     if (!abortRef.current) return;
@@ -643,21 +588,20 @@ export default function StudyPlanPanel({ onStartSession }) {
   const importControls = (
     <div className="space-y-3">
       {(cc && li) && (
-        <div className="space-y-2">
-          <span className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block">Sources</span>
+        <div className="space-y-1.5">
           <SourceToggle label="chess.com" username={cc} active={useChesscom} onToggle={() => setUseChesscom((v) => !v)} />
           <SourceToggle label="Lichess"   username={li} active={useLichess}  onToggle={() => setUseLichess((v) => !v)} />
         </div>
       )}
       <div>
-        <span className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block mb-2">
-          How many games per source?
+        <span className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block mb-1.5">
+          Games per source
         </span>
-        <div className="grid grid-cols-4 gap-1.5">
+        <div className="grid grid-cols-5 gap-1.5">
           {GAME_LIMIT_OPTIONS.map((opt) => (
             <button key={opt.value}
               onClick={() => setGameLimit(opt.value)}
-              className={`flex flex-col items-center justify-center py-2.5 transition-colors active:scale-[0.97] ${
+              className={`flex flex-col items-center justify-center py-2 transition-colors active:scale-[0.97] ${
                 gameLimit === opt.value
                   ? "bg-primary text-on-primary"
                   : "bg-surface-container border border-white/[0.04] text-on-surface-variant/55 hover:text-primary hover:bg-surface-high"
@@ -665,15 +609,12 @@ export default function StudyPlanPanel({ onStartSession }) {
               <span className="font-headline text-sm font-extrabold">{opt.label}</span>
               {opt.warn && (
                 <span className={`text-[9px] mt-0.5 ${gameLimit === opt.value ? "text-on-primary/60" : "text-amber-400/60"}`}>
-                  may take a while
+                  slow
                 </span>
               )}
             </button>
           ))}
         </div>
-        <p className="text-[10px] text-on-surface-variant/30 mt-2">
-          Larger sets find more patterns. Stockfish runs on your moves only - 200+ can take a long time to get everything.
-        </p>
       </div>
     </div>
   );
@@ -697,25 +638,17 @@ export default function StudyPlanPanel({ onStartSession }) {
   // Pre-build state: usernames present, no mistakes yet.
   if (!hasAnyMistakes && phase === "ready") {
     return (
-      <div className="anim-fade-up space-y-5">
-        <div className="p-5 bg-surface-low border border-white/[0.04]">
-          <div className="flex items-baseline justify-between mb-2">
-            <h3 className="font-headline text-base font-bold text-primary">Build your study plan</h3>
+      <div className="anim-fade-up">
+        <div className="p-5 bg-surface-low border border-white/[0.04] space-y-4">
+          <div className="flex items-baseline justify-between">
+            <h3 className="font-headline text-base font-bold text-primary">Import your games</h3>
             <button onClick={() => setEditingUsernames((v) => !v)}
-              className="text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+              className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
               {editingUsernames ? "Done" : "Edit accounts"}
             </button>
           </div>
-          {editingUsernames ? (
-            <div className="mb-4">{usernamesEditor}</div>
-          ) : (
-            <p className="text-[13px] text-on-surface-variant/55 leading-relaxed mb-4">
-              We'll pull up to {gameLimit} of your most recent games per source, run Stockfish on
-              your moves to find positions where the eval dropped, and save each one as an Anki card
-              you can drill.
-            </p>
-          )}
-          <div className="mb-4">{importControls}</div>
+          {editingUsernames && usernamesEditor}
+          {importControls}
           <button onClick={runImport}
             disabled={!useChesscom && !useLichess}
             className="btn btn-primary w-full py-3 text-sm">
@@ -726,114 +659,42 @@ export default function StudyPlanPanel({ onStartSession }) {
     );
   }
 
-  // Built state - full plan UI.
+  // Built state - slim "do one thing" UI.
+  //
+  // The Plan tab's job after analysis: let the user search / chip /
+  // ask AI to spin up new decks. Studying happens on the Today tab
+  // (deck browser). So this surface is intentionally narrow:
+  //
+  //   1. Compact stats strip (you've heard "you have 320 mistakes",
+  //      now move on).
+  //   2. One control block: search + chips + Save / AI button.
+  //   3. AI proposals appear inline below the control block when
+  //      generated.
+  //   4. A single re-analyze footer for tweaking sources / size.
+  //
+  // What got cut from the prior version: "My drill sets" panel
+  // (already in Today's deck browser), "Today's plan" preview
+  // (same), the long instructional paragraphs, the duplicated
+  // headers + sub-labels.
   return (
-    <div className="anim-fade-up space-y-5">
-      {/* Weakness summary */}
-      <div className="p-5 bg-surface-low border border-white/[0.04]">
-        <div className="flex items-baseline justify-between mb-3">
-          <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">Your weakness profile</h3>
-          <span className="text-[11px] text-on-surface-variant/30 tabular-nums">{profileWeakness.total} cards</span>
-        </div>
-        <div className="grid grid-cols-3 gap-2 mb-4">
-          {(["opening", "middlegame", "endgame"]).map((p) => (
-            <div key={p} className="p-3 bg-surface-container border border-white/[0.03] text-center">
-              <span className="font-headline text-2xl font-extrabold text-primary block">{profileWeakness.phaseCount[p] || 0}</span>
-              <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30">{PHASE_LABELS[p]}</span>
-            </div>
-          ))}
-        </div>
-        {profileWeakness.topThemes.length > 0 && (
-          <div>
-            <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30 block mb-2">Most common themes</span>
-            <div className="flex flex-wrap gap-1">
-              {profileWeakness.topThemes.map(({ theme, count }) => (
-                <span key={theme} className="px-2 py-1 bg-surface-container border border-white/[0.04] text-[11px] text-on-surface-variant/55">
-                  {theme.replace(/_/g, " ")} <span className="text-on-surface-variant/30">{count}</span>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
+    <div className="anim-fade-up space-y-4">
+      {/* ── Stats strip ── */}
+      <CompactStats profileWeakness={profileWeakness} />
 
-      {/* Saved drill sets - clickable rows the user can come back to.
-          Lives ABOVE the ad-hoc filter so a returning user sees their
-          saved drills first instead of having to re-type the
-          query/chip every visit. */}
-      {drillSets.length > 0 && (
-        <div className="p-5 bg-surface-low border border-white/[0.04]">
-          <div className="flex items-baseline justify-between mb-3">
-            <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">My drill sets</h3>
-            <span className="text-[11px] text-on-surface-variant/30 tabular-nums">{drillSets.length}</span>
-          </div>
-          <div className="space-y-1.5">
-            {drillSets.map((set) => {
-              const count = countDrillSetCards(set, allCards, {
-                chipFor: (id) => COMMON_WEAKNESS_CHIPS.find((c) => c.id === id),
-                queryFilter: filterCardsByQuery,
-              });
-              const subtitle = [
-                set.chipId ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === set.chipId)?.label : null,
-                set.query ? `"${set.query}"` : null,
-              ].filter(Boolean).join(" · ");
-              return (
-                <div key={set.id} className="flex items-center gap-2 px-3 py-2 bg-surface-container border border-white/[0.04]">
-                  <button onClick={() => startDrillSet(set)}
-                    className="flex-1 min-w-0 text-left">
-                    <span className="font-headline text-[13px] font-bold text-on-surface-variant/80 block truncate">
-                      {set.name}
-                    </span>
-                    <span className="text-[10px] text-on-surface-variant/40 truncate block">
-                      {subtitle || "no filter"} · {count} card{count === 1 ? "" : "s"}
-                    </span>
-                  </button>
-                  <button onClick={() => beginEditDrillSet(set)}
-                    title="Edit this drill set's filter or name"
-                    className="px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-primary transition-colors">
-                    Edit
-                  </button>
-                  <button onClick={() => deleteDrillSet(set.id)}
-                    title="Delete this drill set"
-                    className="px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-error transition-colors">
-                    Delete
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Free-text + chip filters - the "ad-hoc drill" that lives
-          before the user decides to save it as a set. */}
+      {/* ── Search + chips + Save / AI ── */}
       <div className="p-5 bg-surface-low border border-white/[0.04]">
-        <div className="flex items-baseline justify-between mb-3">
-          <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">
-            {editingSetId ? "Edit drill set" : "Drill what you want"}
-          </h3>
-          {canSaveDrill && !savingDrill && (
-            <button onClick={() => { setSavingDrill(true); setDrillName(""); }}
-              className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
-              Save as set
-            </button>
-          )}
-        </div>
-        <p className="text-[12px] text-on-surface-variant/40 mb-3 leading-relaxed">
-          Type a phrase like <span className="text-on-surface-variant/65 font-bold">endgame fork</span> or{" "}
-          <span className="text-on-surface-variant/65 font-bold">hanging queen</span> to drill positions matching it. Or pick a chip. Save what you want to come back to.
-        </p>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="What kind of mistakes do you make?"
+          placeholder="What kind of mistakes? e.g. hanging queens, endgame fork"
           className="w-full bg-surface-container border border-white/[0.06] px-3 py-2.5 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40 mb-3"
         />
+
         <div className="flex flex-wrap gap-1.5 mb-3">
           {COMMON_WEAKNESS_CHIPS.map((chip) => (
             <button key={chip.id}
               onClick={() => setActiveChip(activeChip === chip.id ? null : chip.id)}
-              className={`px-3 py-1.5 font-headline text-[11px] font-bold uppercase tracking-wide transition-colors ${
+              className={`px-2.5 py-1 font-headline text-[10px] font-bold uppercase tracking-wide transition-colors ${
                 activeChip === chip.id
                   ? "bg-primary text-on-primary"
                   : "bg-surface-container border border-white/[0.04] text-on-surface-variant/55 hover:text-primary hover:bg-surface-high"
@@ -844,14 +705,32 @@ export default function StudyPlanPanel({ onStartSession }) {
           ))}
         </div>
 
-        {/* Save-as-set inline editor. Appears when the user clicks
-            "Save as set" or "Edit" on an existing row. */}
+        {/* Two parallel ways to turn the current query/chip into a
+            deck. Save as deck = exact substring filter. AI = let
+            the model split / focus / write a summary. */}
+        <div className="flex gap-2">
+          <button onClick={() => { setSavingDrill(true); setDrillName(""); }}
+            disabled={!canSaveDrill || savingDrill}
+            className="btn btn-secondary flex-1 py-2 text-[11px] disabled:opacity-30 disabled:pointer-events-none">
+            {editingSetId ? "Edit deck" : "Save as deck"}
+          </button>
+          {isAIAvailable() && (
+            <button onClick={generateAIDecksFromQuery}
+              disabled={aiLoading || aiCooldownSec > 0}
+              className="btn btn-primary flex-1 py-2 text-[11px]">
+              {aiLoading ? "Thinking..." : aiCooldownSec > 0 ? `Wait ${aiCooldownSec}s` : "AI: build decks"}
+            </button>
+          )}
+        </div>
+
+        {/* Save-as-deck inline editor. Only visible after the user
+            clicks "Save as deck". */}
         {savingDrill && (
           <div className="mt-3 p-3 bg-surface-container border border-primary/15 space-y-2">
             <input
               value={drillName}
               onChange={(e) => setDrillName(e.target.value)}
-              placeholder="Name this drill set (e.g. 'Hanging queens')"
+              placeholder="Name this deck (e.g. 'Hanging queens')"
               maxLength={60}
               autoFocus
               className="w-full bg-surface-low border border-white/[0.06] px-3 py-2 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40"
@@ -871,180 +750,211 @@ export default function StudyPlanPanel({ onStartSession }) {
           </div>
         )}
 
-        {/* AI deck generator. Reads the current `query` (and the
-            full mistake corpus, NOT chip-filtered) and proposes
-            1-3 focused decks via the coach Edge Function. The
-            response is rendered inline as a preview list with
-            per-deck Save buttons. */}
-        {isAIAvailable() && (
-          <div className="mt-4 pt-4 border-t border-white/[0.04]">
-            <div className="flex items-baseline justify-between mb-2">
-              <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">
-                Or let AI build decks for you
-              </span>
-              {aiUsage?.maxCalls > 0 && aiCooldownSec === 0 && (
-                <span className="text-[10px] text-on-surface-variant/30 tabular-nums">
-                  {aiUsage.callsInWindow}/{aiUsage.maxCalls} calls in last {Math.round(aiUsage.windowSeconds / 60)} min
-                </span>
-              )}
-            </div>
-            <p className="text-[11px] text-on-surface-variant/35 mb-3 leading-relaxed">
-              Type what you want above (e.g. <span className="text-on-surface-variant/55 font-bold">"middlegame mistakes with rooks"</span>), then let the AI propose 1-3 focused decks pulled from your real cards.
-            </p>
-
-            {aiCooldownSec > 0 && (
-              <div className="anim-fade-up mb-3 px-3 py-2 bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400">
-                You're generating decks a lot. Try again in {aiCooldownSec}s.
-                {aiUsage?.maxCalls
-                  ? ` (Limit ${aiUsage.maxCalls} per ${Math.round(aiUsage.windowSeconds / 60)} min.)`
-                  : ""}
-              </div>
-            )}
-            {aiError && (
-              <div className="anim-fade-up mb-3 px-3 py-2 bg-error/10 border border-error/20 text-[12px] text-error">
-                {aiError}
-              </div>
-            )}
-
-            <button onClick={generateAIDecksFromQuery}
-              disabled={aiLoading || aiCooldownSec > 0}
-              className="btn btn-primary w-full py-2.5 text-xs">
-              {aiLoading
-                ? "Thinking..."
-                : aiCooldownSec > 0
-                  ? `Wait ${aiCooldownSec}s`
-                  : aiResults
-                    ? "Regenerate"
-                    : "Generate decks with AI"}
-            </button>
-
-            {aiResults && Array.isArray(aiResults.decks) && (
-              <div className="mt-4 space-y-3">
-                {aiResults.summary && (
-                  <p className="text-[12px] text-on-surface leading-relaxed">{aiResults.summary}</p>
-                )}
-                {aiResults.decks.length === 0 ? (
-                  <p className="text-[12px] text-on-surface-variant/45 leading-relaxed">
-                    The AI couldn't pick a focused deck from your query. Try rephrasing or running analysis on more games first.
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40">
-                        Proposed decks
-                      </span>
-                      <button onClick={dismissAI}
-                        className="text-[10px] uppercase tracking-widest text-on-surface-variant/40 hover:text-on-surface-variant/70 transition-colors">
-                        Dismiss
-                      </button>
-                    </div>
-                    {aiResults.decks.map((deck, idx) => {
-                      const matchCount = matchCountForQuery(deck.query);
-                      const saved = aiSavedIdx.has(idx);
-                      const hasMatches = matchCount > 0;
-                      return (
-                        <div key={idx} className="px-3 py-2.5 bg-surface-container border border-white/[0.04]">
-                          <div className="flex items-baseline justify-between mb-1 gap-2">
-                            <span className="font-headline text-[13px] font-bold text-primary truncate">
-                              {deck.name}
-                            </span>
-                            <span className={`text-[10px] tabular-nums shrink-0 ${hasMatches ? "text-on-surface-variant/60" : "text-amber-400/70"}`}>
-                              {matchCount} card{matchCount === 1 ? "" : "s"}
-                            </span>
-                          </div>
-                          {deck.summary && (
-                            <p className="text-[12px] text-on-surface-variant/55 leading-relaxed mb-2">{deck.summary}</p>
-                          )}
-                          <span className="text-[10px] text-on-surface-variant/30 block mb-2">
-                            Filter: <span className="font-mono text-on-surface-variant/45">{deck.query}</span>
-                          </span>
-                          {!hasMatches && !saved && (
-                            <p className="text-[11px] text-amber-400/70 mb-2 leading-snug">
-                              No cards match this filter yet. Save it for future games?
-                            </p>
-                          )}
-                          <div className="flex gap-1.5">
-                            {saved ? (
-                              <span className="btn flex-1 py-1.5 text-[10px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                                Saved
-                              </span>
-                            ) : (
-                              <>
-                                <button onClick={() => practiceProposedDeck(deck)}
-                                  disabled={!hasMatches}
-                                  className="btn btn-primary flex-1 py-1.5 text-[10px] disabled:opacity-30 disabled:pointer-events-none">
-                                  Practice now
-                                </button>
-                                <button onClick={() => saveProposedDeck(deck, idx)}
-                                  className="btn btn-secondary flex-1 py-1.5 text-[10px]">
-                                  {hasMatches ? "Save deck" : "Save for later"}
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                {aiResults.model && (
-                  <p className="text-[10px] text-on-surface-variant/20 text-center">via {aiResults.model}</p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Today's queue */}
-      <div className="p-5 bg-surface-container border border-primary/15">
-        <div className="flex items-baseline justify-between mb-3">
-          <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-primary/70">Today&apos;s plan</h3>
-          <span className="text-[11px] text-on-surface-variant/40 tabular-nums">
-            {todayPlan.length} of {filteredCards.length} matches
-          </span>
-        </div>
-        {todayPlan.length === 0 ? (
-          <p className="text-[12px] text-on-surface-variant/40 leading-relaxed">
-            No cards match this filter. Clear the filter or analyze more games.
+        {/* AI inline messaging. Cooldown / error live here so they
+            don't take up space when the AI is idle. */}
+        {aiCooldownSec > 0 && (
+          <p className="anim-fade-up mt-3 text-[11px] text-amber-400/80 leading-snug">
+            Limit reached. Try again in {aiCooldownSec}s.
+            {aiUsage?.maxCalls
+              ? ` (${aiUsage.maxCalls} per ${Math.round(aiUsage.windowSeconds / 60)} min.)`
+              : ""}
           </p>
-        ) : (
-          <>
-            <div className="space-y-1.5 mb-4">
-              {todayPlan.map((c, i) => (
-                <PlanCardRow key={c.id || `${c.type}-${i}`} card={c} index={i + 1} />
-              ))}
-            </div>
-            <button onClick={() => onStartSession?.({ query, chipId: activeChip })}
-              className="btn btn-primary w-full py-3 text-sm">
-              Start session
-            </button>
-          </>
+        )}
+        {aiError && (
+          <p className="anim-fade-up mt-3 text-[11px] text-error/80 leading-snug">{aiError}</p>
+        )}
+        {aiUsage?.maxCalls > 0 && aiCooldownSec === 0 && !aiError && (
+          <p className="mt-3 text-[10px] text-on-surface-variant/30 tabular-nums">
+            {aiUsage.callsInWindow}/{aiUsage.maxCalls} AI calls in last {Math.round(aiUsage.windowSeconds / 60)} min
+          </p>
         )}
       </div>
 
-      {/* Re-analyze panel - exposes the same source toggles + game
-          count picker + inline username editor as the empty-state UI
-          so the user can change sources / size / accounts without
-          leaving the Plan tab. */}
-      <div className="p-5 bg-surface-low border border-white/[0.04] space-y-4">
-        <div className="flex items-baseline justify-between">
-          <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-on-surface-variant/40">
-            Re-analyze
-          </h3>
-          <button onClick={() => setEditingUsernames((v) => !v)}
-            className="text-[11px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
-            {editingUsernames ? "Done" : "Edit accounts"}
-          </button>
-        </div>
-        {editingUsernames && usernamesEditor}
-        {importControls}
-        <button onClick={runImport}
-          disabled={!useChesscom && !useLichess}
-          className="btn btn-secondary w-full py-2.5 text-xs">
-          Re-analyze
+      {/* AI deck preview. Renders only after the user generates;
+          kept in its own block so the search panel above stays
+          scannable when AI is idle. */}
+      {aiResults && Array.isArray(aiResults.decks) && (
+        <AIPreview
+          aiResults={aiResults}
+          aiSavedIdx={aiSavedIdx}
+          matchCountForQuery={matchCountForQuery}
+          practiceProposedDeck={practiceProposedDeck}
+          saveProposedDeck={saveProposedDeck}
+          dismissAI={dismissAI}
+        />
+      )}
+
+      {/* ── Re-analyze footer ── */}
+      <ReanalyzeFooter
+        cc={cc}
+        li={li}
+        gameLimit={gameLimit}
+        cardCount={profileWeakness.total}
+        editingUsernames={editingUsernames}
+        setEditingUsernames={setEditingUsernames}
+        usernamesEditor={usernamesEditor}
+        importControls={importControls}
+        runImport={runImport}
+        useChesscom={useChesscom}
+        useLichess={useLichess}
+      />
+    </div>
+  );
+}
+
+// ── Sub-components extracted for clarity ──────────────────────────
+
+/**
+ * Single-row compact stats strip. Replaces the previous 3-column
+ * grid + header + theme-chips block with one line that surfaces
+ * the same info: phase split + top theme summary.
+ */
+function CompactStats({ profileWeakness }) {
+  const phases = ["opening", "middlegame", "endgame"];
+  return (
+    <div className="px-4 py-3 bg-surface-low border border-white/[0.04] flex items-center gap-4 flex-wrap">
+      <div className="flex items-baseline gap-3">
+        {phases.map((p) => (
+          <span key={p} className="flex items-baseline gap-1.5">
+            <span className="font-headline text-[15px] font-extrabold text-primary tabular-nums">
+              {profileWeakness.phaseCount[p] || 0}
+            </span>
+            <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/35">
+              {PHASE_LABELS[p]}
+            </span>
+          </span>
+        ))}
+      </div>
+      <span className="text-on-surface-variant/15 hidden sm:inline">·</span>
+      <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30 tabular-nums">
+        {profileWeakness.total} cards
+      </span>
+      {profileWeakness.topThemes.length > 0 && (
+        <>
+          <span className="text-on-surface-variant/15 hidden sm:inline">·</span>
+          <span className="flex flex-wrap gap-1 items-center">
+            {profileWeakness.topThemes.slice(0, 4).map(({ theme, count }) => (
+              <span key={theme} className="px-1.5 py-0.5 bg-surface-container border border-white/[0.04] text-[10px] text-on-surface-variant/55">
+                {theme.replace(/_/g, " ")} <span className="text-on-surface-variant/30 tabular-nums">{count}</span>
+              </span>
+            ))}
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * AI proposal rows. Extracted out of the main render so the
+ * "search panel" stays compact and the preview section reads as a
+ * distinct block when the user has just generated decks.
+ */
+function AIPreview({ aiResults, aiSavedIdx, matchCountForQuery, practiceProposedDeck, saveProposedDeck, dismissAI }) {
+  return (
+    <div className="anim-fade-up p-5 bg-surface-low border border-primary/20 space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h3 className="font-headline text-xs font-bold uppercase tracking-widest text-primary/80">AI suggested decks</h3>
+        <button onClick={dismissAI}
+          className="text-[10px] uppercase tracking-widest text-on-surface-variant/40 hover:text-on-surface-variant/70 transition-colors">
+          Dismiss
         </button>
       </div>
+      {aiResults.summary && (
+        <p className="text-[12px] text-on-surface-variant/75 leading-relaxed">{aiResults.summary}</p>
+      )}
+      {aiResults.decks.length === 0 ? (
+        <p className="text-[11px] text-on-surface-variant/45 leading-relaxed">
+          Couldn't pick a focused deck. Try rephrasing.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {aiResults.decks.map((deck, idx) => {
+            const matchCount = matchCountForQuery(deck.query);
+            const saved = aiSavedIdx.has(idx);
+            const hasMatches = matchCount > 0;
+            return (
+              <div key={idx} className="px-3 py-2.5 bg-surface-container border border-white/[0.04]">
+                <div className="flex items-baseline justify-between mb-1 gap-2">
+                  <span className="font-headline text-[13px] font-bold text-primary truncate">
+                    {deck.name}
+                  </span>
+                  <span className={`text-[10px] tabular-nums shrink-0 ${hasMatches ? "text-on-surface-variant/55" : "text-amber-400/70"}`}>
+                    {matchCount} card{matchCount === 1 ? "" : "s"}
+                  </span>
+                </div>
+                {deck.summary && (
+                  <p className="text-[12px] text-on-surface-variant/55 leading-relaxed mb-2">{deck.summary}</p>
+                )}
+                <div className="flex gap-1.5">
+                  {saved ? (
+                    <span className="btn flex-1 py-1.5 text-[10px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                      Saved
+                    </span>
+                  ) : (
+                    <>
+                      <button onClick={() => practiceProposedDeck(deck)}
+                        disabled={!hasMatches}
+                        className="btn btn-primary flex-1 py-1.5 text-[10px] disabled:opacity-30 disabled:pointer-events-none">
+                        Practice now
+                      </button>
+                      <button onClick={() => saveProposedDeck(deck, idx)}
+                        className="btn btn-secondary flex-1 py-1.5 text-[10px]">
+                        {hasMatches ? "Save deck" : "Save for later"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Compact bottom strip: where the cards came from, when the user
+ * last imported, and a Re-analyze action. Replaces the previous
+ * full-panel "Re-analyze" block which always showed the import
+ * controls inline.
+ */
+function ReanalyzeFooter({
+  cc, li, gameLimit, cardCount,
+  editingUsernames, setEditingUsernames,
+  usernamesEditor, importControls, runImport,
+  useChesscom, useLichess,
+}) {
+  const [open, setOpen] = useState(false);
+  const sources = [cc && `chesscom @${cc}`, li && `lichess @${li}`].filter(Boolean).join(" \u00b7 ");
+  return (
+    <div className="bg-surface-low border border-white/[0.04]">
+      <div className="px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
+        <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/40 truncate">
+          {sources || "No sources connected"} {cardCount > 0 && (<span className="text-on-surface-variant/25">{` \u00b7 ${cardCount} cards from last ${gameLimit} games`}</span>)}
+        </span>
+        <button onClick={() => setOpen((v) => !v)}
+          className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+          {open ? "Done" : "Re-analyze"}
+        </button>
+      </div>
+      {open && (
+        <div className="px-4 pb-4 pt-1 space-y-3 border-t border-white/[0.04]">
+          {editingUsernames || (!cc && !li) ? usernamesEditor : (
+            <button onClick={() => setEditingUsernames(true)}
+              className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+              Edit accounts
+            </button>
+          )}
+          {importControls}
+          <button onClick={runImport}
+            disabled={!useChesscom && !useLichess}
+            className="btn btn-primary w-full py-2 text-[11px]">
+            Run analysis
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1068,49 +978,3 @@ function SourceToggle({ label, username, active, onToggle }) {
   );
 }
 
-function PlanCardRow({ card, index }) {
-  // Try to render a tiny preview of the position via the FEN.
-  // For simplicity we just show a text summary; the user clicks
-  // through to the actual review session.
-  const phaseLabel = card.phase ? PHASE_LABELS[card.phase] || card.phase : "";
-  const [copied, setCopied] = useState(false);
-
-  const onShare = useCallback(() => {
-    const url = buildShareUrl(card);
-    if (!url) return;
-    try {
-      navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* clipboard unavailable - silently fail */ }
-  }, [card]);
-
-  return (
-    <div className="flex items-center gap-3 px-3 py-2 bg-surface-low border border-white/[0.03]">
-      <span className="font-headline text-[10px] font-bold tabular-nums text-on-surface-variant/30 w-5">{index}.</span>
-      <div className="flex-1 min-w-0">
-        <span className="font-headline text-[12px] font-bold text-on-surface-variant/65 block truncate">
-          {card.played_san ? `You played ${card.played_san}` : card.type === "puzzle" ? "Puzzle" : "Position"}
-          {card.best_san ? <span className="text-on-surface-variant/35 font-normal"> - best: {card.best_san}</span> : null}
-        </span>
-        <span className="text-[10px] text-on-surface-variant/30 truncate block">
-          {phaseLabel}
-          {card.eval_loss_cp ? ` · -${(card.eval_loss_cp / 100).toFixed(1)}` : ""}
-          {card.themes?.length ? ` · ${card.themes.slice(0, 2).join(", ").replace(/_/g, " ")}` : ""}
-          {card.opening ? ` · ${card.opening}` : ""}
-        </span>
-      </div>
-      <button onClick={onShare} title="Copy a shareable link to this card"
-        className={`px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
-          copied
-            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/20"
-            : "bg-surface-container border border-white/[0.04] text-on-surface-variant/45 hover:text-primary hover:bg-surface-high"
-        }`}>
-        {copied ? "Copied!" : "Share"}
-      </button>
-      {card.source && (
-        <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25">{card.source}</span>
-      )}
-    </div>
-  );
-}
