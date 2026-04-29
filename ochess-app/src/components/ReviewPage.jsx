@@ -63,13 +63,13 @@ function uciToMove(uci) {
 // Visual: tone-only borders on a neutral surface fill, matching
 // the rest of the app's quieter button palette.
 const RATING_BUTTONS = [
-  { label: "Again", desc: "Forgot / got it wrong",   value: RATING.AGAIN, key: "AGAIN",
+  { label: "Again", desc: "Forgot / got it wrong",   value: RATING.AGAIN,
     classes: "bg-surface-low border border-error/30 text-on-surface-variant/70 hover:border-error/50 hover:text-error" },
-  { label: "Hard",  desc: "Right but unsure / slow", value: RATING.HARD,  key: "HARD",
+  { label: "Hard",  desc: "Right but unsure / slow", value: RATING.HARD,
     classes: "bg-surface-low border border-amber-500/30 text-on-surface-variant/70 hover:border-amber-500/50 hover:text-amber-300" },
-  { label: "Good",  desc: "Knew it without effort",  value: RATING.GOOD,  key: "GOOD",
+  { label: "Good",  desc: "Knew it without effort",  value: RATING.GOOD,
     classes: "bg-surface-low border border-primary/30 text-on-surface-variant/70 hover:border-primary/50 hover:text-primary" },
-  { label: "Easy",  desc: "Spotted it instantly",    value: RATING.EASY,  key: "EASY",
+  { label: "Easy",  desc: "Spotted it instantly",    value: RATING.EASY,
     classes: "bg-surface-low border border-emerald-500/30 text-on-surface-variant/70 hover:border-emerald-500/50 hover:text-emerald-300" },
 ];
 
@@ -412,9 +412,15 @@ export default function ReviewPage() {
     // mid-line navigation away leaves it true) - reset it here
     // so the new card's first move isn't silently rejected.
     awaitingOpponentRef.current = false;
-    // Drop any "tap again to remove" arming - moving to a new
-    // card means the user implicitly cancelled.
+    // Drop any "tap again to <action>" arming on either
+    // destructive overflow item - moving to a new card means the
+    // user implicitly cancelled the destructive intent. Without
+    // this, opening the menu on the next card would still show
+    // "Tap again to reset" for ~4 s after the prior card's
+    // arming, even though the action is now scoped to a totally
+    // different card.
     setConfirmRemove(false);
+    setConfirmReset(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardKey]);
 
@@ -528,6 +534,19 @@ export default function ReviewPage() {
   useEffect(() => {
     if (topTab === "today") setDrillSets(loadDrillSets());
   }, [topTab]);
+
+  // Self-heal a stale `?deck=<id>` query param. If the URL points
+  // at a deck that no longer exists (drill set deleted from
+  // another tab, built-in slice now empty, etc.), drop the param
+  // so the URL reflects the actual UI state. Without this the
+  // page silently falls back to the deck browser but keeps the
+  // dead query param around, which makes refresh / bookmarking
+  // surprising.
+  useEffect(() => {
+    if (activeDeckId && !activeDeck) {
+      updateParams((p) => p.delete("deck"));
+    }
+  }, [activeDeckId, activeDeck, updateParams]);
 
   // Multi-move play-out state.
   //
