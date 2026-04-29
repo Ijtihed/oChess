@@ -8,6 +8,7 @@ import {
   MISTAKE_CP_THRESHOLD,
 } from "../lib/study-plan";
 import { saveCards } from "../lib/review-cards";
+import { filterImportableGames, summarizeSkipped } from "../lib/import-filter";
 
 /**
  * ImportGamesPanel - the focused "pull my games and find mistakes"
@@ -109,6 +110,11 @@ export default function ImportGamesPanel({ cards, onCardsChange, onDone }) {
   const [progress, setProgress] = useState({ source: "", fetched: 0, total: 0, analyzed: 0, totalMoves: 0, gameIdx: 0, gameCount: 0 });
   const [err, setErr] = useState(null);
   const [importedCount, setImportedCount] = useState(0);
+  // Tally of games filtered out before Stockfish even runs:
+  // variants, unfinished games, ultra-short games. Surfaced
+  // in the done/error copy so users understand why their
+  // import yielded fewer games than the API returned.
+  const [skipSummary, setSkipSummary] = useState(null);
   // `cancelling` toggles after the user clicks Cancel so the
   // button can flip to "Stopping..." while we wait for the
   // in-flight Stockfish call to wind down. The actual abort
@@ -146,6 +152,7 @@ export default function ImportGamesPanel({ cards, onCardsChange, onDone }) {
     setErr(null);
     setCancelling(false);
     setImportedCount(0);
+    setSkipSummary(null);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setPhase("importing");
@@ -176,14 +183,27 @@ export default function ImportGamesPanel({ cards, onCardsChange, onDone }) {
       }
 
       if (!ctrl.signal.aborted) {
+        // Filter out games we don't want to (or can't) analyze
+        // BEFORE running Stockfish on any of them. The
+        // mistake detector + chess.js replay assume STANDARD
+        // chess; a Chess960 / Atomic / Crazyhouse PGN either
+        // throws on load or produces noise cards. We also drop
+        // unfinished games (Result "*") and ultra-short games
+        // (<10 plies) that have no learnable mistake
+        // positions. The skip tally feeds the done-screen copy
+        // so the user sees "X games skipped (variant)".
+        const { games: importable, skipped: skippedReasons } = filterImportableGames(games);
+        const summary = summarizeSkipped(skippedReasons);
+        setSkipSummary(summary);
+
         setPhase("analyzing");
-        setProgress((p) => ({ ...p, gameCount: games.length, gameIdx: 0 }));
+        setProgress((p) => ({ ...p, gameCount: importable.length, gameIdx: 0 }));
 
         const seen = new Set(safeCards.map((c) => c.id).filter(Boolean));
 
-        for (let i = 0; i < games.length; i++) {
+        for (let i = 0; i < importable.length; i++) {
           if (ctrl.signal.aborted) break;
-          const g = games[i];
+          const g = importable[i];
           const userColor = detectUserColor(g.pgn, cc, li);
           if (!userColor) continue;
 
@@ -221,9 +241,16 @@ export default function ImportGamesPanel({ cards, onCardsChange, onDone }) {
           setErr(
             "We couldn't find any games on the source(s) you picked. Double-check the username spelling under Edit accounts."
           );
+        } else if (skipSummary && progress.gameCount === 0) {
+          // We pulled games but every single one was filtered
+          // out (e.g. user only plays Chess960). Tell them
+          // why nothing went through Stockfish.
+          setErr(
+            `Pulled ${games.length} game${games.length === 1 ? "" : "s"} but none were standard chess. ${skipSummary}`
+          );
         } else {
           setErr(
-            `Analyzed ${games.length} game${games.length === 1 ? "" : "s"} but didn't find any positions where you lost more than ${MISTAKE_CP_THRESHOLD / 100} pawns. Try a larger sample or different sources.`
+            `Analyzed ${progress.gameCount || games.length} game${(progress.gameCount || games.length) === 1 ? "" : "s"} but didn't find any positions where you lost more than ${MISTAKE_CP_THRESHOLD / 100} pawns. Try a larger sample or different sources.${skipSummary ? ` ${skipSummary}` : ""}`
           );
         }
         setPhase("error");
@@ -405,6 +432,11 @@ export default function ImportGamesPanel({ cards, onCardsChange, onDone }) {
           Added <span className="font-headline font-bold text-primary">{importedCount}</span> mistake card{importedCount === 1 ? "" : "s"} to your collection.
           You now have <span className="font-headline font-bold text-on-surface">{profileWeakness.total}</span> total cards across mistakes &amp; puzzles.
         </p>
+        {skipSummary && (
+          <p className="text-[12px] text-on-surface-variant/45 leading-relaxed">
+            {skipSummary} Variant games (Chess960, Atomic, etc.) and unfinished games can&apos;t be reviewed as standard chess.
+          </p>
+        )}
         <div className="flex flex-wrap gap-2">
           <button onClick={onDone} className="btn btn-primary px-5 py-2 text-xs">
             Go to decks

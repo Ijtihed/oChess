@@ -118,6 +118,12 @@ function pushLichessGame(games, obj) {
     date: obj.createdAt ? new Date(obj.createdAt).toLocaleDateString() : "",
     opening: obj.opening?.name || "",
     speed: obj.speed || "",
+    // Lichess JSON variant: "standard", "chess960", "fromPosition",
+    // "atomic", "antichess", etc. Threaded through so the
+    // import filter can drop variant games before they reach
+    // chess.js's standard-rules replay.
+    variant: obj.variant || "",
+    perfType: obj.perf || "",
     source: "lichess",
     url: `https://lichess.org/${obj.id}`,
   });
@@ -160,6 +166,12 @@ export async function fetchChesscomGames(username, { signal, onProgress, max = M
         date: g.end_time ? new Date(g.end_time * 1000).toLocaleDateString() : "",
         opening: g.pgn.match(/\[ECOUrl ".*\/(.+?)"\]/)?.[1]?.replace(/-/g, " ") || "",
         speed: g.time_class || "",
+        // Chess.com archive `rules` field: "chess" for standard,
+        // "chess960", "kingofthehill", "threecheck", "crazyhouse",
+        // "bughouse", "oddschess", etc. We thread it through so
+        // the filter can drop variant games. Falls back to the
+        // PGN [Variant] tag check if absent.
+        variant: g.rules || "",
         source: "chesscom",
         url: g.url || "",
       });
