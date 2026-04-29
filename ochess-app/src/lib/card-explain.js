@@ -55,9 +55,34 @@ function pieceFromSan(san) {
   return null;
 }
 
-/** Big-eval-loss copy. Threshold matches `BLUNDER_CP_THRESHOLD`
- *  in lib/study-plan.js (300 cp). */
-function severity(cp) {
+/** Big-eval-loss copy. Severity buckets are keyed off Lichess
+ *  winning-chances loss (the same source of truth as the move
+ *  classifier) when present, falling back to centipawns for old
+ *  cards saved before the wc switch.
+ *
+ *  Bands:
+ *    decisive: wc >= 0.50  (~250 cp from equal, "game over")
+ *    blunder:  wc >= 0.30  (Lichess "??" floor)
+ *    mistake:  wc >= 0.20  (Lichess "?" floor)
+ *    null:     anything below 0.20 wc - not bucket-worthy
+ */
+function severity(card) {
+  if (!card) return null;
+  const wc = card.eval_loss_wc;
+  if (Number.isFinite(wc)) {
+    if (wc >= 0.50) return "decisive";
+    if (wc >= 0.30) return "blunder";
+    if (wc >= 0.20) return "mistake";
+    return null;
+  }
+  // Legacy fallback for cards saved before eval_loss_wc was a thing.
+  // These thresholds match the *original* cp-based bucketing the
+  // explanation copy was authored against, so old cards still read
+  // sensibly. They're intentionally more permissive than the wc
+  // path (e.g. 350 cp = "blunder" via cp, but ≈ 0.55 wc = "decisive"
+  // by Lichess) - we'd rather leave old cards in their historical
+  // bucket than re-classify them after the fact.
+  const cp = card.eval_loss_cp;
   if (!Number.isFinite(cp)) return null;
   if (cp >= 500) return "decisive";
   if (cp >= 300) return "blunder";
@@ -85,7 +110,7 @@ function explainMistakeCard(card) {
   const phase = PHASE_LABELS[card.phase] || null;
   const theme = leadTheme(card.themes);
   const pawns = lossPawns(cp);
-  const sev = severity(cp);
+  const sev = severity(card);
 
   const lines = [];
 

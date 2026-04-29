@@ -49,12 +49,16 @@ describe("inferPhase", () => {
   });
 });
 
-describe("inferThemes", () => {
+describe("inferThemes (winning-chances loss)", () => {
+  // The third argument is winning-chances loss (Lichess units,
+  // [0, 1]) - the same value stored on cards as `eval_loss_wc`.
+  // Severity bands: 0.10 inaccuracy / 0.20 mistake / 0.30 blunder.
+
   it("flags blunder + missed_mate when Stockfish offered a mating move", () => {
     const themes = inferThemes(
       { san: "Bg5", piece: "b", captured: null },
       { san: "Qxh7#", captured: "p" },
-      400,
+      0.55, // wc loss well above the blunder threshold
     );
     expect(themes).toContain("blunder");
     expect(themes).toContain("missed_mate");
@@ -64,25 +68,32 @@ describe("inferThemes", () => {
     const themes = inferThemes(
       { san: "Qe5", piece: "q", captured: null },
       { san: "Qd1", captured: null },
-      550,
+      0.65, // wc loss in blunder territory
     );
     expect(themes).toContain("hanging_queen");
     expect(themes).toContain("blunder");
   });
 
-  it("flags missed_capture when the engine wanted to take and the user didn't", () => {
+  it("flags missed_capture + mistake at moderate wc loss", () => {
     const themes = inferThemes(
       { san: "Nf3", piece: "n", captured: null },
       { san: "Nxe5", captured: "p" },
-      150,
+      0.25, // wc loss in mistake band
     );
     expect(themes).toContain("missed_capture");
     expect(themes).toContain("mistake");
   });
 
-  it("downgrades to mistake (not blunder) when eval loss is moderate", () => {
-    const themes = inferThemes({ san: "h3", piece: "p" }, null, 150);
+  it("downgrades to mistake (not blunder) when wc loss is moderate", () => {
+    const themes = inferThemes({ san: "h3", piece: "p" }, null, 0.25);
     expect(themes).toContain("mistake");
+    expect(themes).not.toContain("blunder");
+  });
+
+  it("returns 'inaccuracy' for the [0.10, 0.20) wc band", () => {
+    const themes = inferThemes({ san: "h3", piece: "p" }, null, 0.15);
+    expect(themes).toContain("inaccuracy");
+    expect(themes).not.toContain("mistake");
     expect(themes).not.toContain("blunder");
   });
 });
@@ -139,8 +150,18 @@ describe("filterCardsByQuery", () => {
 });
 
 describe("COMMON_WEAKNESS_CHIPS", () => {
-  it("Blunders chip catches eval_loss_cp >= BLUNDER_CP_THRESHOLD only", () => {
+  it("Blunders chip catches cards with wc loss >= 0.30 (Lichess blunder)", () => {
     const chip = COMMON_WEAKNESS_CHIPS.find((c) => c.id === "blunders");
+    expect(chip.match({ eval_loss_wc: 0.30 })).toBe(true);
+    expect(chip.match({ eval_loss_wc: 0.50 })).toBe(true);
+    expect(chip.match({ eval_loss_wc: 0.29 })).toBe(false);
+    expect(chip.match({ eval_loss_wc: 0 })).toBe(false);
+  });
+
+  it("Blunders chip falls back to cp threshold for cards saved before the wc switch", () => {
+    const chip = COMMON_WEAKNESS_CHIPS.find((c) => c.id === "blunders");
+    // Legacy cards have only eval_loss_cp. Use the cp-equivalent
+    // threshold (~185 cp ≈ wc 0.30 from equal).
     expect(chip.match({ eval_loss_cp: BLUNDER_CP_THRESHOLD })).toBe(true);
     expect(chip.match({ eval_loss_cp: BLUNDER_CP_THRESHOLD - 1 })).toBe(false);
     expect(chip.match({ eval_loss_cp: 0 })).toBe(false);
