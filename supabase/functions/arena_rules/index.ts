@@ -189,6 +189,7 @@ Constraints / common pitfalls:
 - Only set "byColor" when the variant is asymmetric (e.g. "Only black can castle"). Otherwise put all overrides under "pieces".
 - Win conditions are evaluated in order. Put variant-specific conditions BEFORE checkmate so they fire first.
 - Keep "name" punchy (3 words max). Keep "description" to 1-2 sentences.
+- LEGAL STARTING POSITION: when you provide a custom startingFen, neither king may be in check on move 1. That means: no rook / queen / bishop staring down an open file or diagonal at a king, no enemy knight a knight-hop away from a king, no enemy pawn one diagonal step from a king. Place pieces between the kings or behind them; never set up a check before the game starts.
 - Vanilla baseline DEFAULTS:
     p: 1-step forward (no capture), 2-step forward from rank 2 (no capture, only first move), diagonal capture, diagonal en passant, promotion to n/b/r/q.
     n: leap to all 8 knight offsets.
@@ -205,8 +206,8 @@ Tested example variants for inspiration (don't copy verbatim - use them as patte
   {
     "extends": "vanilla",
     "name": "Royal Center",
-    "description": "Kings start on d4/d5 with their armies behind them. Move fast or get smothered.",
-    "overrides": { "startingFen": "rnbqnbnr/pppppppp/8/3kK3/8/8/PPPPPPPP/RNBQNBNR w - - 0 1" }
+    "description": "Kings start in the middle of the board with their armies behind them. Move fast or get smothered.",
+    "overrides": { "startingFen": "rnbq1bnr/pppppppp/8/3k4/8/4K3/PPPPPPPP/RNBQ1BNR w - - 0 1" }
   }
 
   "Knights move twice":

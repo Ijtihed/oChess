@@ -139,6 +139,44 @@ describe("validateRules - layer 2 starting position", () => {
     expect(report.valid).toBe(false);
     expect(report.errors.some((e) => e.includes("zero legal moves"))).toBe(true);
   });
+
+  it("rejects a starting position where the side-to-move king is already in check", () => {
+    // White to move, white king on e1 with a black rook on e8
+    // staring straight down the open e-file. Illegal - vanilla
+    // chess never starts with one side already needing to
+    // address a check.
+    const report = validateRules({
+      extends: "vanilla",
+      startingFen: "4r3/8/8/8/8/8/8/4K2k w - - 0 1",
+    });
+    expect(report.valid).toBe(false);
+    expect(report.errors.some((e) => /white king starts in check/i.test(e))).toBe(true);
+  });
+
+  it("rejects a starting position where the side-NOT-to-move king is already in check", () => {
+    // White to move, but the BLACK king is in check by a white
+    // rook on the same file. That means black's previous turn
+    // ended with their king attacked - fundamentally illegal.
+    const report = validateRules({
+      extends: "vanilla",
+      startingFen: "4k3/8/8/8/8/8/8/4R2K w - - 0 1",
+    });
+    expect(report.valid).toBe(false);
+    expect(report.errors.some((e) => /black king is in check before/i.test(e))).toBe(true);
+  });
+
+  it("accepts the Royal Center example FEN (kings in middle, no checks)", () => {
+    // Kept in sync with the worked example shipped to the AI in
+    // arena_rules/index.ts. White king on e3, black king on d5
+    // - 2 ranks + 1 file apart, neither in check from any
+    // piece (queens blocked by pawns, knights too far).
+    const report = validateRules({
+      extends: "vanilla",
+      startingFen: "rnbq1bnr/pppppppp/8/3k4/8/4K3/PPPPPPPP/RNBQ1BNR w - - 0 1",
+    });
+    expect(report.valid).toBe(true);
+    expect(report.errors).toEqual([]);
+  });
 });
 
 describe("validateRules - mobility analyzer (default fairness check)", () => {

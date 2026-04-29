@@ -46,7 +46,7 @@
 
 import { Position } from "./position";
 import { resolveRules } from "./rules";
-import { generateLegalMoves } from "./move-gen";
+import { generateLegalMoves, isSquareAttacked } from "./move-gen";
 import { applyMove } from "./apply-move";
 import { checkGameStatus } from "./win-check";
 import { PIECE_TYPES } from "./schema";
@@ -314,6 +314,56 @@ function validateStartingPosition(position, rules, errors, warnings) {
   // Side to move sanity.
   if (position.turn !== "w" && position.turn !== "b") {
     errors.push(`starting FEN has unknown side-to-move: ${position.turn}`);
+  }
+
+  // Legal-position sanity: neither king may start in check.
+  //
+  // Two distinct illegality modes are caught here:
+  //
+  //   1. Side-NOT-to-move is in check: their previous turn
+  //      ended with their king attacked, which is impossible
+  //      in any chess-like game. The position is fundamentally
+  //      illegal regardless of variant rules.
+  //   2. Side-TO-move is in check: while not strictly illegal
+  //      (vanilla allows the active side to be in check at the
+  //      start of their turn), starting a brand-new game with
+  //      one side already needing to address check is
+  //      asymmetric, confusing, and almost certainly not what
+  //      the user asked for. Reject so the AI doesn't produce
+  //      "kings in middle staring at each other through an
+  //      open file" positions.
+  //
+  // Skipped for variants that don't even have a king-attack
+  // model (no king on the board at all, e.g. last-standing
+  // races without checkmate).
+  const opponentColor = position.turn === "w" ? "b" : "w";
+  const myKing = position.turn === "w" ? wKing : bKing;
+  const oppKing = position.turn === "w" ? bKing : wKing;
+
+  if (oppKing) {
+    try {
+      if (isSquareAttacked(position, oppKing, position.turn, rules)) {
+        const oppName = opponentColor === "w" ? "white" : "black";
+        errors.push(`starting position is illegal: ${oppName} king is in check before their turn began`);
+      }
+    } catch {
+      // Defensive: if the move generator throws we don't want
+      // to abort the whole validation - flag as a warning so
+      // the rest of the checks still run.
+      warnings.push("could not verify king-attack at start (move generator threw)");
+    }
+  }
+
+  if (myKing) {
+    try {
+      if (isSquareAttacked(position, myKing, opponentColor, rules)) {
+        const myName = position.turn === "w" ? "white" : "black";
+        errors.push(`starting position is illegal: ${myName} king starts in check`);
+      }
+    } catch {
+      // Already flagged above if it threw the first time;
+      // don't duplicate the warning.
+    }
   }
 
   // First mover must have at least one legal move; otherwise
