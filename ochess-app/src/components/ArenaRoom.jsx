@@ -8,6 +8,7 @@ import {
   getRoom,
   joinRoom,
   updateRoom,
+  deleteRoom,
   subscribeRoom,
 } from "../lib/arena/service";
 import { resolveRules } from "../lib/arena/rules";
@@ -123,6 +124,7 @@ export default function ArenaRoom({ roomId }) {
 
         <RoomBody
           room={room}
+          setRoom={setRoom}
           role={role}
           user={user}
           roomId={roomId}
@@ -135,13 +137,13 @@ export default function ArenaRoom({ roomId }) {
 
 // ── Body dispatch ──────────────────────────────────────────
 
-function RoomBody({ room, role, user, roomId }) {
-  // Spectator (not creator and not joiner). Phase 1 doesn't
-  // mount the seat-claim flow yet because the share-link UX
-  // assumes the link recipient IS the joiner; for now we just
-  // attempt to claim the open joiner seat on mount.
+function RoomBody({ room, setRoom, role, user, roomId }) {
+  // Spectator (not creator and not joiner). The share-link UX
+  // assumes the link recipient is the intended joiner; we
+  // gate access to the open seat behind an explicit "Join"
+  // click so a stranger who knows the URL can't auto-claim.
   if (!role) {
-    return <ClaimJoinerSeat room={room} user={user} roomId={roomId} />;
+    return <ClaimJoinerSeat room={room} setRoom={setRoom} user={user} roomId={roomId} />;
   }
 
   // Lobby states.
@@ -149,6 +151,7 @@ function RoomBody({ room, role, user, roomId }) {
     return (
       <Lobby
         room={room}
+        setRoom={setRoom}
         role={role}
         user={user}
         roomId={roomId}
@@ -161,6 +164,7 @@ function RoomBody({ room, role, user, roomId }) {
     return (
       <Warmup
         room={room}
+        setRoom={setRoom}
         role={role}
         roomId={roomId}
       />
@@ -175,10 +179,9 @@ function RoomBody({ room, role, user, roomId }) {
 
 // ── Spectator -> auto-claim joiner ─────────────────────────
 
-function ClaimJoinerSeat({ room, user, roomId }) {
+function ClaimJoinerSeat({ room, setRoom, user, roomId }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(null);
-  const [done, setDone] = useState(false);
 
   const onClaim = useCallback(async () => {
     setPending(true);
@@ -189,22 +192,22 @@ function ClaimJoinerSeat({ room, user, roomId }) {
       joinerName: user.name || null,
     });
     setPending(false);
-    if (!result.ok) {
+    if (!result.ok || !result.room) {
+      // RLS rejection / race. If RLS rejected because the seat
+      // was filled, surface that specifically. Otherwise show
+      // the raw error.
       setError(result.error || "Couldn't join the room.");
       return;
     }
-    setDone(true);
-  }, [roomId, user]);
-
-  if (done) {
-    // Subscription will refresh the room and the Lobby will
-    // mount on the next render. Brief intermediate state.
-    return (
-      <div className="anim-fade-up p-6 bg-surface-low border border-white/[0.04]">
-        <p className="text-[13px] text-on-surface-variant/55">Loading&hellip; opening the lobby</p>
-      </div>
-    );
-  }
+    // Push the freshly-updated row into the parent state right
+    // away so the next render dispatches into the Lobby. We
+    // can't rely on realtime for this transition because the
+    // joiner's subscription was opened BEFORE the join, and the
+    // race between the UPDATE landing and the channel signaling
+    // SUBSCRIBED would leave the user staring at "Loading\u2026
+    // opening the lobby" forever in the worst case.
+    setRoom?.((prev) => ({ ...(prev || {}), ...result.room }));
+  }, [roomId, user, setRoom]);
 
   if (room.joiner_id) {
     return (
@@ -239,9 +242,17 @@ function ClaimJoinerSeat({ room, user, roomId }) {
 
 // ── Lobby (rule pickers + share link) ──────────────────────
 
-function Lobby({ room, role, user, roomId }) {
+function Lobby({ room, setRoom, role, user, roomId }) {
+  const navigate = useNavigate();
   const [picking, setPicking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelPending, setCancelPending] = useState(false);
+  const [cancelError, setCancelError] = useState(null);
+  const cancelTimerRef = useRef(null);
+  useEffect(() => () => {
+    if (cancelTimerRef.current) clearTimeout(cancelTimerRef.current);
+  }, []);
 
   const myRules = role === "creator" ? room.rules_creator : room.rules_joiner;
   const oppRules = role === "creator" ? room.rules_joiner : room.rules_creator;
@@ -277,9 +288,40 @@ function Lobby({ room, role, user, roomId }) {
     if (next.rules_creator && next.rules_joiner) nextStatus = "warmup_round_1";
     else if (next.joiner_id) nextStatus = "prompting";
     if (nextStatus !== room.status) patch.status = nextStatus;
-    await updateRoom(roomId, patch);
+    const result = await updateRoom(roomId, patch);
+    if (result?.ok && result.room) {
+      // Don't wait for realtime - apply the new row to local
+      // state immediately. The realtime subscription will fire
+      // a redundant UPDATE shortly which is a no-op merge.
+      setRoom?.((prev) => ({ ...(prev || {}), ...result.room }));
+    }
     setPicking(false);
-  }, [room, role, roomId]);
+  }, [room, role, roomId, setRoom]);
+
+  // Creator-only: cancel the room and bounce back to /arena.
+  // Only allowed while no joiner has claimed the second seat;
+  // once both sides are in, neither can unilaterally delete.
+  const canCancel = role === "creator" && !room.joiner_id;
+  const onCancel = useCallback(async () => {
+    if (!canCancel) return;
+    if (!confirmCancel) {
+      setConfirmCancel(true);
+      if (cancelTimerRef.current) clearTimeout(cancelTimerRef.current);
+      cancelTimerRef.current = setTimeout(() => setConfirmCancel(false), 4000);
+      return;
+    }
+    if (cancelTimerRef.current) clearTimeout(cancelTimerRef.current);
+    setConfirmCancel(false);
+    setCancelPending(true);
+    setCancelError(null);
+    const result = await deleteRoom(roomId);
+    setCancelPending(false);
+    if (!result?.ok) {
+      setCancelError(result?.error || "Couldn't cancel the room.");
+      return;
+    }
+    navigate("/arena");
+  }, [canCancel, confirmCancel, roomId, navigate]);
 
   return (
     <div className="grid gap-6 xl:grid-cols-[1fr_320px] anim-fade-up">
@@ -341,6 +383,35 @@ function Lobby({ room, role, user, roomId }) {
             <span className="text-on-surface-variant/40">Opponent:</span> {oppName || (room.joiner_id ? "joined" : "waiting\u2026")}
           </p>
         </div>
+
+        {/* Cancel-room: creator-only, only available while no
+            opponent has claimed the second seat. Two-step
+            confirm matches the destructive-action pattern used
+            in /review (overflow menu Remove / Reset). */}
+        {canCancel && (
+          <div className="p-4 bg-surface-low border border-white/[0.04] space-y-2">
+            <button onClick={onCancel}
+              disabled={cancelPending}
+              title={confirmCancel ? "Tap again to permanently cancel this room" : "Cancel this room"}
+              className={`w-full px-3 py-2 font-headline text-[10px] font-bold uppercase tracking-widest border transition-colors ${
+                confirmCancel
+                  ? "bg-error/15 border-error/30 text-error animate-pulse"
+                  : "bg-surface-container border-white/[0.04] text-on-surface-variant/45 hover:text-error hover:border-error/20"
+              }`}>
+              {cancelPending
+                ? "Loading\u2026 cancelling"
+                : confirmCancel
+                  ? "Tap again to cancel"
+                  : "Cancel room"}
+            </button>
+            {cancelError && (
+              <p className="text-[11px] text-error leading-snug">{cancelError}</p>
+            )}
+            <p className="text-[10px] text-on-surface-variant/35 leading-snug">
+              Removes the room before anyone joins. After your opponent joins you can&apos;t cancel solo.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -383,7 +454,7 @@ function RuleSummary({ rules }) {
 
 const WARMUP_DURATION_S = 30;
 
-function Warmup({ room, role, roomId }) {
+function Warmup({ room, setRoom, role, roomId }) {
   const round = room.status === "warmup_round_1" ? 1 : 2;
   const rulesDiff = round === 1 ? room.rules_creator : room.rules_joiner;
   // Round 1: creator plays Black under their own rules
@@ -402,8 +473,11 @@ function Warmup({ room, role, roomId }) {
   const [highlight, setHighlight] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(WARMUP_DURATION_S);
   const [ready, setReady] = useState(false);
-  const [oppReady, setOppReady] = useState(false);
   const abortRef = useRef(null);
+  // Track whether we've already pushed our readiness flag so
+  // the persistence effect doesn't fire on every parent room
+  // update.
+  const readinessSyncedRef = useRef(false);
 
   // Reset board if rules change (e.g. transitioning from round
   // 1 warmup to round 2 warmup mid-mount).
@@ -412,6 +486,7 @@ function Warmup({ room, role, roomId }) {
     setHighlight({});
     setSecondsLeft(WARMUP_DURATION_S);
     setReady(false);
+    readinessSyncedRef.current = false;
   }, [rules]);
 
   // Tick the warmup timer once a second.
@@ -427,31 +502,58 @@ function Warmup({ room, role, roomId }) {
     if (secondsLeft <= 0 && !ready) setReady(true);
   }, [secondsLeft, ready]);
 
-  // Mirror my readiness into the room row so the opponent sees
-  // it. We also poll opponent's readiness from the room state.
+  // Persist my readiness to the room row exactly once when
+  // `ready` flips to true. The previous version had
+  // `room.round_state` in the deps, which made this effect
+  // re-fire on every realtime UPDATE and pushed a redundant
+  // patch each time - a sync loop with the opponent's clients.
+  // Now we use a ref guard so we write once, and we read the
+  // current room.round_state at write-time (not via deps) to
+  // merge cleanly.
   useEffect(() => {
     if (!ready) return;
+    if (readinessSyncedRef.current) return;
+    readinessSyncedRef.current = true;
     const flagKey = role === "creator" ? "warmup_creator_ready" : "warmup_joiner_ready";
     const round_state = { ...(room.round_state || {}), [flagKey]: round };
-    updateRoom(roomId, { round_state });
-  }, [ready, role, room.round_state, roomId, round]);
+    (async () => {
+      const result = await updateRoom(roomId, { round_state });
+      // Push the freshly-updated row into parent state so the
+      // opponent-ready check fires immediately on this side.
+      if (result?.ok && result.room && setRoom) {
+        setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, role, round]);
 
-  // Opponent ready flag from the room row.
-  useEffect(() => {
+  // Opponent ready flag from the room row. Reads from the
+  // latest snapshot on every render - this DOES depend on
+  // round_state so it picks up realtime updates, but it's a
+  // pure derive (no writes) so there's no loop risk.
+  const oppReady = useMemo(() => {
     const flagKey = role === "creator" ? "warmup_joiner_ready" : "warmup_creator_ready";
-    setOppReady((room.round_state || {})[flagKey] === round);
+    return (room.round_state || {})[flagKey] === round;
   }, [room.round_state, role, round]);
 
   // When BOTH are ready, advance status to round_<n>. First
   // client to win this race transitions; the other reacts via
-  // realtime.
+  // realtime. Use a ref so the advance happens at most once
+  // per warmup round.
+  const advancedRef = useRef(false);
   useEffect(() => {
     if (!ready || !oppReady) return;
+    if (advancedRef.current) return;
     const nextStatus = round === 1 ? "round_1" : "round_2";
-    if (room.status !== nextStatus) {
-      updateRoom(roomId, { status: nextStatus });
-    }
-  }, [ready, oppReady, round, room.status, roomId]);
+    if (room.status === nextStatus) return;
+    advancedRef.current = true;
+    (async () => {
+      const result = await updateRoom(roomId, { status: nextStatus });
+      if (result?.ok && result.room && setRoom) {
+        setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+      }
+    })();
+  }, [ready, oppReady, round, room.status, roomId, setRoom]);
 
   // When the user makes a legal move, apply it then ask the
   // bot for a reply. The async bot respects an abort signal

@@ -124,6 +124,29 @@ export async function joinRoom({ roomId, joinerId, joinerName, rulesJoiner } = {
 }
 
 /**
+ * Delete a room. Restricted by RLS to the creator. Useful for
+ * the host's "Cancel" button while the room is still waiting
+ * for an opponent. After both seats are filled, the room is
+ * effectively shared property and we shouldn't let one side
+ * unilaterally nuke it; the UI gates the cancel affordance to
+ * `joiner_id === null`.
+ */
+export async function deleteRoom(roomId) {
+  if (!supabase) return { ok: false, error: "Online features not configured." };
+  if (!roomId) return { ok: false, error: "Missing room id." };
+  try {
+    const { error } = await supabase
+      .from("arena_rooms")
+      .delete()
+      .eq("id", roomId);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || "Unknown error" };
+  }
+}
+
+/**
  * Generic update: set any subset of fields on the room and
  * touch updated_at. The orchestrator uses this to advance
  * status / round_state / match_result. Realtime subscribers
