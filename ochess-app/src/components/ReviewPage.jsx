@@ -1004,7 +1004,11 @@ export default function ReviewPage() {
           </p>
           {TopTabs}
           {ShareToast}
-          <ImportGamesPanel onDone={() => setTopTab("today")} />
+          <ImportGamesPanel
+            cards={cards}
+            onCardsChange={setCards}
+            onDone={() => setTopTab("today")}
+          />
         </div>
         <SocialPanel />
       </div>

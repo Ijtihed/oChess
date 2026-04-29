@@ -42,15 +42,22 @@ export default function AIDeckSheet({
   const [cooldownSec, setCooldownSec] = useState(0);
   const [usage, setUsage] = useState(null);
 
-  // Reset transient state on close so the next open lands on a
-  // clean form. Persistent state (last query) stays so a user who
-  // closes mid-iteration doesn't lose what they typed.
+  // Reset everything when the sheet closes so the next open lands
+  // on a clean form. Previously we kept `query` / `activeChip`
+  // around as a "don't lose what the user typed" affordance, but
+  // it had a worse failure mode: if the user generated decks for
+  // query A, clicked Practice on a result (which closes the
+  // sheet), then later reopened the sheet, the stale preview from
+  // A was still there until they clicked Generate again.
   useEffect(() => {
     if (!open) {
+      setQuery("");
+      setActiveChip(null);
       setLoading(false);
       setResults(null);
       setError(null);
       setSavedIdx(new Set());
+      setUsage(null);
     }
   }, [open]);
 
@@ -126,15 +133,21 @@ export default function AIDeckSheet({
     }
   }, [cards, query, cooldownSec]);
 
+  // Save a proposed deck as a coach-tagged drill set so it shows
+  // up under "My decks" in the browser. Returns the saved drill
+  // id (or null if save was rejected) so callers that need the
+  // post-save state can chain on it - notably `practiceProposedDeck`
+  // below, which both saves and immediately drops the user into
+  // a session for the new deck.
   const saveProposedDeck = useCallback((deck, idx) => {
-    if (!deck?.query || !deck?.name) return;
+    if (!deck?.query || !deck?.name) return null;
     const { sets, id } = addDrillSet(drillSets, {
       name: deck.name,
       query: deck.query,
       source: "coach",
       summary: deck.summary || "",
     });
-    if (!id) return;
+    if (!id) return null;
     onDrillSetsChange?.(sets);
     saveDrillSets(sets);
     setSavedIdx((prev) => {
@@ -142,13 +155,22 @@ export default function AIDeckSheet({
       next.add(idx);
       return next;
     });
+    return id;
   }, [drillSets, onDrillSetsChange]);
 
-  const practiceProposedDeck = useCallback((deck) => {
+  // Practice now both SAVES and starts the session. Users
+  // expected the deck they just played to show up under "My
+  // decks" afterwards, but the previous version started an
+  // ephemeral session without persisting - so the AI proposal
+  // disappeared the moment the session ended. Now Practice = Save
+  // + Start, and the saved-checkmark stays on the row in case
+  // the user backs out of the session and reopens the sheet.
+  const practiceProposedDeck = useCallback((deck, idx) => {
     if (!deck?.query || !deck?.name) return;
+    saveProposedDeck(deck, idx);
     onPracticeDeck?.({ query: deck.query, chipId: null, setName: deck.name });
     onClose?.();
-  }, [onPracticeDeck, onClose]);
+  }, [saveProposedDeck, onPracticeDeck, onClose]);
 
   if (!open) return null;
   if (!isAIAvailable()) {
@@ -352,7 +374,7 @@ function Preview({ results, savedIdx, matchCountForQuery, onSave, onPractice }) 
                     </span>
                   ) : (
                     <>
-                      <button onClick={() => onPractice(deck)}
+                      <button onClick={() => onPractice(deck, idx)}
                         disabled={!hasMatches}
                         className="btn btn-primary flex-1 py-1.5 text-[10px] disabled:opacity-30 disabled:pointer-events-none">
                         Practice now

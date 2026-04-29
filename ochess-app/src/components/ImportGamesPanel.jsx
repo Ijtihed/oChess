@@ -7,7 +7,7 @@ import {
   buildWeaknessProfile,
   MISTAKE_CP_THRESHOLD,
 } from "../lib/study-plan";
-import { loadCards, saveCards } from "../lib/review-cards";
+import { saveCards } from "../lib/review-cards";
 
 /**
  * ImportGamesPanel - the focused "pull my games and find mistakes"
@@ -52,7 +52,7 @@ function detectUserColor(pgn, chesscomUsername, lichessUsername) {
   return null;
 }
 
-export default function ImportGamesPanel({ onDone }) {
+export default function ImportGamesPanel({ cards, onCardsChange, onDone }) {
   const { user, profile, refreshProfile } = useAuth();
   const cc = profile?.chesscom_username?.trim() || "";
   const li = profile?.lichess_username?.trim() || "";
@@ -124,8 +124,13 @@ export default function ImportGamesPanel({ onDone }) {
     abortRef.current = null;
   }, []);
 
-  const [allCards, setAllCards] = useState(() => loadCards());
-  const profileWeakness = useMemo(() => buildWeaknessProfile(allCards), [allCards]);
+  // Cards live in the parent (ReviewPage) so newly-imported cards
+  // are immediately visible to the deck browser AND the AI deck
+  // sheet without waiting for a focus event to refresh state.
+  // Defensive default to [] so a missing prop doesn't crash the
+  // weakness-profile call below.
+  const safeCards = Array.isArray(cards) ? cards : [];
+  const profileWeakness = useMemo(() => buildWeaknessProfile(safeCards), [safeCards]);
 
   const cancelImport = useCallback(() => {
     if (!abortRef.current) return;
@@ -146,7 +151,7 @@ export default function ImportGamesPanel({ onDone }) {
     setPhase("importing");
     setProgress({ source: useChesscom ? "chess.com" : "lichess", fetched: 0, total: 0, analyzed: 0, totalMoves: 0, gameIdx: 0, gameCount: 0 });
 
-    const preExistingMistakes = allCards.filter((c) => c.type === "mistake" || c.type === "puzzle").length;
+    const preExistingMistakes = safeCards.filter((c) => c.type === "mistake" || c.type === "puzzle").length;
     const newCards = [];
 
     try {
@@ -174,7 +179,7 @@ export default function ImportGamesPanel({ onDone }) {
         setPhase("analyzing");
         setProgress((p) => ({ ...p, gameCount: games.length, gameIdx: 0 }));
 
-        const seen = new Set(allCards.map((c) => c.id).filter(Boolean));
+        const seen = new Set(safeCards.map((c) => c.id).filter(Boolean));
 
         for (let i = 0; i < games.length; i++) {
           if (ctrl.signal.aborted) break;
@@ -205,9 +210,9 @@ export default function ImportGamesPanel({ onDone }) {
       }
 
       if (newCards.length > 0) {
-        const merged = [...allCards, ...newCards];
+        const merged = [...safeCards, ...newCards];
         saveCards(merged);
-        setAllCards(merged);
+        onCardsChange?.(merged);
       }
       setImportedCount(newCards.length);
 
@@ -229,9 +234,9 @@ export default function ImportGamesPanel({ onDone }) {
     } catch (e) {
       if (e?.name === "AbortError") {
         if (newCards.length > 0) {
-          const merged = [...allCards, ...newCards];
+          const merged = [...safeCards, ...newCards];
           saveCards(merged);
-          setAllCards(merged);
+          onCardsChange?.(merged);
         }
         setImportedCount(newCards.length);
         setPhase(newCards.length > 0 ? "done" : "ready");
@@ -243,7 +248,7 @@ export default function ImportGamesPanel({ onDone }) {
       abortRef.current = null;
       setCancelling(false);
     }
-  }, [useChesscom, useLichess, cc, li, allCards, gameLimit]);
+  }, [useChesscom, useLichess, cc, li, safeCards, gameLimit, onCardsChange]);
 
   const noSourcesAtAll = !cc && !li;
 
