@@ -705,22 +705,44 @@ export default function StudyPlanPanel({ onStartSession }) {
           ))}
         </div>
 
-        {/* Two parallel ways to turn the current query/chip into a
-            deck. Save as deck = exact substring filter. AI = let
-            the model split / focus / write a summary. */}
-        <div className="flex gap-2">
-          <button onClick={() => { setSavingDrill(true); setDrillName(""); }}
-            disabled={!canSaveDrill || savingDrill}
-            className="btn btn-secondary flex-1 py-2 text-[11px] disabled:opacity-30 disabled:pointer-events-none">
-            {editingSetId ? "Edit deck" : "Save as deck"}
-          </button>
+        {/* Two ways to turn the current filter into a saved deck.
+            They're NOT alternatives doing the same thing - one
+            asks the AI to propose focused decks (the primary
+            path), the other saves the literal filter as a single
+            deck (a power-user shortcut). The hierarchy + the
+            explainer copy below each button makes this loop clear
+            instead of leaving the user staring at two equal-
+            weight CTAs that look interchangeable. */}
+        <div className="space-y-3">
+          {/* Primary: AI deck builder */}
           {isAIAvailable() && (
-            <button onClick={generateAIDecksFromQuery}
-              disabled={aiLoading || aiCooldownSec > 0}
-              className="btn btn-primary flex-1 py-2 text-[11px]">
-              {aiLoading ? "Thinking..." : aiCooldownSec > 0 ? `Wait ${aiCooldownSec}s` : "AI: build decks"}
-            </button>
+            <div>
+              <button onClick={generateAIDecksFromQuery}
+                disabled={aiLoading || aiCooldownSec > 0}
+                className="btn btn-primary w-full py-2.5 text-[11px]">
+                {aiLoading ? "Building decks..." : aiCooldownSec > 0 ? `Wait ${aiCooldownSec}s` : "Build decks with AI"}
+              </button>
+              <p className="mt-1.5 text-[10px] text-on-surface-variant/35 leading-snug">
+                AI reads your mistakes + the filter above and proposes 1-3 focused decks. You pick which to save.
+              </p>
+            </div>
           )}
+
+          {/* Secondary: manual save. Visually de-emphasised so
+              new users gravitate to AI first. Disabled with an
+              explanatory hint when there's no filter to save. */}
+          <div>
+            <button onClick={() => { setSavingDrill(true); setDrillName(""); }}
+              disabled={!canSaveDrill || savingDrill}
+              className="btn btn-secondary w-full py-2 text-[11px] disabled:opacity-30 disabled:pointer-events-none">
+              {editingSetId ? "Edit this deck" : "Save filter as a deck (no AI)"}
+            </button>
+            <p className="mt-1.5 text-[10px] text-on-surface-variant/35 leading-snug">
+              {canSaveDrill
+                ? "Turns the search box / chip above into a single saved deck, exactly as written."
+                : "Type a search or pick a chip first - this saves your current filter as a deck."}
+            </p>
+          </div>
         </div>
 
         {/* Save-as-deck inline editor. Only visible after the user
