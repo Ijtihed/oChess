@@ -103,6 +103,83 @@ describe("addDrillSet", () => {
     const { sets } = addDrillSet([], { name: long, query: "q" });
     expect(sets[0].name.length).toBeLessThanOrEqual(60);
   });
+
+  it("dedupes by (name, query, chipId) signature and returns the existing id", () => {
+    // Regression: the AI deck sheet would call addDrillSet with no
+    // explicit id every time the user clicked Save. Generating the
+    // same query twice and saving both proposals previously created
+    // two identical drill sets. Now an exact-signature match is
+    // detected and the existing drill is returned with refreshed
+    // metadata.
+    const initial = addDrillSet([], { name: "Hanging queens", query: "hanging queen" });
+    const dup = addDrillSet(initial.sets, { name: "Hanging queens", query: "hanging queen" });
+    expect(dup.sets).toHaveLength(1);
+    expect(dup.id).toBe(initial.id);
+  });
+
+  it("dedupes case-insensitively on the name", () => {
+    const a = addDrillSet([], { name: "Hanging queens", query: "blunder" });
+    const b = addDrillSet(a.sets, { name: "hanging QUEENS", query: "blunder" });
+    expect(b.sets).toHaveLength(1);
+    expect(b.id).toBe(a.id);
+  });
+
+  it("treats different queries as distinct drills even with the same name", () => {
+    const a = addDrillSet([], { name: "Endgame", query: "rook endgame" });
+    const b = addDrillSet(a.sets, { name: "Endgame", query: "pawn endgame" });
+    expect(b.sets).toHaveLength(2);
+    expect(b.id).not.toBe(a.id);
+  });
+
+  it("promotes new metadata onto the existing drill when deduping", () => {
+    // Hand-saved manual drill exists; an AI deck with the same
+    // signature should refresh source/summary onto the existing
+    // drill rather than spawn a duplicate. updatedAt bumps too.
+    const start = Date.now() - 10_000;
+    const manual = addDrillSet(
+      [
+        {
+          id: "manual1",
+          name: "Hanging queens",
+          query: "hanging queen",
+          chipId: null,
+          source: "manual",
+          summary: null,
+          createdAt: start,
+          updatedAt: start,
+        },
+      ],
+      { id: "manual1", name: "Hanging queens", query: "hanging queen" }, // touch
+    );
+    expect(manual.id).toBe("manual1");
+    const ai = addDrillSet(manual.sets, {
+      name: "Hanging queens",
+      query: "hanging queen",
+      source: "coach",
+      summary: "AI's take on the deck",
+    });
+    expect(ai.sets).toHaveLength(1);
+    expect(ai.id).toBe("manual1");
+    expect(ai.sets[0].source).toBe("coach");
+    expect(ai.sets[0].summary).toBe("AI's take on the deck");
+    expect(ai.sets[0].updatedAt).toBeGreaterThan(start);
+  });
+
+  it("does not lose existing source/summary when an update doesn't supply them", () => {
+    // Drill already tagged "coach". A subsequent Save without source
+    // should NOT wipe the AI tag - we only promote forward, never
+    // demote.
+    const ai = addDrillSet([], {
+      name: "X",
+      query: "x",
+      source: "coach",
+      summary: "ai summary",
+    });
+    const touched = addDrillSet(ai.sets, { name: "X", query: "x" });
+    expect(touched.sets).toHaveLength(1);
+    expect(touched.sets[0].source).toBe("coach");
+    expect(touched.sets[0].summary).toBe("ai summary");
+  });
 });
 
 describe("removeDrillSet", () => {

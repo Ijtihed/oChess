@@ -6,7 +6,6 @@ import SocialPanel from "./SocialPanel";
 import ImportGamesPanel from "./ImportGamesPanel";
 import AIDeckSheet from "./AIDeckSheet";
 import { playMoveSound, playVictory, playError } from "../lib/sounds";
-import { filterCardsByQuery, COMMON_WEAKNESS_CHIPS } from "../lib/study-plan";
 import {
   cardId,
   loadCards,
@@ -156,31 +155,84 @@ function StatePill({ state, intervalDays }) {
  * visual weight as the rating row, so we tuck them behind a
  * single 3-dot button next to the type chip.
  *
- * Click-away closes the menu. Each action receives the closing
- * callback so a clicked item can drop the menu before its work
- * (e.g. removing the card from state would unmount the menu
- * anyway, but explicit close keeps the UX consistent).
+ * Interaction model:
+ *   - Click trigger to open. Click outside, click trigger again,
+ *     or press Escape to close.
+ *   - ArrowDown / ArrowUp move focus through items while open;
+ *     focus wraps at both ends. Home / End jump to first / last.
+ *   - Enter / Space activate the focused item (HTML default).
  *
- * The "Remove" item retains the two-step confirm that the inline
- * button used to provide: first click flips its label to "Tap
- * again to remove", second click within ~4 s actually deletes.
+ * The "Remove" / "Reset" items retain the two-step confirm
+ * pattern: first click flips the label to "Tap again to ...",
+ * second click within ~4 s actually fires.
  */
 function CardOverflowMenu({ items }) {
   const [open, setOpen] = useState(false);
+  const [focusIndex, setFocusIndex] = useState(0);
   const ref = useRef(null);
+  const triggerRef = useRef(null);
+  const itemRefs = useRef([]);
+
+  const visibleItems = items.filter((it) => !it.hidden);
+
+  // Click-away + Escape close. Re-bound only when `open` is true
+  // so we don't pay the listener cost when the menu is hidden.
   useEffect(() => {
     if (!open) return undefined;
     const onDoc = (e) => {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false);
     };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
-  const visibleItems = items.filter((it) => !it.hidden);
+
+  // Move keyboard focus to the focused item whenever the index
+  // changes while open. Without this, ArrowDown updates state
+  // but the actual DOM focus stays on the trigger.
+  useEffect(() => {
+    if (open) itemRefs.current[focusIndex]?.focus();
+  }, [open, focusIndex]);
+
+  // Reset the focused index when the menu opens so ArrowDown
+  // always lands on the first item, not whatever item was last
+  // focused on a previous open.
+  useEffect(() => {
+    if (open) setFocusIndex(0);
+  }, [open]);
+
+  const onMenuKey = useCallback((e) => {
+    if (visibleItems.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setFocusIndex((i) => (i + 1) % visibleItems.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setFocusIndex((i) => (i - 1 + visibleItems.length) % visibleItems.length);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setFocusIndex(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setFocusIndex(visibleItems.length - 1);
+    }
+  }, [visibleItems.length]);
+
   if (visibleItems.length === 0) return null;
   return (
     <div className="relative" ref={ref}>
       <button onClick={() => setOpen((o) => !o)}
+        ref={triggerRef}
         title="More actions"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -193,10 +245,13 @@ function CardOverflowMenu({ items }) {
       </button>
       {open && (
         <div role="menu"
+          onKeyDown={onMenuKey}
           className="absolute right-0 top-9 z-20 min-w-[180px] bg-surface-container border border-white/[0.06] py-1 shadow-xl">
-          {visibleItems.map((it) => (
+          {visibleItems.map((it, i) => (
             <button key={it.id}
+              ref={(el) => { itemRefs.current[i] = el; }}
               role="menuitem"
+              tabIndex={i === focusIndex ? 0 : -1}
               disabled={it.disabled}
               onClick={() => { it.onClick?.(); if (!it.keepOpen) setOpen(false); }}
               className={`w-full text-left px-3 py-2 font-headline text-[11px] font-bold uppercase tracking-wide transition-colors disabled:opacity-30 disabled:pointer-events-none ${
@@ -214,18 +269,6 @@ function CardOverflowMenu({ items }) {
     </div>
   );
 }
-
-// Deck filters mirror the card `type` field that PuzzlesPage /
-// AnalysisPage / GameScreen attach when saving. "all" is the default;
-// the others narrow the queue so a user who's accumulated 200 cards
-// can drill down to "just my failed puzzles" or "just analysis
-// positions" without rating-resetting the rest.
-const DECK_FILTERS = [
-  { id: "all",      label: "All",       match: () => true },
-  { id: "puzzle",   label: "Puzzles",   match: (c) => c.type === "puzzle" },
-  { id: "game",     label: "Games",     match: (c) => c.type === "game" || c.type === "mistake" },
-  { id: "analysis", label: "Analysis",  match: (c) => c.type === "analysis" },
-];
 
 export default function ReviewPage() {
   const [cards, setCards] = useState(() => loadCards());
@@ -251,22 +294,6 @@ export default function ReviewPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const topTab = searchParams.get("tab") === "import" ? "import" : "today";
   const activeDeckId = searchParams.get("deck") || null;
-  // Legacy chip filter, kept for the Import-tab "Practice now" path
-  // and the in-session deck filters at the top of the board area.
-  // It's redundant with the deck browser for normal navigation but
-  // useful as a quick narrowing inside an active deck.
-  const [deckFilter, setDeckFilter] = useState("all");
-  // Optional plan-driven filter - set when the user clicks "Start
-  // session" from the Import tab (either ad-hoc filter or a saved
-  // drill set). We narrow the SM-2 queue to the same chip /
-  // free-text filter so the session matches what they picked. The
-  // optional setName is shown in the banner so the user knows
-  // they're drilling "Hanging queens" instead of just `"hanging
-  // queen"`. These stay as local state because they're ephemeral
-  // session config the user shouldn't accidentally URL-share.
-  const [planQuery, setPlanQuery] = useState("");
-  const [planChipId, setPlanChipId] = useState(null);
-  const [planSetName, setPlanSetName] = useState("");
   const gameRef = useRef(null);
   // Mutex flipped on while the opponent's auto-reply is queued
   // (the 450 ms gap after the user makes a correct move in a
@@ -286,25 +313,52 @@ export default function ReviewPage() {
   // the same store the deck browser reads.
   const [aiSheetOpen, setAiSheetOpen] = useState(false);
 
+  // Single shared toast surface, used by:
+  //   - the `?import=<base64>` URL flow (incoming shared card)
+  //   - the "Share card" overflow action (outgoing copy-to-clipboard)
+  //   - the AI Practice-now flow ("Saved \u2018X\u2019 to My decks")
+  // One state, one cleanup-aware setter, one timer ref so toasts
+  // always dismiss after the same window even if the component
+  // unmounts mid-toast and the user comes back later.
+  const [shareToast, setShareToast] = useState(null);
+  const shareToastTimerRef = useRef(null);
+  const showToast = useCallback((toast, durationMs = 5000) => {
+    if (shareToastTimerRef.current) {
+      clearTimeout(shareToastTimerRef.current);
+      shareToastTimerRef.current = null;
+    }
+    setShareToast(toast);
+    if (toast) {
+      shareToastTimerRef.current = setTimeout(() => {
+        setShareToast(null);
+        shareToastTimerRef.current = null;
+      }, durationMs);
+    }
+  }, []);
+  // Always clean up an in-flight dismiss timer on unmount so we
+  // never call setShareToast on an unmounted component.
+  useEffect(() => () => {
+    if (shareToastTimerRef.current) clearTimeout(shareToastTimerRef.current);
+  }, []);
+
   // Card share import - if the URL has `?import=<base64>`, decode the
   // shared card, dedupe against the existing deck, and append. Then
   // strip the query param so a refresh doesn't re-import (which would
   // be benign thanks to addCardIfNew but would surface the toast
   // again). Lives at the top so it runs before the empty-state check
   // and the user immediately sees the imported card.
-  const [shareToast, setShareToast] = useState(null);
   useEffect(() => {
     const payload = searchParams.get("import");
     if (!payload) return;
     const incoming = deserializeSharedCard(payload);
     if (!incoming) {
-      setShareToast({ kind: "error", text: "Couldn't import that card - the link looks corrupted." });
+      showToast({ kind: "error", text: "Couldn't import that card - the link looks corrupted." });
     } else {
       setCards((prev) => {
         const merged = addCardIfNew(prev, incoming);
         const added = merged.length > prev.length;
         saveCards(merged);
-        setShareToast({
+        showToast({
           kind: added ? "ok" : "info",
           text: added
             ? "Shared card added to your deck. Switch to Today to drill it."
@@ -318,25 +372,8 @@ export default function ReviewPage() {
     const next = new URLSearchParams(searchParams);
     next.delete("import");
     setSearchParams(next, { replace: true });
-    const t = setTimeout(() => setShareToast(null), 5000);
-    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Per-deck breakdown of the FULL collection (not just due cards) so
-  // the filter chips can show "Puzzles 12 · Games 5 · Analysis 3"
-  // and the user knows where their deck mass is concentrated.
-  const deckCounts = useMemo(() => {
-    const counts = { all: cards.length, puzzle: 0, game: 0, analysis: 0 };
-    for (const c of cards) {
-      if (c.type === "puzzle") counts.puzzle += 1;
-      else if (c.type === "game" || c.type === "mistake") counts.game += 1;
-      else if (c.type === "analysis") counts.analysis += 1;
-    }
-    return counts;
-  }, [cards]);
-
-  const activeFilter = DECK_FILTERS.find((f) => f.id === deckFilter) || DECK_FILTERS[0];
 
   // Deck list for the browser view. Always recomputed from the
   // current card collection + schedules + drill sets so counts stay
@@ -352,27 +389,17 @@ export default function ReviewPage() {
   );
 
   // Recompute the due queue on every render - cheap, ~tens of cards.
-  //
-  // Filter precedence inside a session:
-  //   1. The active deck's match predicate (browser navigation)
-  //   2. The legacy deck-chip filter (in-session quick narrow)
-  //   3. The plan-driven filter (Plan-tab "Practice now")
-  //
-  // For the Plan-tab path, activeDeckId is left null and we fall
-  // straight through the chip + plan layers - so an unsaved
-  // "Practice now" session still works without going through the
-  // deck browser.
+  // Filtering precedence: due-now -> active-deck predicate. The
+  // legacy in-session chip filter / plan-session filter from the
+  // old StudyPlanPanel "Practice now" path are gone now: the AI
+  // sheet's Practice-now flow saves the proposed deck as a real
+  // drill set and then opens it via ?deck=drill:<id>, so the only
+  // way to land in a session is with an `activeDeck` set.
   const dueIds = useMemo(() => {
     let pool = cards.filter((c) => isCardDue(schedules, cardId(c)));
     if (activeDeck?.match) pool = pool.filter(activeDeck.match);
-    else pool = pool.filter((c) => activeFilter.match(c));
-    if (planChipId) {
-      const chip = COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId);
-      if (chip) pool = pool.filter(chip.match);
-    }
-    if (planQuery) pool = filterCardsByQuery(pool, planQuery);
     return pool.map(cardId);
-  }, [cards, schedules, activeDeck, activeFilter, planChipId, planQuery]);
+  }, [cards, schedules, activeDeck]);
   const card = useMemo(
     () => cards.find((c) => cardId(c) === dueIds[0]) || null,
     [cards, dueIds]
@@ -447,37 +474,10 @@ export default function ReviewPage() {
     setReviewed(0);
   }, [updateParams]);
 
-  const startPlanSession = useCallback(({ query, chipId, setName } = {}) => {
-    setPlanQuery(query || "");
-    setPlanChipId(chipId || null);
-    setPlanSetName(setName || "");
-    setDeckFilter("all"); // Don't double-narrow; plan filter takes over.
-    // Import-tab sessions are deliberately ephemeral - skip the deck
-    // browser and drop straight into the focused queue. Land on
-    // Today so the user sees the board, not the import panel.
-    updateParams((p) => {
-      p.delete("tab");
-      p.delete("deck");
-    });
-    setPhase("prompt");
-    setHighlight({});
-    setReviewed(0);
-  }, [updateParams]);
-
-  const clearPlanSession = useCallback(() => {
-    setPlanQuery("");
-    setPlanChipId(null);
-    setPlanSetName("");
-  }, []);
-
-  // Open a deck from the browser. Clears any plan-driven filter so
-  // the deck's match predicate is the only thing narrowing the
-  // queue. Sets ?deck=<id> in the URL.
+  // Open a deck from the browser. Sets ?deck=<id> in the URL so
+  // the session is bookmarkable and survives browser back/forward.
+  // Also lands the user on the Today tab if they were elsewhere.
   const openDeck = useCallback((deckId) => {
-    setPlanQuery("");
-    setPlanChipId(null);
-    setPlanSetName("");
-    setDeckFilter("all");
     updateParams((p) => {
       p.delete("tab");
       if (deckId) p.set("deck", deckId);
@@ -851,27 +851,28 @@ export default function ReviewPage() {
 
   // Share + view-source one-shot actions. Share writes the
   // deserializable share URL to the clipboard and surfaces the
-  // result through the same ShareToast used for `?import=`
-  // imports, so users get one consistent toast for both flows.
+  // result through the same toast surface used for `?import=`
+  // imports, so users get one consistent feel for both flows.
+  // showToast() handles its own dismiss timer so this callback
+  // doesn't need to manage cleanup itself.
   const shareCard = useCallback(async () => {
     if (!card) return;
     const url = buildShareUrl(card);
     if (!url) {
-      setShareToast({ kind: "error", text: "Couldn't build a share link for this card." });
+      showToast({ kind: "error", text: "Couldn't build a share link for this card." });
       return;
     }
     try {
       if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(url);
-        setShareToast({ kind: "ok", text: "Share link copied to clipboard." });
+        showToast({ kind: "ok", text: "Share link copied to clipboard." });
       } else {
-        setShareToast({ kind: "info", text: url });
+        showToast({ kind: "info", text: url });
       }
     } catch {
-      setShareToast({ kind: "error", text: "Couldn't copy to clipboard." });
+      showToast({ kind: "error", text: "Couldn't copy to clipboard." });
     }
-    setTimeout(() => setShareToast(null), 4000);
-  }, [card]);
+  }, [card, showToast]);
 
   const viewSource = useCallback(() => {
     if (!card) return;
@@ -1035,11 +1036,10 @@ export default function ReviewPage() {
   }
 
   // Deck browser - the default Today view. The user picks a deck
-  // from the list, or jumps to Import games to add more cards, or
-  // launches the AI deck generator sheet. Only shown when no deck
-  // and no plan filter are active.
-  const inPlanSession = !!(planChipId || planQuery);
-  if (topTab === "today" && !activeDeck && !inPlanSession) {
+  // from the list, jumps to Import games to add more cards, or
+  // launches the AI deck generator sheet. Only shown when no
+  // active deck is set.
+  if (topTab === "today" && !activeDeck) {
     return (
       <div className="flex">
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
@@ -1064,17 +1064,16 @@ export default function ReviewPage() {
           cards={cards}
           drillSets={drillSets}
           onDrillSetsChange={setDrillSets}
-          onPracticeDeck={startPlanSession}
+          onOpenDeck={openDeck}
         />
       </div>
     );
   }
 
   if (!card) {
-    // We're inside a session (an open deck or an Import-tab
-    // Practice session) and the queue is empty. Offer the right
-    // escape - back to the deck browser, or back to import,
-    // depending on how the session started.
+    // We're inside a session (an open deck) and the queue is
+    // empty. Offer the standard escapes back to the deck browser
+    // or to Import games for more material.
     return (
       <div className="flex">
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
@@ -1083,26 +1082,18 @@ export default function ReviewPage() {
           {ShareToast}
           <div className="text-center py-6">
             <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">
-              {activeDeck ? `Done with ${activeDeck.name}` : "Done with this drill"}
+              {activeDeck ? `Done with ${activeDeck.name}` : "Done with this deck"}
             </h2>
             <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-6">
               {activeDeck
                 ? `Every card in ${activeDeck.name} is reviewed for now. Pick another deck or come back tomorrow.`
-                : "Every card matching this filter is reviewed. Try another deck or come back tomorrow."}
+                : "Every card in this deck is reviewed. Try another deck or come back tomorrow."}
             </p>
             <div className="flex flex-wrap gap-2 justify-center mb-6">
-              {activeDeck && (
-                <button onClick={closeDeck}
-                  className="btn btn-primary px-5 py-2 text-xs">
-                  Pick another deck
-                </button>
-              )}
-              {inPlanSession && (
-                <button onClick={() => { clearPlanSession(); closeDeck(); }}
-                  className="btn btn-primary px-5 py-2 text-xs">
-                  Pick another deck
-                </button>
-              )}
+              <button onClick={closeDeck}
+                className="btn btn-primary px-5 py-2 text-xs">
+                Pick another deck
+              </button>
               <button onClick={() => setTopTab("import")}
                 className="btn btn-secondary px-5 py-2 text-xs">
                 Import games
@@ -1127,41 +1118,25 @@ export default function ReviewPage() {
   const fen = gameRef.current ? gameRef.current.fen() : card.fen;
   const orientation = orientationFor(card);
 
-  // Session-header label. Resolves the active deck name, the named
-  // drill set if the user came from Import, the chip label, or the
-  // raw query - in that order. Falls back to "Review" so the h1
-  // never reads as empty.
-  const sessionLabel = activeDeck
-    ? activeDeck.name
-    : planSetName
-      ? planSetName
-      : planChipId
-        ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
-        : planQuery
-          ? `"${planQuery}"`
-          : "Review";
-
   return (
     <div className="flex">
       <div className="flex-1 min-w-0 max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10 min-h-[calc(100dvh-4rem)]">
         {TopTabs}
         {ShareToast}
 
-        {/* Compact session header. Replaces the old "Studying X"
-            banner with an Analysis/Puzzles-style header: small
-            breadcrumb above, deck name as h1, inline reviewed/left
-            counter on the right. Keeps the page identifiable
-            without dominating the screen the way the big "Review"
-            hero would. */}
-        {(activeDeck || inPlanSession) && (
+        {/* Compact session header - small breadcrumb back to the
+            deck browser, the active deck name as the page h1, and
+            an inline reviewed/left counter on the right. Replaces
+            the giant "Review" hero so the board has the focus. */}
+        {activeDeck && (
           <div className="anim-fade-up mb-5" style={{ "--delay": "0.05s" }}>
             <div className="flex items-baseline justify-between gap-3 flex-wrap mb-1">
-              <button onClick={() => activeDeck ? closeDeck() : clearPlanSession()}
+              <button onClick={closeDeck}
                 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors flex items-center gap-1">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M15 18l-6-6 6-6" />
                 </svg>
-                {activeDeck ? "All decks" : "Clear filter"}
+                All decks
               </button>
               <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30">
                 {reviewed} reviewed &middot; {remaining} left
@@ -1169,9 +1144,9 @@ export default function ReviewPage() {
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="font-headline text-xl sm:text-2xl font-extrabold tracking-tighter text-primary leading-tight">
-                {sessionLabel}
+                {activeDeck.name}
               </h1>
-              {activeDeck?.isAICoach && (
+              {activeDeck.isAICoach && (
                 <span className="px-1.5 py-0.5 bg-primary/15 text-primary font-headline text-[9px] font-bold uppercase tracking-widest">
                   AI
                 </span>
@@ -1182,42 +1157,12 @@ export default function ReviewPage() {
                 generating; surfacing it here gives the user that
                 context every time they study the deck. Hand-saved
                 decks (no summary) skip this. */}
-            {activeDeck?.summary && (
+            {activeDeck.summary && (
               <p className="mt-3 px-4 py-3 text-[12px] text-on-surface-variant/65 bg-surface-low border border-white/[0.04] leading-relaxed">
                 {activeDeck.summary}
               </p>
             )}
           </div>
-        )}
-
-        {/* Legacy deck-filter chips - only shown when there's NO
-            active deck (i.e. the user came in through the
-            Import-tab Practice-now path and never picked a deck).
-            Restyled to match Play's Humans/Bots tab pattern for
-            cross-page consistency. */}
-        {!activeDeck && (
-        <div className="anim-fade-up flex flex-wrap gap-1.5 mb-5" style={{ "--delay": "0.04s" }}>
-          {DECK_FILTERS.map((f) => {
-            const count = deckCounts[f.id] ?? 0;
-            const active = deckFilter === f.id;
-            const empty = count === 0 && f.id !== "all";
-            return (
-              <button
-                key={f.id}
-                disabled={empty}
-                onClick={() => setDeckFilter(f.id)}
-                className={`px-4 py-2 font-headline text-[11px] font-bold uppercase tracking-wide transition-colors active:scale-[0.96] disabled:opacity-30 disabled:pointer-events-none ${
-                  active
-                    ? "bg-primary text-on-primary"
-                    : "bg-surface-container border border-white/[0.04] text-on-surface-variant/55 hover:text-primary hover:bg-surface-high"
-                }`}
-              >
-                {f.label}
-                <span className={`ml-1.5 ${active ? "text-on-primary/55" : "text-on-surface-variant/30"}`}>{count}</span>
-              </button>
-            );
-          })}
-        </div>
         )}
 
         <div className="flex flex-col xl:flex-row gap-6 xl:gap-8">
@@ -1852,6 +1797,30 @@ function DeckCard({ deck, onClick, onDelete, muted }) {
   const isEmpty = totalCount === 0;
   const isDone = !isEmpty && dueCount === 0;
 
+  // Two-step delete confirm. Single-click on a destructive action
+  // is too easy to fire by accident, especially when the Delete
+  // button only appears on hover (so the user might trigger it
+  // with one slip of the mouse). First click flips the label and
+  // tone for ~4 s; second click within the window actually
+  // commits the delete via onDelete().
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const confirmTimerRef = useRef(null);
+  useEffect(() => () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+  }, []);
+  const handleDelete = useCallback((e) => {
+    e.stopPropagation();
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = setTimeout(() => setConfirmDelete(false), 4000);
+      return;
+    }
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmDelete(false);
+    onDelete?.();
+  }, [confirmDelete, onDelete]);
+
   const dotRows = [
     { label: "New", count: counts.new || 0, dot: "bg-blue-400" },
     { label: "Learning", count: counts.learning || 0, dot: "bg-amber-400" },
@@ -1910,11 +1879,15 @@ function DeckCard({ deck, onClick, onDelete, muted }) {
       </button>
       {onDelete && (
         <button
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          title="Delete this deck"
-          className="px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/30 hover:text-error transition-colors opacity-0 group-hover:opacity-100"
+          onClick={handleDelete}
+          title={confirmDelete ? "Tap again to permanently delete this deck" : "Delete this deck"}
+          className={`px-2 py-1 font-headline text-[10px] font-bold uppercase tracking-widest transition-colors ${
+            confirmDelete
+              ? "text-error animate-pulse opacity-100"
+              : "text-on-surface-variant/30 hover:text-error opacity-0 group-hover:opacity-100"
+          }`}
         >
-          Delete
+          {confirmDelete ? "Tap to confirm" : "Delete"}
         </button>
       )}
       <button onClick={onClick} disabled={isEmpty}

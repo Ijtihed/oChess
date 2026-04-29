@@ -14,11 +14,9 @@
 import {
   createScheduleState,
   computeNextReview,
-  isDue,
   RATING,
   STATE,
   sanitize as sanitizeSchedule,
-  predictNextIntervals,
   summarizeSchedule,
   forecastNextDays,
 } from "./review-engine";
@@ -120,16 +118,6 @@ export function bumpCardDue(map, id, delayMin = 5) {
   const minutes = Math.max(1, Math.round(delayMin));
   const dueAt = new Date(Date.now() + minutes * 60_000);
   return setSchedule(map, id, { ...current, dueAt });
-}
-
-/**
- * Look up "what would the next interval be for each rating button,
- * if I clicked it right now" without mutating anything. Powers the
- * real-Anki "Again 1m / Hard 10m / Good 1d / Easy 4d" hints under
- * the rating buttons.
- */
-export function predictIntervalsFor(map, id) {
-  return predictNextIntervals(getSchedule(map, id));
 }
 
 /**

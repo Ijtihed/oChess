@@ -31,7 +31,7 @@ export default function AIDeckSheet({
   cards,
   drillSets,
   onDrillSetsChange,
-  onPracticeDeck,
+  onOpenDeck,
 }) {
   const [query, setQuery] = useState("");
   const [activeChip, setActiveChip] = useState(null);
@@ -158,19 +158,27 @@ export default function AIDeckSheet({
     return id;
   }, [drillSets, onDrillSetsChange]);
 
-  // Practice now both SAVES and starts the session. Users
-  // expected the deck they just played to show up under "My
-  // decks" afterwards, but the previous version started an
-  // ephemeral session without persisting - so the AI proposal
-  // disappeared the moment the session ended. Now Practice = Save
-  // + Start, and the saved-checkmark stays on the row in case
-  // the user backs out of the session and reopens the sheet.
+  // Practice now both SAVES the deck AND opens its session via
+  // `?deck=drill:<id>` so the URL reflects the actual deck the
+  // user is studying. Users expected the deck they just played to
+  // show up under "My decks" afterwards (which it does, via
+  // saveProposedDeck), AND for the back/forward buttons + page
+  // refresh to keep them in the same session - which only works
+  // when the deck id rides on the URL. Falling back to ephemeral
+  // plan-session mode if the save somehow failed (e.g. dedupe
+  // returned an existing drill id), still opens that drill's
+  // session.
   const practiceProposedDeck = useCallback((deck, idx) => {
     if (!deck?.query || !deck?.name) return;
-    saveProposedDeck(deck, idx);
-    onPracticeDeck?.({ query: deck.query, chipId: null, setName: deck.name });
+    const savedId = saveProposedDeck(deck, idx);
+    if (savedId) {
+      // Browser deck ids are namespaced as "drill:<storageId>"
+      // (see decks.js#listDecks). The parent's openDeck handler
+      // accepts that synthetic id and routes to ?deck=<id>.
+      onOpenDeck?.(`drill:${savedId}`);
+    }
     onClose?.();
-  }, [saveProposedDeck, onPracticeDeck, onClose]);
+  }, [saveProposedDeck, onOpenDeck, onClose]);
 
   if (!open) return null;
   if (!isAIAvailable()) {

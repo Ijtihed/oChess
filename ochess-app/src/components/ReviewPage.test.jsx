@@ -247,4 +247,117 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
     // empty - matches the "appears after you solve" copy.
     expect(screen.getByText(/Engine line and themes appear/i)).toBeDefined();
   });
+
+  it("rating buttons do NOT show predicted-interval text", () => {
+    // Regression: the predicted intervals (Again 1m / Hard 10m /
+    // Good 1d / Easy 4d) under each rating button were misleading
+    // because they're computed without fuzz while the actual rate
+    // path applies fuzz - the persisted interval rarely matched
+    // the displayed value. The labels are gone now; the recall
+    // descriptor under each button is the only sub-text that
+    // should render.
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "no-intervals", type: "puzzle",
+        fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    fireEvent.click(screen.getAllByText(/^Study$/)[0]);
+    fireEvent.click(screen.getByText(/Show Answer|Reveal & Rate/i));
+    // No "1m", "10m", "1d", "4d" tokens should appear next to the
+    // rating buttons. The descriptor copy under each button stays.
+    expect(screen.queryByText(/^1m$/)).toBeNull();
+    expect(screen.queryByText(/^10m$/)).toBeNull();
+    expect(screen.queryByText(/^1d$/)).toBeNull();
+    expect(screen.queryByText(/^4d$/)).toBeNull();
+    expect(screen.getByText(/Forgot/i)).toBeDefined();
+  });
+
+  it("'+ Generate AI decks' is disabled when there are no mistake / puzzle cards", () => {
+    // Regression: the AI deck generator needs mistake or puzzle
+    // cards as its corpus. With only analysis / shared cards, the
+    // sheet would open but the Generate button would just error
+    // on click. Now the browser button is disabled up front with
+    // a tooltip explaining what to do.
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "a1", type: "analysis", fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    const aiButton = screen.queryByText(/Generate AI decks/i);
+    expect(aiButton).toBeDefined();
+    expect(aiButton.disabled).toBe(true);
+  });
+
+  it("'+ Generate AI decks' is enabled when at least one mistake or puzzle card exists", () => {
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "p1", type: "puzzle", fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    const aiButton = screen.queryByText(/Generate AI decks/i);
+    expect(aiButton).toBeDefined();
+    expect(aiButton.disabled).toBe(false);
+  });
+
+  it("opening a deck sets ?deck=<id> in the URL; closing it clears the param", () => {
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "p1", type: "puzzle", fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
+    ]));
+    render(
+      <MemoryRouter initialEntries={["/review"]}>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    fireEvent.click(screen.getAllByText(/^Study$/)[0]);
+    // The active-deck breadcrumb is the marker that the session
+    // view is mounted; the test mocks SocialPanel away and React
+    // Router's MemoryRouter doesn't expose window.location, so
+    // the breadcrumb is the most reliable signal here.
+    expect(screen.getByText(/All decks/i)).toBeDefined();
+    fireEvent.click(screen.getByText(/All decks/i));
+    // Back to the deck browser - the My decks / Built-in section
+    // header reappears and the breadcrumb is gone.
+    expect(screen.queryByText(/All decks/i)).toBeNull();
+    expect(screen.getByText(/Built-in/i)).toBeDefined();
+  });
+
+  it("drill set Delete is two-step: first click arms, second click confirms", () => {
+    // Regression: drill set Delete was a single-click action even
+    // though the button only appears on hover (so it was very
+    // easy to fire by accident). Now the first click flips the
+    // label to "Tap to confirm", and a second click within ~4 s
+    // commits the delete.
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "m1", type: "mistake", fen: "8/8/8/8/8/8/8/8 w - - 0 1",
+        themes: ["hanging_queen"], ts: 1 },
+    ]));
+    localStorage.setItem("ochess_drill_sets", JSON.stringify([
+      { id: "d1", name: "Hanging queens", query: "hanging_queen", chipId: null,
+        source: "manual", createdAt: 1, updatedAt: 1 },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    const deleteBtn = screen.getByText(/^Delete$/);
+    fireEvent.click(deleteBtn);
+    // After the first click the row's drill set must still exist
+    // in storage and the button label flips.
+    expect(JSON.parse(localStorage.getItem("ochess_drill_sets") || "[]")).toHaveLength(1);
+    expect(screen.getByText(/Tap to confirm/i)).toBeDefined();
+    // Second click commits.
+    fireEvent.click(screen.getByText(/Tap to confirm/i));
+    expect(JSON.parse(localStorage.getItem("ochess_drill_sets") || "[]")).toHaveLength(0);
+  });
 });

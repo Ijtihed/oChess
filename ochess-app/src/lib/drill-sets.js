@@ -77,9 +77,30 @@ export function saveDrillSets(sets) {
 }
 
 /**
+ * Build a stable signature for a drill set used to detect
+ * duplicates. Two drills with identical name + query + chipId are
+ * considered the same drill, regardless of when they were saved
+ * or which surface created them. Compared case-insensitively on
+ * name so trivial casing differences ("Hanging queens" vs
+ * "hanging queens") still dedupe.
+ */
+function drillSignature({ name, query, chipId }) {
+  const n = (typeof name === "string" ? name : "").trim().toLowerCase();
+  const q = (typeof query === "string" ? query : "").trim().toLowerCase();
+  const c = chipId || "";
+  return `${n}|${q}|${c}`;
+}
+
+/**
  * Add or update a drill set. If `set.id` is given and matches an
  * existing entry, that one is replaced (useful for renaming). If
- * `set.id` is missing, a new id is minted.
+ * `set.id` is missing, a new id is minted - but only after a
+ * duplicate check: if an existing drill already has the same
+ * (name, query, chipId) signature, we update its `updatedAt`,
+ * promote any newly-supplied source/summary, and return its
+ * existing id instead of creating a second copy. This prevents
+ * the AI deck sheet from piling up duplicate "Hanging queens"
+ * rows when the user clicks Generate twice with the same query.
  *
  * @returns {{ sets: Array, id: string }} updated array + the saved id.
  */
@@ -88,11 +109,10 @@ export function addDrillSet(existing, { id, name, query, chipId, source, summary
   // that filters to "everything".
   if (!query && !chipId) return { sets: existing, id: null };
   const now = Date.now();
-  const finalId = id || newDrillSetId();
   const finalName = sanitizeName(name, query, chipId);
   // `source` (optional, free-form) lets callers tag where a drill
   // came from. Currently used values:
-  //   "coach"   - AI-generated deck from the Plan tab
+  //   "coach"   - AI-generated deck from the AI deck sheet
   //   "manual"  - the user typed / chipped + clicked Save
   //   "import"  - placeholder for future "import deck" features
   // The browser surfaces an "AI" badge on coach-tagged decks.
@@ -100,20 +120,51 @@ export function addDrillSet(existing, { id, name, query, chipId, source, summary
   // Optional 1-2 sentence "what this deck is" banner. Currently
   // only AI-generated decks set it.
   const finalSummary = typeof summary === "string" && summary.trim() ? summary.trim() : null;
-  const idx = existing.findIndex((s) => s.id === finalId);
-  if (idx >= 0) {
+
+  // 1. Explicit-id update path: caller is editing a known drill.
+  if (id) {
+    const idx = existing.findIndex((s) => s.id === id);
+    if (idx >= 0) {
+      const next = existing.slice();
+      next[idx] = {
+        ...next[idx],
+        name: finalName,
+        query: query || "",
+        chipId: chipId || null,
+        source: finalSource ?? next[idx].source ?? null,
+        summary: finalSummary ?? next[idx].summary ?? null,
+        updatedAt: now,
+      };
+      return { sets: next, id };
+    }
+    // Caller supplied an id that doesn't exist - fall through to
+    // the create branch with that id preserved. Useful for
+    // recovering from drill-set wipes / sync.
+  }
+
+  // 2. Signature-based dedupe path: no explicit id, check if an
+  //    identical drill already exists. If so, refresh its
+  //    metadata and return its id instead of creating a copy.
+  const incomingSig = drillSignature({ name: finalName, query, chipId });
+  const dupIdx = existing.findIndex(
+    (s) => drillSignature({ name: s.name, query: s.query, chipId: s.chipId }) === incomingSig,
+  );
+  if (dupIdx >= 0) {
     const next = existing.slice();
-    next[idx] = {
-      ...next[idx],
-      name: finalName,
-      query: query || "",
-      chipId: chipId || null,
-      source: finalSource ?? next[idx].source ?? null,
-      summary: finalSummary ?? next[idx].summary ?? null,
+    next[dupIdx] = {
+      ...next[dupIdx],
+      // Promote new metadata if the caller supplied richer values
+      // (e.g. an AI-generated drill with a `summary` overrides a
+      // hand-saved one with no summary).
+      source: finalSource ?? next[dupIdx].source ?? null,
+      summary: finalSummary ?? next[dupIdx].summary ?? null,
       updatedAt: now,
     };
-    return { sets: next, id: finalId };
+    return { sets: next, id: next[dupIdx].id };
   }
+
+  // 3. Create path: brand-new drill with a fresh id.
+  const finalId = id || newDrillSetId();
   return {
     sets: [
       ...existing,
