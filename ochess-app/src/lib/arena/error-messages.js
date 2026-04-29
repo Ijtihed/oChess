@@ -201,7 +201,7 @@ export function translateValidatorErrors(errors) {
  *
  *   - At least 6 characters of actual letters/digits (not just
  *     punctuation or emoji)
- *   - At most 600 characters (UI also enforces this via maxLength)
+ *   - At most 2000 characters (UI also enforces this via maxLength)
  *   - Has at least 2 word-shaped tokens
  *
  * @param {string} prompt
@@ -215,8 +215,8 @@ export function checkPromptSanity(prompt) {
   if (trimmed.length === 0) {
     return "Type a description of the variant first.";
   }
-  if (trimmed.length > 600) {
-    return "Prompt is too long. Keep it under 600 characters.";
+  if (trimmed.length > 2000) {
+    return "Prompt is too long. Keep it under 2000 characters.";
   }
   // Strip emoji and punctuation. ASCII letters/digits + common
   // accented latin chars count as content. If less than 6 chars

@@ -732,13 +732,13 @@ function JoinerRulePrompt({ onCommit }) {
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="e.g. Bishops can also leap one square. Knights move twice per turn."
-          rows={3}
-          maxLength={600}
+          rows={4}
+          maxLength={2000}
           disabled={generating || committing}
           className="w-full bg-surface-container border border-white/[0.06] px-3 py-2 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40 resize-none"
         />
         <p className="mt-1 text-[10px] text-on-surface-variant/30">
-          {prompt.length} / 600
+          {prompt.length} / 2000
         </p>
         <JoinerPromptIdeas onPick={(text) => setPrompt(text)} disabled={generating || committing} />
       </div>

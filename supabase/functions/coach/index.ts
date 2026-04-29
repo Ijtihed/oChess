@@ -287,7 +287,7 @@ function estimateMicroUsd(inputTokens: number, outputTokens: number): number {
   return Math.ceil((inUsd + outUsd) * 1_000_000);
 }
 
-async function callGemini(prompt: string, model: string, maxTokens = 1200): Promise<GeminiResult> {
+async function callGemini(prompt: string, model: string, maxTokens = 4000): Promise<GeminiResult> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, error: "GEMINI_API_KEY not configured" };
   const url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
@@ -330,7 +330,7 @@ async function callGemini(prompt: string, model: string, maxTokens = 1200): Prom
 
 // Monthly $-cap shared with arena_rules. Keep this in sync
 // with arena_rules/index.ts. 50 USD = 50_000_000 micro-USD.
-const MONTHLY_CAP_MICRO_USD = 50_000_000;
+const MONTHLY_CAP_MICRO_USD = 200_000_000; // $200.00 per calendar month (shared with arena_rules)
 
 interface SpendCheckResult {
   ok: boolean;

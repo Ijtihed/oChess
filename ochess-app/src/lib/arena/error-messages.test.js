@@ -165,9 +165,14 @@ describe("checkPromptSanity", () => {
     expect(checkPromptSanity("Both kings start in the middle of the board, surrounded by their pieces.")).toBeNull();
   });
 
-  it("rejects prompts over 600 chars", () => {
-    const long = "a ".repeat(400);
+  it("rejects prompts over 2000 chars", () => {
+    const long = "a ".repeat(1100); // 2200 chars, comfortably over the cap
     expect(checkPromptSanity(long)).toMatch(/too long/i);
+  });
+
+  it("accepts a long-but-under-cap prompt (~1500 chars of real words)", () => {
+    const okLong = "kings move freely ".repeat(80); // ~1440 chars, plenty of word tokens
+    expect(checkPromptSanity(okLong)).toBeNull();
   });
 
   it("treats accented latin letters as content (not punctuation)", () => {

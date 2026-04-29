@@ -35,7 +35,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 // ── Hard limits ──
-const MAX_PROMPT_CHARS = 600;
+const MAX_PROMPT_CHARS = 2000;
 const DEFAULT_MODEL = "gemini-2.5-flash";
 
 // ── Rate limit defaults (must match the SQL RPC defaults) ──
@@ -321,7 +321,7 @@ function estimateMicroUsdFromPromptChars(promptChars: number, maxOutputTokens: n
   return estimateMicroUsd(estIn, maxOutputTokens);
 }
 
-async function callGemini(systemPrompt: string, userPrompt: string, model: string, maxTokens = 4000): Promise<GeminiResult> {
+async function callGemini(systemPrompt: string, userPrompt: string, model: string, maxTokens = 16000): Promise<GeminiResult> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, error: "GEMINI_API_KEY not configured" };
   const url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
@@ -375,7 +375,7 @@ interface SpendCheckResult {
   error?: string;
 }
 
-const MONTHLY_CAP_MICRO_USD = 50_000_000; // $50.00 per calendar month
+const MONTHLY_CAP_MICRO_USD = 200_000_000; // $200.00 per calendar month (shared with coach)
 
 /**
  * Atomically check + record an AI spend event. Pre-call use:
@@ -874,7 +874,7 @@ Deno.serve(async (req) => {
   // Output budget matches the callGemini default (4000). x2 for
   // the auto-retry path so we never under-estimate when the
   // first response gets truncated and we retry.
-  const estMicroUsd = estimateMicroUsdFromPromptChars(promptCharsEst, 4000) * 2;
+  const estMicroUsd = estimateMicroUsdFromPromptChars(promptCharsEst, 16000) * 2;
   const preCheck = await recordSpendOrBlock(req, "arena_rules", model, 0, 0, 0);
   if (preCheck.ok && !preCheck.allowed && preCheck.usedMicroUsd + estMicroUsd > preCheck.capMicroUsd) {
     return new Response(JSON.stringify({
