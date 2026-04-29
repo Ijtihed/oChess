@@ -99,6 +99,16 @@ alter table games add column if not exists white_draw_offers int default 0;
 alter table games add column if not exists black_draw_offers int default 0;
 alter table games add column if not exists rematch_offered_by uuid references profiles(id) on delete set null;
 alter table games add column if not exists rematch_game_id uuid references games(id) on delete set null;
+-- Arena: each round of an AI Arena match gets persisted here as
+-- a single row with variant='arena'. variant_rules captures the
+-- rule diff used (so historical games can be replayed under the
+-- same custom rules), and arena_room_id back-references the
+-- room. is_rated gets set to false on insert so these rows are
+-- excluded from Glicko-2 updates - variant rules break rating
+-- math, see profile-history-only persistence in the orchestrator.
+alter table games add column if not exists variant_rules jsonb;
+alter table games add column if not exists arena_room_id uuid references arena_rooms(id) on delete set null;
+alter table games add column if not exists arena_round text;
 
 -- Backfill created_at from started_at for any rows that pre-date the column.
 update games set created_at = started_at where created_at is null;
@@ -282,6 +292,12 @@ create table if not exists arena_rooms (
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
+
+-- Play-again linking: when one side clicks Play Again from the
+-- match results screen, the new room's id gets written here so
+-- the OTHER side's UI can navigate over without manually sharing
+-- a fresh link.
+alter table arena_rooms add column if not exists next_room_id uuid references arena_rooms(id) on delete set null;
 
 -- ── arena_moves (move log per round) ──
 -- Append-only ledger of every move played in a room, scoped by

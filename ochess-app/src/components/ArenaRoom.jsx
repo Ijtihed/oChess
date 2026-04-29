@@ -10,8 +10,12 @@ import {
   updateRoom,
   deleteRoom,
   subscribeRoom,
+  appendMove,
+  loadMoves,
+  recordRoundGame,
+  createRoom,
 } from "../lib/arena/service";
-import { resolveRules } from "../lib/arena/rules";
+import { resolveRules, vanillaRules } from "../lib/arena/rules";
 import { Position } from "../lib/arena/position";
 import { generateLegalMoves } from "../lib/arena/move-gen";
 import { applyMove } from "../lib/arena/apply-move";
@@ -19,6 +23,23 @@ import { checkGameStatus } from "../lib/arena/win-check";
 import { pickRandomMoveAsync } from "../lib/arena/random-bot";
 import { PRESETS, presetById } from "../lib/arena/presets";
 import { VANILLA_FEN } from "../lib/arena/schema";
+import {
+  colorFor,
+  colorPairFor,
+  buildRoundEntry,
+  appendRound,
+  nextStatusAfterRound,
+  finalizeMatch,
+  roundLabelFor,
+} from "../lib/arena/orchestrator";
+import {
+  initRoundClock,
+  initTiebreakClock,
+  clockSnapshot,
+  commitMove as commitClockMove,
+  pauseClock,
+  formatClock,
+} from "../lib/arena/clock";
 
 /**
  * ArenaRoom - mounted at /arena/<roomId>.
@@ -229,9 +250,40 @@ function RoomBody({ room, setRoom, role, user, roomId }) {
     );
   }
 
-  // Round / tiebreak / done — Phase 1 stub.
+  // Round play (rounds 1, 2, tie-break).
+  if (room.status === "round_1" || room.status === "round_2" || room.status === "tiebreak") {
+    return (
+      <RoundPlay
+        room={room}
+        setRoom={setRoom}
+        role={role}
+        user={user}
+        roomId={roomId}
+      />
+    );
+  }
+
+  // Match results.
+  if (room.status === "done") {
+    return (
+      <MatchResults
+        room={room}
+        setRoom={setRoom}
+        role={role}
+        user={user}
+      />
+    );
+  }
+
+  // Defensive fallback for an unknown status. Should never
+  // happen unless the DB picks up a value the UI doesn't
+  // know yet.
   return (
-    <RoundPlaceholder room={room} role={role} />
+    <div className="anim-fade-up p-6 bg-surface-low border border-white/[0.04]">
+      <p className="text-[13px] text-on-surface-variant/55">
+        Unknown room status: <span className="font-mono text-error">{room.status}</span>.
+      </p>
+    </div>
   );
 }
 
@@ -623,7 +675,8 @@ function Warmup({ room, setRoom, role, roomId }) {
     return (room.round_state || {})[flagKey] === round;
   }, [room.round_state, role, round]);
 
-  // When BOTH are ready, advance status to round_<n>. First
+  // When BOTH are ready, advance status to round_<n> AND
+  // initialize the round state (clock + starting fen). First
   // client to win this race transitions; the other reacts via
   // realtime. Use a ref so the advance happens at most once
   // per warmup round.
@@ -635,12 +688,28 @@ function Warmup({ room, setRoom, role, roomId }) {
     if (room.status === nextStatus) return;
     advancedRef.current = true;
     (async () => {
-      const result = await updateRoom(roomId, { status: nextStatus });
+      // Initialize the round's playing state - which side moves
+      // first determined by the round's color assignment, clock
+      // budget by round type. Living in round_state means a
+      // refresh / late-joiner picks up the same starting point.
+      const startingFen = rules.startingFen || VANILLA_FEN;
+      const startingPos = Position.fromFen(startingFen);
+      const colorPair = colorPairFor(round);
+      const firstMover = colorPair.creator === startingPos.turn ? "creator" : "joiner";
+      const round_state = {
+        ...(room.round_state || {}),
+        round: round,
+        fen: startingFen,
+        plyCount: 0,
+        clock: initRoundClock(firstMover),
+        startedAt: new Date().toISOString(),
+      };
+      const result = await updateRoom(roomId, { status: nextStatus, round_state });
       if (result?.ok && result.room && setRoom) {
         setRoom((prev) => ({ ...(prev || {}), ...result.room }));
       }
     })();
-  }, [ready, oppReady, round, room.status, roomId, setRoom]);
+  }, [ready, oppReady, round, room.status, room.round_state, roomId, setRoom, rules]);
 
   // Per-square legal-move enumerator wired to the VARIANT
   // rules, fed to InteractiveBoard so its dot-hint affordance
@@ -783,20 +852,603 @@ function Warmup({ room, setRoom, role, roomId }) {
 
 // ── Round / done placeholder (Phase 1 stop) ────────────────
 
-function RoundPlaceholder({ room, role }) {
+// ── RoundPlay ──────────────────────────────────────────────
+
+/**
+ * The actual 1v1 round. Mirrors GameScreen's layout: board on
+ * the left, clocks + move list + resign on the right rail.
+ *
+ * Move sync: each player applies their own move LOCALLY first
+ * for instant feedback, then writes the move row to the DB +
+ * commits the clock. The opponent's realtime channel sees the
+ * INSERT on arena_moves and replays it. The room row's
+ * round_state acts as the canonical source of truth (fen +
+ * clock + plyCount), so a refresh / reconnect re-paints the
+ * exact game state.
+ *
+ * Round-end paths (any of these advances the room status):
+ *   - engine returns ended:true (checkmate / stalemate /
+ *     capture-king / first-to-N / race-to-square).
+ *   - clock expiry on the to-move side (detected by either
+ *     client; first to write wins).
+ *   - resign button.
+ */
+function RoundPlay({ room, setRoom, role, user, roomId }) {
+  const status = room.status;
+  const roundLabel = roundLabelFor(status);
+  const isTiebreak = status === "tiebreak";
+
+  // Tie-break uses vanilla rules + a 1+0 clock. Rounds 1 / 2
+  // resolve their rules from the corresponding rule diff.
+  const rulesDiff = isTiebreak
+    ? { extends: "vanilla", name: "Tie-break (vanilla)" }
+    : (roundLabel === 1 ? room.rules_creator : room.rules_joiner);
+  const rulesKey = useMemo(() => {
+    try { return JSON.stringify(rulesDiff || { extends: "vanilla" }); }
+    catch { return "vanilla"; }
+  }, [rulesDiff]);
+  const rules = useMemo(() => {
+    try { return resolveRules(rulesDiff || { extends: "vanilla" }); }
+    catch { return vanillaRules(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rulesKey]);
+
+  // My color + whose turn it is.
+  const myColor = colorFor(role, status);
+  const oppRole = role === "creator" ? "joiner" : "creator";
+  const colorPair = colorPairFor(roundLabel === "tiebreak" ? 1 : roundLabel);
+
+  // Board state. Fen comes from the room's round_state so a
+  // late-joiner / rejoin gets exactly what's on the board.
+  const fenFromRoom = room.round_state?.fen || rules.startingFen || VANILLA_FEN;
+  const position = useMemo(() => {
+    try { return Position.fromFen(fenFromRoom); }
+    catch { return Position.fromFen(VANILLA_FEN); }
+  }, [fenFromRoom]);
+
+  // Move history for this round. Loaded from arena_moves on
+  // mount and kept in sync via realtime + manual appends.
+  const [moves, setMoves] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(null); // null = live; number = browsing
+  const [highlight, setHighlight] = useState({});
+  const [resignError, setResignError] = useState(null);
+  const [confirmResign, setConfirmResign] = useState(false);
+  const confirmTimerRef = useRef(null);
+  useEffect(() => () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+  }, []);
+
+  // Initial move-log load + realtime appends.
+  useEffect(() => {
+    if (!roomId || !roundLabel) return undefined;
+    let cancelled = false;
+    (async () => {
+      const result = await loadMoves(roomId, roundLabel === "tiebreak" ? 99 : roundLabel);
+      if (cancelled || !result.ok) return;
+      setMoves(result.moves || []);
+    })();
+    return () => { cancelled = true; };
+  }, [roomId, roundLabel]);
+
+  // Per-square legal-move enumerator wired to the variant
+  // rules. Mirrors the warmup logic.
+  const legalMovesProvider = useCallback((square) => {
+    if (position.turn !== myColor) return [];
+    return generateLegalMoves(position, rules)
+      .filter((m) => m.from === square)
+      .map((m) => ({
+        to: m.to,
+        promotion: m.promotion,
+        captured: !!position.pieceAt(m.to) || !!m.enPassant,
+      }));
+  }, [position, rules, myColor]);
+
+  // Local clock snapshot for live rendering. Re-renders every
+  // 250ms so the seconds visibly count down without burning
+  // the main thread on requestAnimationFrame.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (room.round_state?.clock) {
+      const id = setInterval(() => setTick((t) => t + 1), 250);
+      return () => clearInterval(id);
+    }
+    return undefined;
+  }, [room.round_state?.clock]);
+
+  // Pre-derived clock data (running side, remaining time).
+  const clock = room.round_state?.clock;
+  const snapshot = useMemo(() => clockSnapshot(clock), [clock, tick]);
+
+  // Local game-status derive. The first client to detect a
+  // round-end + write the result wins; the second sees status
+  // already advanced via realtime.
+  const gameStatus = useMemo(() => checkGameStatus(position, rules), [position, rules]);
+
+  // Apply a confirmed move locally + write it to the DB. Both
+  // sides use this; whoever's turn it is calls it from the
+  // board's onMove. The opponent's client sees the INSERT and
+  // applies the same move on their copy.
+  const advanceRoundEndedRef = useRef(false);
+  const onUserMove = useCallback(async (move) => {
+    if (position.turn !== myColor) return false;
+    if (gameStatus.ended) return false;
+    if (snapshot[role]?.expired) return false;
+    let next;
+    try { next = applyMove(position, move, rules); }
+    catch { playError(); return false; }
+    playMoveSound({ flags: move.captured ? "c" : "n" });
+    setHighlight({
+      [move.from]: { backgroundColor: "rgba(76,175,80,0.25)" },
+      [move.to]:   { backgroundColor: "rgba(76,175,80,0.35)" },
+    });
+    // Find the SAN the engine stamped on the move so the move
+    // list gets a readable label.
+    const lastHistory = next.history[next.history.length - 1];
+    const nextStatus = checkGameStatus(next, rules);
+    const newClock = commitClockMove(clock, role, { endTurn: !nextStatus.ended });
+    const nextRoundState = {
+      ...(room.round_state || {}),
+      fen: next.toFen(),
+      plyCount: (room.round_state?.plyCount || 0) + 1,
+      clock: newClock,
+    };
+
+    // Write the move log row + the room update. We await the
+    // append because the round-end effect that reads the move
+    // log to build PGN runs immediately after this and would
+    // otherwise miss the final move.
+    const ply = (room.round_state?.plyCount || 0) + 1;
+    const round = roundLabel === "tiebreak" ? 99 : roundLabel;
+    await appendMove({ roomId, round, ply, fen: nextRoundState.fen, move: { ...move, san: lastHistory?.san } });
+    const update = await updateRoom(roomId, { round_state: nextRoundState });
+    if (update?.ok && update.room && setRoom) {
+      setRoom((prev) => ({ ...(prev || {}), ...update.room }));
+    }
+    setMoves((prev) => [
+      ...prev,
+      { round, ply, fen: nextRoundState.fen, move_from: move.from, move_to: move.to, promotion: move.promotion || null, san: lastHistory?.san || null, ts: new Date().toISOString() },
+    ]);
+    return true;
+  }, [position, myColor, rules, gameStatus, snapshot, role, clock, room.round_state, roomId, setRoom, roundLabel]);
+
+  // Round-end resolver. Runs whenever gameStatus or clock
+  // status flips. Whichever client gets here first writes the
+  // result + advances status; the second sees status already
+  // advanced via realtime and bails.
+  useEffect(() => {
+    if (advanceRoundEndedRef.current) return;
+    // Determine outcome.
+    let winnerColor = null;
+    let reason = null;
+    if (gameStatus.ended) {
+      winnerColor = gameStatus.winner;
+      reason = gameStatus.reason;
+    } else if (snapshot.creator?.expired) {
+      winnerColor = colorPair.joiner;
+      reason = "creator clock expired";
+    } else if (snapshot.joiner?.expired) {
+      winnerColor = colorPair.creator;
+      reason = "joiner clock expired";
+    } else {
+      return;
+    }
+    advanceRoundEndedRef.current = true;
+    (async () => {
+      const entry = buildRoundEntry({
+        round: roundLabel,
+        gameStatus,
+        reasonOverride: reason,
+        forcedWinnerColor: winnerColor,
+        finalFen: position.toFen(),
+        plyCount: room.round_state?.plyCount || 0,
+        clockSpent: { creator: snapshot.creator?.spentMs, joiner: snapshot.joiner?.spentMs },
+      });
+      const newMatch = appendRound(room.match_result, entry);
+      const nextStatus = nextStatusAfterRound(status, newMatch);
+      const finalMatch = nextStatus === "done" ? finalizeMatch(newMatch) : newMatch;
+      // Compute the next round_state. For warmup_round_2 we
+      // want a clean board ready for the next warmup. For
+      // tiebreak we initialize a fresh 1+0 clock + vanilla
+      // starting position so the tie-break begins clean. For
+      // 'done' we leave the final position visible. Otherwise
+      // just pause the existing clock.
+      let nextRoundState;
+      if (nextStatus === "tiebreak") {
+        // Tie-break uses vanilla rules + 1+0 clock. Creator
+        // plays Black per the spec; whichever side moves first
+        // (white in vanilla) starts the clock.
+        const startingPos = Position.fromFen(VANILLA_FEN);
+        const tbColors = colorPairFor(1); // tie-break uses round-1 shape
+        const firstMover = tbColors.creator === startingPos.turn ? "creator" : "joiner";
+        nextRoundState = {
+          round: "tiebreak",
+          fen: VANILLA_FEN,
+          plyCount: 0,
+          clock: initTiebreakClock(firstMover),
+          startedAt: new Date().toISOString(),
+        };
+      } else if (nextStatus === "warmup_round_2") {
+        // Reset round_state for round 2's warmup. The Warmup
+        // component derives its starting fen from the rules
+        // again so we just clear the round-1 leftovers.
+        nextRoundState = { round: 2 };
+      } else {
+        nextRoundState = {
+          ...(room.round_state || {}),
+          clock: pauseClock(room.round_state?.clock),
+          fen: position.toFen(),
+          endedAt: new Date().toISOString(),
+        };
+      }
+      const result = await updateRoom(roomId, {
+        match_result: finalMatch,
+        round_state: nextRoundState,
+        status: nextStatus,
+      });
+      if (result?.ok && result.room && setRoom) {
+        setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+      }
+      // Persist the round to the games table for profile
+      // history. Fire-and-forget; failure here doesn't block
+      // the match flow. Skipped if we don't have full identity
+      // info (e.g. partial DB row).
+      if (room.creator_id && room.joiner_id) {
+        const creatorInfo = { id: room.creator_id, name: room.creator_name, color: colorPair.creator };
+        const joinerInfo  = { id: room.joiner_id,  name: room.joiner_name,  color: colorPair.joiner };
+        const pgnLines = (await loadMoves(roomId, roundLabel === "tiebreak" ? 99 : roundLabel)).moves || [];
+        const pgn = pgnLines.map((m, i) =>
+          (i % 2 === 0 ? `${Math.floor(i / 2) + 1}. ${m.san || `${m.move_from}${m.move_to}`}` : (m.san || `${m.move_from}${m.move_to}`))
+        ).join(" ");
+        recordRoundGame({
+          roomId,
+          round: entry,
+          creator: creatorInfo,
+          joiner: joinerInfo,
+          pgn,
+          rulesDiff,
+          timeControl: isTiebreak ? "1+0" : "10+0",
+        });
+      }
+    })();
+  }, [gameStatus, snapshot, status, roundLabel, position, room, roomId, setRoom, colorPair, rulesDiff, isTiebreak]);
+
+  // Resign action.
+  const onResign = useCallback(() => {
+    if (!confirmResign) {
+      setConfirmResign(true);
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = setTimeout(() => setConfirmResign(false), 4000);
+      return;
+    }
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmResign(false);
+    advanceRoundEndedRef.current = true;
+    (async () => {
+      const entry = buildRoundEntry({
+        round: roundLabel,
+        gameStatus: { ended: true, winner: null, reason: `${role} resigned` },
+        reasonOverride: `${role} resigned`,
+        forcedWinnerColor: role === "creator" ? colorPair.joiner : colorPair.creator,
+        finalFen: position.toFen(),
+        plyCount: room.round_state?.plyCount || 0,
+      });
+      const newMatch = appendRound(room.match_result, entry);
+      const nextStatus = nextStatusAfterRound(status, newMatch);
+      const finalMatch = nextStatus === "done" ? finalizeMatch(newMatch) : newMatch;
+      const round_state = {
+        ...(room.round_state || {}),
+        clock: pauseClock(room.round_state?.clock),
+        endedAt: new Date().toISOString(),
+      };
+      const result = await updateRoom(roomId, {
+        match_result: finalMatch,
+        round_state,
+        status: nextStatus,
+      });
+      if (!result?.ok) {
+        setResignError(result?.error || "Couldn't resign.");
+        advanceRoundEndedRef.current = false;
+        return;
+      }
+      if (result?.room && setRoom) {
+        setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+      }
+    })();
+  }, [confirmResign, role, roundLabel, status, position, room, roomId, setRoom, colorPair]);
+
+  // History replay. When user clicks a move in the move list,
+  // we render that historical FEN read-only; click "Live" to
+  // return.
+  const displayFen = useMemo(() => {
+    if (historyIndex == null || historyIndex >= moves.length - 1) return fenFromRoom;
+    return moves[historyIndex]?.fen || fenFromRoom;
+  }, [historyIndex, moves, fenFromRoom]);
+  const liveMode = historyIndex == null;
+  const orientation = myColor === "b" ? "black" : "white";
+  const myTurn = position.turn === myColor && !gameStatus.ended;
+
   return (
-    <div className="anim-fade-up p-6 bg-surface-low border border-primary/20 space-y-3">
-      <h2 className="font-headline text-base font-bold text-primary">
-        {room.status === "done" ? "Match complete" : `Phase 1 stop: ${room.status}`}
-      </h2>
-      <p className="text-[13px] text-on-surface-variant/65 leading-relaxed">
-        The 1v1 rounds and tie-break aren&apos;t wired up yet in this slice. Both warmups completed
-        successfully if you got here, and the room is ready to advance into round play. Keep an
-        eye out for the next push.
-      </p>
-      <p className="text-[11px] text-on-surface-variant/40">
-        You are the <span className="font-bold">{role}</span>.
-      </p>
+    <div className="flex flex-col xl:flex-row gap-4 xl:gap-6 anim-fade-up">
+      <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
+        <div className="w-full mb-3 flex items-baseline justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="font-headline text-base sm:text-lg font-extrabold tracking-tighter text-primary leading-tight">
+              {isTiebreak ? "Tie-break" : `Round ${roundLabel}`} &middot; {isTiebreak ? "1+0" : "10+0"}
+            </h2>
+            <p className="text-[11px] text-on-surface-variant/55 mt-0.5">
+              You are <span className="font-bold text-on-surface-variant/85">{myColor === "w" ? "White" : "Black"}</span>{liveMode ? "" : " · viewing history"}
+            </p>
+          </div>
+          {!liveMode && (
+            <button onClick={() => setHistoryIndex(null)}
+              className="px-3 py-1.5 font-headline text-[10px] font-bold uppercase tracking-widest bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 transition-colors">
+              Back to live
+            </button>
+          )}
+        </div>
+        <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
+          <InteractiveBoard
+            fen={displayFen}
+            onMove={onUserMove}
+            orientation={orientation}
+            playerColor={myColor}
+            interactive={liveMode && myTurn}
+            highlightSquares={highlight}
+            legalMovesProvider={legalMovesProvider}
+          />
+        </div>
+      </div>
+
+      <div className="w-full xl:w-[280px] shrink-0 space-y-3">
+        <ClockPanel
+          snapshot={snapshot}
+          colorPair={colorPair}
+          room={room}
+          role={role}
+        />
+        <MoveList
+          moves={moves}
+          activeIndex={historyIndex}
+          onJump={setHistoryIndex}
+        />
+        <div className="p-4 bg-surface-low border border-white/[0.04] space-y-2">
+          <button onClick={onResign}
+            className={`w-full px-3 py-2 font-headline text-[11px] font-bold uppercase tracking-widest border transition-colors ${
+              confirmResign
+                ? "bg-error/15 border-error/30 text-error animate-pulse"
+                : "bg-surface-container border-white/[0.04] text-on-surface-variant/55 hover:text-error hover:border-error/20"
+            }`}>
+            {confirmResign ? "Tap again to resign" : "Resign"}
+          </button>
+          {resignError && (
+            <p className="text-[11px] text-error">{resignError}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Sub-components: clocks, move list ──────────────────────
+
+function ClockPanel({ snapshot, colorPair, room, role }) {
+  const oppRole = role === "creator" ? "joiner" : "creator";
+  const myName = role === "creator" ? room.creator_name : room.joiner_name;
+  const oppName = role === "creator" ? room.joiner_name : room.creator_name;
+  return (
+    <div className="p-4 bg-surface-low border border-white/[0.04] space-y-3">
+      <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+        Clocks
+      </h3>
+      <ClockRow
+        label="You"
+        sub={`${myName || "you"} \u00b7 ${colorPair[role] === "w" ? "White" : "Black"}`}
+        snap={snapshot[role]}
+        running={snapshot.running === role}
+      />
+      <ClockRow
+        label="Opponent"
+        sub={`${oppName || "opponent"} \u00b7 ${colorPair[oppRole] === "w" ? "White" : "Black"}`}
+        snap={snapshot[oppRole]}
+        running={snapshot.running === oppRole}
+      />
+    </div>
+  );
+}
+
+function ClockRow({ label, sub, snap, running }) {
+  if (!snap) return null;
+  const lowTime = snap.remainingMs < 30_000;
+  return (
+    <div className={`px-3 py-2 border ${
+      running ? "bg-primary/10 border-primary/30" : "bg-surface-container border-white/[0.04]"
+    }`}>
+      <div className="flex items-baseline justify-between mb-0.5">
+        <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/45">{label}</span>
+        {running && <span className="text-[9px] font-bold text-primary">LIVE</span>}
+      </div>
+      <span className={`font-mono text-2xl font-extrabold tabular-nums ${
+        snap.expired ? "text-error" : lowTime ? "text-amber-300" : "text-on-surface"
+      }`}>
+        {formatClock(snap.remainingMs)}
+      </span>
+      <div className="text-[10px] text-on-surface-variant/45 mt-0.5 truncate">{sub}</div>
+    </div>
+  );
+}
+
+function MoveList({ moves, activeIndex, onJump }) {
+  if (!moves || moves.length === 0) {
+    return (
+      <div className="p-4 bg-surface-low border border-white/[0.04]">
+        <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-2">
+          Moves
+        </h3>
+        <p className="text-[11px] text-on-surface-variant/40">No moves yet.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="p-4 bg-surface-low border border-white/[0.04]">
+      <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-2">
+        Moves
+      </h3>
+      <div className="max-h-[320px] overflow-y-auto pr-1">
+        <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 gap-y-0.5">
+          {Array.from({ length: Math.ceil(moves.length / 2) }).map((_, i) => {
+            const wIdx = i * 2;
+            const bIdx = i * 2 + 1;
+            const w = moves[wIdx];
+            const b = moves[bIdx];
+            return (
+              <div key={i} className="contents">
+                <span className="text-[11px] text-on-surface-variant/35 tabular-nums text-right pr-1">{i + 1}.</span>
+                <button
+                  onClick={() => onJump(wIdx === moves.length - 1 ? null : wIdx)}
+                  className={`text-left font-mono text-[12px] px-1 py-0.5 hover:bg-surface-high transition-colors ${
+                    activeIndex === wIdx ? "bg-primary/15 text-primary" : "text-on-surface-variant/75"
+                  }`}>
+                  {w?.san || `${w?.move_from}${w?.move_to}`}
+                </button>
+                {b ? (
+                  <button
+                    onClick={() => onJump(bIdx === moves.length - 1 ? null : bIdx)}
+                    className={`text-left font-mono text-[12px] px-1 py-0.5 hover:bg-surface-high transition-colors ${
+                      activeIndex === bIdx ? "bg-primary/15 text-primary" : "text-on-surface-variant/75"
+                    }`}>
+                    {b.san || `${b.move_from}${b.move_to}`}
+                  </button>
+                ) : <span />}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MatchResults ───────────────────────────────────────────
+
+function MatchResults({ room, setRoom, role, user }) {
+  const navigate = useNavigate();
+  const [pendingPlayAgain, setPendingPlayAgain] = useState(false);
+  const [error, setError] = useState(null);
+  const result = room.match_result;
+  const winnerRole = result?.winner;
+  const youWon = winnerRole === role;
+  const isDraw = winnerRole === null;
+  const myName = role === "creator" ? room.creator_name : room.joiner_name;
+  const oppRole = role === "creator" ? "joiner" : "creator";
+  const oppName = role === "creator" ? room.joiner_name : room.creator_name;
+
+  // Play-again with role swap: previous joiner becomes new
+  // creator. Each side opts in from the results screen; first
+  // to click creates the new room and writes its id back into
+  // the old room so the OTHER side can follow.
+  const onPlayAgain = useCallback(async () => {
+    if (room.next_room_id) {
+      navigate(`/arena/${room.next_room_id}`);
+      return;
+    }
+    setPendingPlayAgain(true);
+    setError(null);
+    // Determine new creator: previous JOINER. If I am the
+    // joiner, I create. Otherwise I wait for the joiner to
+    // create + write next_room_id.
+    if (role !== "joiner") {
+      // Just sit and wait - polling + realtime will pick up
+      // the new room id when the joiner clicks Play again.
+      setPendingPlayAgain(false);
+      const updateResult = await updateRoom(room.id, { round_state: { ...(room.round_state || {}), playAgainOptIn: { ...(room.round_state?.playAgainOptIn || {}), [role]: true } } });
+      if (updateResult?.ok && updateResult.room && setRoom) {
+        setRoom((prev) => ({ ...(prev || {}), ...updateResult.room }));
+      }
+      return;
+    }
+    const created = await createRoom({
+      creatorId: user.id,
+      creatorName: user.name || null,
+    });
+    if (!created.ok || !created.room) {
+      setPendingPlayAgain(false);
+      setError(created.error || "Couldn't create the rematch room.");
+      return;
+    }
+    // Stamp the previous creator as the new joiner up front
+    // so they don't have to claim a seat.
+    await updateRoom(created.room.id, {
+      joiner_id: room.creator_id,
+      joiner_name: room.creator_name,
+    });
+    // Link the rooms so the previous creator can follow.
+    await updateRoom(room.id, { next_room_id: created.room.id });
+    setPendingPlayAgain(false);
+    navigate(`/arena/${created.room.id}`);
+  }, [room, role, user, navigate, setRoom]);
+
+  // The waiting-for-other-side state. If I opted in but the
+  // other side hasn't created yet, show waiting copy. If
+  // next_room_id appears, navigate there.
+  useEffect(() => {
+    if (room.next_room_id) {
+      navigate(`/arena/${room.next_room_id}`);
+    }
+  }, [room.next_room_id, navigate]);
+
+  return (
+    <div className="anim-fade-up space-y-5">
+      <div className={`p-6 border space-y-2 ${
+        isDraw
+          ? "bg-surface-container border-white/[0.06]"
+          : youWon
+            ? "bg-emerald-500/10 border-emerald-500/30"
+            : "bg-error/10 border-error/30"
+      }`}>
+        <h2 className="font-headline text-2xl font-extrabold tracking-tighter">
+          {isDraw ? "Match drawn" : youWon ? "You won the match" : `${oppName || "Opponent"} won`}
+        </h2>
+        <p className="text-[13px] text-on-surface-variant/65">
+          Final score: <span className="font-bold">{myName || "you"} {result?.score?.[role] ?? 0}</span> &mdash; <span className="font-bold">{oppName || "opponent"} {result?.score?.[oppRole] ?? 0}</span>
+        </p>
+      </div>
+
+      <div className="p-4 bg-surface-low border border-white/[0.04]">
+        <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-3">
+          Rounds
+        </h3>
+        <div className="space-y-2">
+          {(result?.rounds || []).map((r) => (
+            <div key={r.round} className="flex items-baseline justify-between px-3 py-2 bg-surface-container border border-white/[0.04]">
+              <span className="text-[12px] text-on-surface-variant/65">
+                {r.round === "tiebreak" ? "Tie-break" : `Round ${r.round}`}
+              </span>
+              <span className="text-[12px] text-on-surface-variant/85">
+                {r.winner === null ? "Draw" : (r.winner === role ? "You" : (oppName || "Opponent")) + " won"}
+                <span className="text-on-surface-variant/40"> &middot; {r.reason}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button onClick={onPlayAgain}
+          disabled={pendingPlayAgain}
+          className="btn btn-primary px-5 py-2 text-xs">
+          {pendingPlayAgain
+            ? "Loading\u2026 setting up rematch"
+            : role === "joiner"
+              ? "Play again"
+              : ((room.round_state?.playAgainOptIn || {})[role] ? "Waiting on opponent\u2026" : "Play again")}
+        </button>
+        <button onClick={() => navigate("/arena")} className="btn btn-secondary px-5 py-2 text-xs">
+          Back to Arena
+        </button>
+      </div>
+      {error && (
+        <p className="text-[12px] text-error">{error}</p>
+      )}
     </div>
   );
 }

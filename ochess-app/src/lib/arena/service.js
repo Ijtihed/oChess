@@ -197,6 +197,69 @@ export async function appendMove({ roomId, round, ply, fen, move }) {
 }
 
 /**
+ * Persist a finished round as a row in the `games` table so it
+ * shows up in the players' profile activity. Arena rows are
+ * tagged with variant='arena' and is_rated=false so the
+ * Glicko-2 update logic skips them - variant rules break the
+ * standard rating model.
+ *
+ * @param {Object} args
+ * @param {string} args.roomId
+ * @param {Object} args.round                    Round entry from buildRoundEntry().
+ * @param {Object} args.creator                  { id, name, color, ratingBefore? }
+ * @param {Object} args.joiner                   { id, name, color }
+ * @param {string} args.pgn                      Full PGN of the round.
+ * @param {Object} args.rulesDiff                The rule diff this round used.
+ * @param {string} args.timeControl              "10+0", "1+0", etc.
+ */
+export async function recordRoundGame({
+  roomId, round, creator, joiner, pgn, rulesDiff, timeControl,
+} = {}) {
+  if (!supabase) return { ok: false, error: "Online features not configured." };
+  if (!roomId || !round) return { ok: false, error: "Missing arguments." };
+  // Resolve "winner role" -> "result" string for the games
+  // table. Same encoding as the regular play flow:
+  //   1-0 = white won, 0-1 = black won, 1/2-1/2 = draw.
+  let result = "1/2-1/2";
+  if (round.winner === "creator") {
+    result = creator.color === "w" ? "1-0" : "0-1";
+  } else if (round.winner === "joiner") {
+    result = joiner.color === "w" ? "1-0" : "0-1";
+  }
+  const whitePlayer = creator.color === "w" ? creator : joiner;
+  const blackPlayer = creator.color === "w" ? joiner : creator;
+  try {
+    const { error } = await supabase.from("games").insert({
+      white_id: whitePlayer.id,
+      black_id: blackPlayer.id,
+      white_name: whitePlayer.name || null,
+      black_name: blackPlayer.name || null,
+      pgn: pgn || "",
+      result,
+      result_reason: round.reason || "unknown",
+      time_control: timeControl || null,
+      category: "arena",
+      variant: "arena",
+      variant_rules: rulesDiff || null,
+      arena_room_id: roomId,
+      arena_round: String(round.round),
+      moves_count: round.plyCount || 0,
+      is_rated: false,                  // Glicko skip - see schema comment.
+      status: "completed",
+      ended_at: round.endedAt || new Date().toISOString(),
+    });
+    if (error) {
+      logErr("recordRoundGame failed:", error);
+      return { ok: false, error: error.message };
+    }
+    return { ok: true };
+  } catch (e) {
+    logErr("recordRoundGame exception:", e);
+    return { ok: false, error: e?.message || "Unknown error" };
+  }
+}
+
+/**
  * Fetch the move log for a round (or all rounds if omitted).
  * Used to repaint the board on rejoin / spectate.
  */
