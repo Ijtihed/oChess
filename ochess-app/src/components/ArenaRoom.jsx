@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import SocialPanel from "./SocialPanel";
@@ -21,6 +21,7 @@ import {
   updateRoom,
   deleteRoom,
   subscribeRoom,
+  subscribeMoves,
   appendMove,
   loadMoves,
   recordRoundGame,
@@ -1206,30 +1207,59 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     if (drawTimerRef.current) clearTimeout(drawTimerRef.current);
   }, []);
 
-  // Initial move-log load + realtime appends.
+  // Initial move-log load + realtime INSERT subscription. The
+  // sidebar move list, opponent-move-detection effect, and
+  // history scrubber all read from `moves`, so we must keep
+  // it live on both sides. Without the realtime subscription
+  // ONLY my own moves would appear (queued via setMoves in
+  // onUserMove); the opponent's moves would be invisible
+  // until the next loadMoves refetch.
+  //
+  // Merge strategy: dedupe by (round, ply). Realtime INSERTs
+  // can race with our optimistic local appends, so we always
+  // collapse duplicates by primary key, prefer the version
+  // with the richest `san`/`move_from`/`move_to` payload, and
+  // re-sort by ply so the move list is monotonic.
   useEffect(() => {
     if (!roomId || !roundLabel) return undefined;
     let cancelled = false;
+    const roundKey = roundLabel === "tiebreak" ? 99 : roundLabel;
     (async () => {
-      const result = await loadMoves(roomId, roundLabel === "tiebreak" ? 99 : roundLabel);
+      const result = await loadMoves(roomId, roundKey);
       if (cancelled || !result.ok) return;
-      setMoves(result.moves || []);
+      setMoves((prev) => mergeMoves(prev, result.moves || []));
     })();
-    return () => { cancelled = true; };
+    const unsub = subscribeMoves(roomId, (row) => {
+      if (cancelled) return;
+      // Filter to the active round; the channel is room-wide.
+      const rowRound = Number.isFinite(row?.round) ? row.round : null;
+      if (rowRound != null && rowRound !== roundKey) return;
+      setMoves((prev) => mergeMoves(prev, [row]));
+    });
+    return () => {
+      cancelled = true;
+      try { unsub?.(); } catch { /* ignore */ }
+    };
   }, [roomId, roundLabel]);
 
   // Per-square legal-move enumerator wired to the variant
-  // rules. Mirrors the warmup logic.
+  // rules. Mirrors the warmup logic. Reads `position` from
+  // a ref so the callback identity is stable across realtime
+  // pushes - InteractiveBoard memos this through to its
+  // useChessboard config, and a fresh identity on every
+  // render forces a board re-evaluation that scales with the
+  // number of pieces on the board.
   const legalMovesProvider = useCallback((square) => {
-    if (position.turn !== myColor) return [];
-    return generateLegalMoves(position, rules)
+    const livePosition = positionRef.current;
+    if (livePosition.turn !== myColor) return [];
+    return generateLegalMoves(livePosition, rules)
       .filter((m) => m.from === square)
       .map((m) => ({
         to: m.to,
         promotion: m.promotion,
-        captured: !!position.pieceAt(m.to) || !!m.enPassant,
+        captured: !!livePosition.pieceAt(m.to) || !!m.enPassant,
       }));
-  }, [position, rules, myColor]);
+  }, [rules, myColor]);
 
   // Local clock snapshot for live rendering. Re-renders every
   // 250ms so the seconds visibly count down without burning
@@ -1252,6 +1282,45 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   // already advanced via realtime.
   const gameStatus = useMemo(() => checkGameStatus(position, rules), [position, rules]);
 
+  // ── Premove ──
+  // When the user drags a piece during the opponent's turn we
+  // queue the move as a premove rather than rejecting it. The
+  // board displays a blue tint on the queued from/to squares,
+  // and a cancel strip appears under the board. As soon as
+  // the room ply advances (opponent committed) and it becomes
+  // our turn, the queued premove is auto-executed. If the
+  // queued move is no longer legal (the piece was captured,
+  // the destination is now blocked, etc.) we silently drop it.
+  // Cancellation: clicking the board cancels, the Cancel
+  // button on the strip cancels, game ending cancels.
+  const [premove, setPremove] = useState(null);
+  const premoveRef = useRef(null);
+  // The premove-execution effect needs to call the latest
+  // `onUserMove` without re-creating the effect every render.
+  // Stash a ref to the live function and read it inside the
+  // effect.
+  const onUserMoveRef = useRef(null);
+
+  // Stable refs for the inputs that change frequently (clock
+  // ticks every 250ms, room updates on every realtime push).
+  // `onUserMove` reads from these inside the closure instead
+  // of listing them as deps, so the callback identity stays
+  // stable across realtime churn. Without this, the callback
+  // is recreated on every tick which forces every consumer
+  // (premove effect, InteractiveBoard's onMove memo,
+  // legalMovesProvider) to recompute - that's the lag that
+  // grows with the round's age.
+  const roomRef = useRef(room);
+  useEffect(() => { roomRef.current = room; }, [room]);
+  const clockRef = useRef(clock);
+  useEffect(() => { clockRef.current = clock; }, [clock]);
+  const positionRef = useRef(position);
+  useEffect(() => { positionRef.current = position; }, [position]);
+  const snapshotRef = useRef(snapshot);
+  useEffect(() => { snapshotRef.current = snapshot; }, [snapshot]);
+  const gameStatusRef = useRef(gameStatus);
+  useEffect(() => { gameStatusRef.current = gameStatus; }, [gameStatus]);
+
   // Apply a confirmed move locally + write it to the DB. Both
   // sides use this; whoever's turn it is calls it from the
   // board's onMove. The opponent's client sees the room
@@ -1267,11 +1336,38 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   // accepts, the next room update will overwrite localPosition.
   const advanceRoundEndedRef = useRef(false);
   const onUserMove = useCallback((move) => {
-    if (position.turn !== myColor) return false;
-    if (gameStatus.ended) return false;
-    if (snapshot[role]?.expired) return false;
+    // Read live state from refs so this callback stays stable
+    // across realtime / clock-tick churn. Listing position,
+    // clock, room.round_state etc. as deps used to recreate
+    // the callback identity 4+ times per second - which then
+    // re-ran the premove-trigger effect, the InteractiveBoard
+    // memo, and the legalMovesProvider memo every time. That
+    // amplification is the source of the lag growth.
+    const livePosition = positionRef.current;
+    const liveSnapshot = snapshotRef.current;
+    const liveGameStatus = gameStatusRef.current;
+    const liveRoom = roomRef.current;
+    const liveClock = clockRef.current;
+    if (liveGameStatus.ended) return false;
+    // Not my turn? Queue it as a premove instead of rejecting,
+    // but only if I'm actually moving one of my own pieces and
+    // we're in live mode (history replay is read-only).
+    if (livePosition.turn !== myColor) {
+      const movingPiece = livePosition.pieceAt(move.from);
+      if (!movingPiece || movingPiece.color !== myColor) return false;
+      if (liveSnapshot[role]?.expired) return false;
+      setPremove({ from: move.from, to: move.to, promotion: move.promotion });
+      premoveRef.current = { from: move.from, to: move.to, promotion: move.promotion };
+      return false;
+    }
+    if (liveSnapshot[role]?.expired) return false;
+    // Reaching here means it IS my turn; if I had a queued
+    // premove, this drag supersedes it (matches Play's
+    // behavior of clearing queued state on a real move).
+    setPremove(null);
+    premoveRef.current = null;
     let next;
-    try { next = applyMove(position, move, rules); }
+    try { next = applyMove(livePosition, move, rules); }
     catch { playError(); return false; }
 
     // Sound + highlight match OnlineGameScreen so the play
@@ -1285,11 +1381,11 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
 
     const lastHistory = next.history[next.history.length - 1];
     const nextStatus = checkGameStatus(next, rules);
-    const newClock = commitClockMove(clock, role, { endTurn: !nextStatus.ended });
-    const ply = (room.round_state?.plyCount || 0) + 1;
+    const newClock = commitClockMove(liveClock, role, { endTurn: !nextStatus.ended });
+    const ply = (liveRoom.round_state?.plyCount || 0) + 1;
     const round = roundLabel === "tiebreak" ? 99 : roundLabel;
     const nextRoundState = {
-      ...(room.round_state || {}),
+      ...(liveRoom.round_state || {}),
       fen: next.toFen(),
       plyCount: ply,
       clock: newClock,
@@ -1298,10 +1394,16 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     // ── Optimistic local apply ──
     setLocalPosition(next);
     setLocalPly(ply);
-    setMoves((prev) => [
-      ...prev,
-      { round, ply, fen: nextRoundState.fen, move_from: move.from, move_to: move.to, promotion: move.promotion || null, san: lastHistory?.san || null, ts: new Date().toISOString() },
-    ]);
+    setMoves((prev) => mergeMoves(prev, [{
+      round,
+      ply,
+      fen: nextRoundState.fen,
+      move_from: move.from,
+      move_to: move.to,
+      promotion: move.promotion || null,
+      san: lastHistory?.san || null,
+      ts: new Date().toISOString(),
+    }]));
 
     // ── DB writes in the background ──
     // Fire-and-forget. The room realtime update from
@@ -1326,7 +1428,63 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     })();
     lastWriteRef.current = writePromise;
     return true;
-  }, [position, myColor, rules, gameStatus, snapshot, role, clock, room.round_state, roomId, setRoom, roundLabel]);
+  }, [myColor, rules, role, roomId, setRoom, roundLabel]);
+
+  // Keep the ref pointing at the latest closure so the
+  // premove-trigger effect can call it.
+  useEffect(() => { onUserMoveRef.current = onUserMove; }, [onUserMove]);
+
+  // Premove auto-trigger. Runs whenever the position changes
+  // (opponent moved → it became my turn). If a premove is
+  // queued and still legal in the new position, fire it.
+  useEffect(() => {
+    if (gameStatus.ended) return;
+    const queued = premoveRef.current;
+    if (!queued) return;
+    if (position.turn !== myColor) return;
+    // Validate legality under the live variant rules. If the
+    // piece moved or the destination is now blocked the move
+    // applyMove call will throw and we silently drop.
+    let stillLegal = false;
+    try {
+      const candidates = generateLegalMoves(position, rules);
+      stillLegal = candidates.some(
+        (m) => m.from === queued.from
+          && m.to === queued.to
+          && (queued.promotion ? m.promotion === queued.promotion : !m.promotion),
+      );
+    } catch { stillLegal = false; }
+    if (!stillLegal) {
+      setPremove(null);
+      premoveRef.current = null;
+      return;
+    }
+    // Small timeout matches Play's ergonomics: gives the
+    // opponent's move highlight + sound a beat to land before
+    // our piece moves, otherwise the two events feel mashed.
+    const id = setTimeout(() => {
+      if (!premoveRef.current) return;
+      const fn = onUserMoveRef.current;
+      if (!fn) return;
+      const pm = premoveRef.current;
+      setPremove(null);
+      premoveRef.current = null;
+      // Reuse the standard onUserMove path so the optimistic
+      // apply, sound, highlight, and DB writes all happen.
+      fn({ from: pm.from, to: pm.to, promotion: pm.promotion });
+    }, 80);
+    return () => clearTimeout(id);
+  }, [position, myColor, rules, gameStatus.ended]);
+
+  // Clear premove when the game ends so the strip + tint
+  // don't linger on the post-match position.
+  useEffect(() => {
+    if (!gameStatus.ended) return;
+    if (premoveRef.current) {
+      setPremove(null);
+      premoveRef.current = null;
+    }
+  }, [gameStatus.ended]);
 
   // Most recent in-flight write promise. The round-end effect
   // awaits this before reading the move log so the final move
@@ -1484,33 +1642,33 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     })();
   }, [gameStatus, snapshot, status, roundLabel, position, room, roomId, setRoom, colorPair, rulesDiff, isTiebreak]);
 
-  // Opponent-move sound: when room.round_state.plyCount
-  // advances past what we already locally know about, the
-  // change came from the opponent. Play the move sound and
-  // light up the last-move highlight so the opponent's
-  // response feels equivalent to ours.
+  // Opponent-move sound + highlight: when a row arrives with
+  // a ply we haven't seen, AND it wasn't our own optimistic
+  // append, play the sound and highlight the squares. We key
+  // off `moves` directly (now synced via subscribeMoves) so
+  // we always find the right move row even if it lands
+  // before/after the room.round_state update.
   const lastSeenPlyRef = useRef(0);
   useEffect(() => {
-    const ply = roomPlyCount;
-    if (ply <= lastSeenPlyRef.current) return;
-    const isOurOptimistic = localPosition && localPly === ply;
+    if (!moves || moves.length === 0) return;
+    const last = moves[moves.length - 1];
+    const ply = last?.ply;
+    if (!Number.isFinite(ply) || ply <= lastSeenPlyRef.current) return;
     lastSeenPlyRef.current = ply;
+    // Skip the sound when the row corresponds to our own
+    // optimistic apply (we already played the sound at the
+    // time the user dropped the piece).
+    const isOurOptimistic = localPosition && localPly === ply;
     if (isOurOptimistic) return;
-    // Find the move the opponent just made so we can highlight
-    // its squares + decide capture vs non-capture for sound.
-    const justPlayed = moves.find((m) => m.ply === ply) || moves[moves.length - 1];
-    if (justPlayed?.move_from && justPlayed?.move_to) {
+    if (last.move_from && last.move_to) {
       setHighlight({
-        [justPlayed.move_from]: { backgroundColor: "rgba(255,255,255,0.07)" },
-        [justPlayed.move_to]:   { backgroundColor: "rgba(255,255,255,0.11)" },
+        [last.move_from]: { backgroundColor: "rgba(255,255,255,0.07)" },
+        [last.move_to]:   { backgroundColor: "rgba(255,255,255,0.11)" },
       });
     }
-    // Best-effort capture detection: if the SAN includes 'x'
-    // it's a capture. Falls back to the non-capture sound.
-    const wasCapture = typeof justPlayed?.san === "string" && justPlayed.san.includes("x");
+    const wasCapture = typeof last.san === "string" && last.san.includes("x");
     playMoveSound({ flags: wasCapture ? "c" : "n" });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomPlyCount]);
+  }, [moves, localPosition, localPly]);
 
   // Round-start ping: play the gentle "game start" sound once
   // per round so the transition from warmup -> round 1, round
@@ -1697,11 +1855,19 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
 
   // History replay. When user clicks a move in the move list,
   // we render that historical FEN read-only; click "Live" to
-  // return.
+  // return. In live mode the FEN comes from `position` which
+  // already prefers `localPosition` (optimistic apply) over
+  // `room.round_state.fen`. Without this, the InteractiveBoard
+  // would lag the optimistic update by a full DB round-trip
+  // even though our turn/legality logic already advanced -
+  // that's the source of the "sometimes black can't move" bug
+  // (board says white-to-move FEN, position.turn says black).
   const displayFen = useMemo(() => {
-    if (historyIndex == null || historyIndex >= moves.length - 1) return fenFromRoom;
-    return moves[historyIndex]?.fen || fenFromRoom;
-  }, [historyIndex, moves, fenFromRoom]);
+    if (historyIndex != null && historyIndex < moves.length - 1) {
+      return moves[historyIndex]?.fen || position.toFen();
+    }
+    return position.toFen();
+  }, [historyIndex, moves, position]);
   const liveMode = historyIndex == null;
   const orientation = myColor === "b" ? "black" : "white";
   const myTurn = position.turn === myColor && !gameStatus.ended;
@@ -1772,11 +1938,36 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                 onMove={onUserMove}
                 orientation={orientation}
                 playerColor={myColor}
-                interactive={liveMode && myTurn}
+                // Live + not-ended: keep the board interactive
+                // so the user can drag their own pieces during
+                // the opponent's turn to queue a premove.
+                // InteractiveBoard's drop handler funnels
+                // off-turn drags back to onUserMove which
+                // queues them.
+                interactive={liveMode && !gameStatus.ended}
                 highlightSquares={highlight}
                 legalMovesProvider={legalMovesProvider}
+                premoveSquares={premove}
+                onBoardClick={() => {
+                  // Tap-to-cancel a queued premove.
+                  if (premoveRef.current) {
+                    setPremove(null);
+                    premoveRef.current = null;
+                  }
+                }}
               />
             </div>
+            {premove && !gameStatus.ended && (
+              <div className="w-full mt-1 flex items-center justify-between px-2 py-1.5 bg-blue-900/20 border border-blue-500/15">
+                <span className="text-[10px] font-headline font-bold uppercase tracking-wide text-blue-400/70">
+                  Premove: {premove.from}{premove.to}
+                </span>
+                <button onClick={() => { setPremove(null); premoveRef.current = null; }}
+                  className="text-[10px] text-blue-400/50 hover:text-blue-300 transition-colors">
+                  Cancel
+                </button>
+              </div>
+            )}
             {!liveMode && (
               <button onClick={() => setHistoryIndex(null)}
                 className="w-full mt-1 py-2 bg-blue-900/30 border border-blue-500/20 font-headline text-xs font-bold uppercase tracking-wide text-blue-400/80 hover:bg-blue-900/50 transition-colors active:scale-[0.97]">
@@ -1935,6 +2126,51 @@ function VariantRulesCard({ rules, isTiebreak, roundLabel }) {
   );
 }
 
+/**
+ * Merge an incoming list of move rows into the current move
+ * state, deduping by (round, ply). Used by the
+ * RoundPlay/Spectator components to reconcile realtime
+ * arena_moves INSERTs with optimistic local appends and
+ * loadMoves refetches.
+ *
+ * The move with the richer payload wins on conflict (we
+ * prefer rows that already have SAN, fen, move_from, move_to
+ * stamped over a partial optimistic stub). Result is sorted
+ * by (round, ply) ascending so the move-list rendering can
+ * iterate without resorting.
+ *
+ * Pure function - exported (lowercase) so tests can exercise
+ * it without importing the whole component.
+ */
+function mergeMoves(prev, incoming) {
+  const byKey = new Map();
+  const richness = (m) => (
+    (m?.san ? 4 : 0)
+    + (m?.fen ? 2 : 0)
+    + (m?.move_from && m?.move_to ? 1 : 0)
+  );
+  const collect = (rows) => {
+    for (const r of rows || []) {
+      if (!r || r.ply == null) continue;
+      const key = `${r.round}:${r.ply}`;
+      const existing = byKey.get(key);
+      if (!existing) {
+        byKey.set(key, r);
+      } else if (richness(r) > richness(existing)) {
+        byKey.set(key, r);
+      }
+    }
+  };
+  collect(prev);
+  collect(incoming);
+  const out = Array.from(byKey.values());
+  out.sort((a, b) => {
+    if (a.round !== b.round) return (a.round ?? 0) - (b.round ?? 0);
+    return (a.ply ?? 0) - (b.ply ?? 0);
+  });
+  return out;
+}
+
 // ── Sub-components: move list, chat ────────────────────────
 //
 // Clocks now live inline in PlayerBar so the arena play
@@ -1985,7 +2221,43 @@ function ChatPanel({ messages, input, onInputChange, onSend, myUserId, myDisplay
   );
 }
 
-function MoveList({ moves, activeIndex, onJump }) {
+const MoveList = memo(function MoveList({ moves, activeIndex, onJump }) {
+  // Pair the moves once per render. Extracted into a memo
+  // outside the JSX so the row keys stay stable per move
+  // identity rather than per row index - avoids React
+  // tearing down + remounting buttons on every append.
+  const pairs = useMemo(() => {
+    if (!moves || moves.length === 0) return [];
+    const out = [];
+    for (let i = 0; i < moves.length; i += 2) {
+      const w = moves[i];
+      const b = moves[i + 1];
+      const num = Math.floor(i / 2) + 1;
+      out.push({
+        num,
+        wIdx: i,
+        bIdx: i + 1,
+        wSan: w?.san || (w ? `${w.move_from}${w.move_to}` : ""),
+        bSan: b?.san || (b ? `${b.move_from}${b.move_to}` : ""),
+        // Stable key: the (round, ply) of the white move - never
+        // changes as more moves are appended.
+        key: w ? `${w.round}:${w.ply}` : `idx:${i}`,
+      });
+    }
+    return out;
+  }, [moves]);
+
+  // Auto-scroll the move list to the bottom when new moves
+  // arrive so the latest move stays visible without the
+  // user having to scroll. Only fires on length change to
+  // avoid clobbering manual scroll while browsing history.
+  const scrollRef = useRef(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [moves?.length]);
+
   if (!moves || moves.length === 0) {
     return (
       <div className="p-4 bg-surface-low border border-white/[0.04]">
@@ -1996,45 +2268,43 @@ function MoveList({ moves, activeIndex, onJump }) {
       </div>
     );
   }
+  const lastIdx = moves.length - 1;
   return (
     <div className="p-4 bg-surface-low border border-white/[0.04]">
-      <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-2">
-        Moves
-      </h3>
-      <div className="max-h-[320px] overflow-y-auto pr-1">
+      <div className="flex items-baseline justify-between mb-2">
+        <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+          Moves
+        </h3>
+        <span className="text-[10px] text-on-surface-variant/20 tabular-nums">{moves.length}</span>
+      </div>
+      <div ref={scrollRef} className="max-h-[320px] overflow-y-auto pr-1">
         <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 gap-y-0.5">
-          {Array.from({ length: Math.ceil(moves.length / 2) }).map((_, i) => {
-            const wIdx = i * 2;
-            const bIdx = i * 2 + 1;
-            const w = moves[wIdx];
-            const b = moves[bIdx];
-            return (
-              <div key={i} className="contents">
-                <span className="text-[11px] text-on-surface-variant/35 tabular-nums text-right pr-1">{i + 1}.</span>
+          {pairs.map((p) => (
+            <div key={p.key} className="contents">
+              <span className="text-[11px] text-on-surface-variant/35 tabular-nums text-right pr-1">{p.num}.</span>
+              <button
+                onClick={() => onJump(p.wIdx === lastIdx ? null : p.wIdx)}
+                className={`text-left font-mono text-[12px] px-1 py-0.5 hover:bg-surface-high transition-colors ${
+                  activeIndex === p.wIdx ? "bg-primary/15 text-primary" : "text-on-surface-variant/75"
+                }`}>
+                {p.wSan}
+              </button>
+              {p.bSan ? (
                 <button
-                  onClick={() => onJump(wIdx === moves.length - 1 ? null : wIdx)}
+                  onClick={() => onJump(p.bIdx === lastIdx ? null : p.bIdx)}
                   className={`text-left font-mono text-[12px] px-1 py-0.5 hover:bg-surface-high transition-colors ${
-                    activeIndex === wIdx ? "bg-primary/15 text-primary" : "text-on-surface-variant/75"
+                    activeIndex === p.bIdx ? "bg-primary/15 text-primary" : "text-on-surface-variant/75"
                   }`}>
-                  {w?.san || `${w?.move_from}${w?.move_to}`}
+                  {p.bSan}
                 </button>
-                {b ? (
-                  <button
-                    onClick={() => onJump(bIdx === moves.length - 1 ? null : bIdx)}
-                    className={`text-left font-mono text-[12px] px-1 py-0.5 hover:bg-surface-high transition-colors ${
-                      activeIndex === bIdx ? "bg-primary/15 text-primary" : "text-on-surface-variant/75"
-                    }`}>
-                    {b.san || `${b.move_from}${b.move_to}`}
-                  </button>
-                ) : <span />}
-              </div>
-            );
-          })}
+              ) : <span />}
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
-}
+});
 
 // ── Spectator ──────────────────────────────────────────────
 

@@ -1445,13 +1445,20 @@ select cron.schedule(
 --
 --   * Mid-game rooms (`round_1`/`round_2`/`tiebreak`) where the
 --     clock has objectively expired for one side AND the row
---     hasn't been touched in 5 minutes get RESOLVED as a
---     time-out forfeit. The user explicitly asked for "ends in
---     whoever ran out of time". The expired side loses the
---     match; the other side wins regardless of how many rounds
---     are left to play (we don't try to advance to round 2 /
---     tiebreak with no one around). Match is closed with status
---     = 'done', match_result.winner set, ended_at stamped.
+--     hasn't been touched in 10 minutes get RESOLVED as a
+--     time-out forfeit. The user explicitly asked for "delete
+--     old games that have been on for more than 10 mins with no
+--     active users". The expired side loses the match; the
+--     other side wins regardless of how many rounds are left to
+--     play (we don't try to advance to round 2 / tiebreak with
+--     no one around). Match is closed with status = 'done',
+--     match_result.winner set, ended_at stamped.
+--
+--   * Mid-game rooms idle 10+ minutes WHERE NO CLOCK has
+--     expired (e.g. clock paused, never started, or some other
+--     edge state) get HARD-DELETED. The user wants old idle
+--     games gone, full stop - we don't preserve them just
+--     because the resolver can't determine a winner.
 --
 --   * Truly orphan rooms (any active state, idle 24h+) get
 --     hard-deleted as a last-resort cleanup so a cosmic-ray
@@ -1507,7 +1514,7 @@ begin
     select id, status, round_state, match_result, creator_id, joiner_id
     from arena_rooms
     where status in ('round_1','round_2','tiebreak')
-      and updated_at < now() - interval '5 minutes'
+      and updated_at < now() - interval '10 minutes'
   loop
     v_round_state := coalesce(r.round_state, '{}'::jsonb);
     v_clock := v_round_state->'clock';
@@ -1641,14 +1648,17 @@ begin
   end loop;
 
   ---------------------------------------------------------------
-  -- 3. Anything still active after 24h is genuinely orphaned -
-  --    the clock-expiry resolver above didn't fire (e.g. clock
-  --    was never started, or we read an unparseable shape).
-  --    Hard delete as last resort.
+  -- 3. Anything still active after 10 min that the resolver
+  --    above didn't pick up (e.g. clock never started, paused,
+  --    unparseable shape, or the room is still in warmup with
+  --    nobody clicking ready) gets HARD DELETED. The user
+  --    wants idle games gone so the lobby + db stay clean -
+  --    we don't preserve rooms just because the auto-resolver
+  --    can't determine a winner from the data on hand.
   ---------------------------------------------------------------
   delete from arena_rooms
   where status in ('warmup_round_1','warmup_round_2','round_1','round_2','tiebreak','prompting')
-    and updated_at < now() - interval '24 hours';
+    and updated_at < now() - interval '10 minutes';
 end;
 $$ language plpgsql security definer;
 
@@ -1661,12 +1671,12 @@ do $$ begin
   end if;
 end $$;
 
--- Run every 10 min so a player who closes their laptop with a
--- pending move gets resolved promptly rather than waiting a
--- full hour. Staggered offset to avoid stomping on the seek
--- cleanup job.
+-- Run every 5 min so a player who closes their laptop with a
+-- pending move gets resolved promptly. Combined with the
+-- 10-minute idle threshold, the worst-case staleness for an
+-- abandoned room is ~15 minutes (5 min jitter + 10 min idle).
 select cron.schedule(
   'ochess-cleanup-stale-arena-rooms',
-  '7,17,27,37,47,57 * * * *',
+  '*/5 * * * *',
   $cron$select cleanup_stale_arena_rooms()$cron$
 );
