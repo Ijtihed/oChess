@@ -1436,32 +1436,219 @@ select cron.schedule(
 -- ── cleanup_stale_arena_rooms: housekeeping (call from a cron job) ──
 --
 -- Arena rooms are short-lived lobby+session containers. When players
--- abandon a room mid-flow we end up with orphans: lobbies waiting
--- forever for a joiner that never arrives, and in-progress matches
--- where one or both players closed the tab and the clock fully
--- expired with no live client to detect it. The function purges:
+-- abandon a room mid-flow we end up with orphans, and the "right"
+-- thing to do depends on the state:
 --
---   * Rooms still in `waiting_for_joiner` with no joiner_id after
---     1 hour of inactivity. These are forgotten share-links.
---   * Rooms in any active session state (prompting, warmup_*, round_*,
---     tiebreak) that haven't been touched in 4 hours. Plenty of slack
---     for the longest legitimate match (round timer is 10+0 = 20-30
---     min wall-clock, so 4h means both sides went cold).
+--   * Lobbies (`waiting_for_joiner`, `prompting`) idle 1h+ get
+--     deleted. They're abandoned share-links / no-show prompts;
+--     nothing of value to preserve.
 --
--- We hard-delete the arena_rooms row in both cases. The `games` table
--- already holds completed-round history (those rows survive). Move
--- logs in `arena_moves` cascade off the room delete, which is fine -
--- nobody is reading them once the room is gone.
+--   * Mid-game rooms (`round_1`/`round_2`/`tiebreak`) where the
+--     clock has objectively expired for one side AND the row
+--     hasn't been touched in 5 minutes get RESOLVED as a
+--     time-out forfeit. The user explicitly asked for "ends in
+--     whoever ran out of time". The expired side loses the
+--     match; the other side wins regardless of how many rounds
+--     are left to play (we don't try to advance to round 2 /
+--     tiebreak with no one around). Match is closed with status
+--     = 'done', match_result.winner set, ended_at stamped.
+--
+--   * Truly orphan rooms (any active state, idle 24h+) get
+--     hard-deleted as a last-resort cleanup so a cosmic-ray
+--     edge case doesn't leak rows forever.
+--
+-- The function does NOT persist round forfeits to the `games`
+-- table - that's the live client's job. The orphan resolution
+-- here is purely about freeing the lobby slot and letting both
+-- sides see a final "match results" screen if they ever come
+-- back. Running every 10 min so users who close their laptop
+-- on a pending move get a timely resolution rather than waiting
+-- a full hour.
 create or replace function cleanup_stale_arena_rooms()
 returns void as $$
+declare
+  r record;
+  v_clock jsonb;
+  v_round_state jsonb;
+  v_match_result jsonb;
+  v_budget_ms bigint;
+  v_now_ms bigint;
+  v_creator_spent_ms bigint;
+  v_joiner_spent_ms bigint;
+  v_creator_started_at_ms bigint;
+  v_joiner_started_at_ms bigint;
+  v_creator_live_spent bigint;
+  v_joiner_live_spent bigint;
+  v_loser text;          -- 'creator' | 'joiner'
+  v_winner text;         -- 'creator' | 'joiner'
+  v_round_label text;
+  v_round_entry jsonb;
+  v_existing_rounds jsonb;
+  v_score_creator numeric;
+  v_score_joiner numeric;
+  v_ply_count int;
+  v_final_fen text;
 begin
+  ---------------------------------------------------------------
+  -- 1. Lobbies idle 1h+ → delete. Nothing to resolve.
+  ---------------------------------------------------------------
   delete from arena_rooms
-  where (
-    (status = 'waiting_for_joiner' and joiner_id is null and updated_at < now() - interval '1 hour')
-    or
-    (status in ('prompting','warmup_round_1','warmup_round_2','round_1','round_2','tiebreak')
-     and updated_at < now() - interval '4 hours')
-  );
+  where status in ('waiting_for_joiner','prompting')
+    and updated_at < now() - interval '1 hour';
+
+  ---------------------------------------------------------------
+  -- 2. Mid-game timeouts: row idle 5 min AND clock objectively
+  --    expired for one side. Resolve as a forfeit, close out
+  --    the match, mark status='done'.
+  ---------------------------------------------------------------
+  v_now_ms := (extract(epoch from now()) * 1000)::bigint;
+
+  for r in
+    select id, status, round_state, match_result, creator_id, joiner_id
+    from arena_rooms
+    where status in ('round_1','round_2','tiebreak')
+      and updated_at < now() - interval '5 minutes'
+  loop
+    v_round_state := coalesce(r.round_state, '{}'::jsonb);
+    v_clock := v_round_state->'clock';
+    if v_clock is null or jsonb_typeof(v_clock) <> 'object' then
+      continue;
+    end if;
+
+    v_budget_ms := nullif(v_clock->>'budgetMs','')::bigint;
+    if v_budget_ms is null or v_budget_ms <= 0 then
+      continue;
+    end if;
+
+    v_creator_spent_ms       := coalesce(nullif(v_clock->'creator'->>'spentMs','')::bigint, 0);
+    v_joiner_spent_ms        := coalesce(nullif(v_clock->'joiner'->>'spentMs','')::bigint, 0);
+    v_creator_started_at_ms  := nullif(v_clock->'creator'->>'turnStartedAtMs','')::bigint;
+    v_joiner_started_at_ms   := nullif(v_clock->'joiner'->>'turnStartedAtMs','')::bigint;
+
+    -- Live spent = baseline spent + (now - turnStartedAt) when running.
+    v_creator_live_spent := v_creator_spent_ms;
+    if v_creator_started_at_ms is not null then
+      v_creator_live_spent := v_creator_live_spent + greatest(0, v_now_ms - v_creator_started_at_ms);
+    end if;
+    v_joiner_live_spent := v_joiner_spent_ms;
+    if v_joiner_started_at_ms is not null then
+      v_joiner_live_spent := v_joiner_live_spent + greatest(0, v_now_ms - v_joiner_started_at_ms);
+    end if;
+
+    -- Identify the side whose clock has actually expired. If
+    -- both somehow expired, the side that was running gets the
+    -- forfeit (their move was due). If neither expired the row
+    -- isn't truly stale and we skip it.
+    v_loser := null;
+    if v_creator_live_spent >= v_budget_ms and v_creator_started_at_ms is not null then
+      v_loser := 'creator';
+    elsif v_joiner_live_spent >= v_budget_ms and v_joiner_started_at_ms is not null then
+      v_loser := 'joiner';
+    elsif v_creator_live_spent >= v_budget_ms then
+      v_loser := 'creator';
+    elsif v_joiner_live_spent >= v_budget_ms then
+      v_loser := 'joiner';
+    end if;
+    if v_loser is null then
+      continue;
+    end if;
+    v_winner := case when v_loser = 'creator' then 'joiner' else 'creator' end;
+
+    -- Build the round-result entry. We close out the entire
+    -- match here regardless of which round it is - playing
+    -- further rounds with no one around is pointless, and the
+    -- timeout itself already implies match abandonment.
+    v_round_label := case
+      when r.status = 'tiebreak' then 'tiebreak'
+      when r.status = 'round_1' then '1'
+      when r.status = 'round_2' then '2'
+      else r.status
+    end;
+    v_ply_count := coalesce(nullif(v_round_state->>'plyCount','')::int, 0);
+    v_final_fen := coalesce(v_round_state->>'fen','');
+
+    v_round_entry := jsonb_build_object(
+      'round', v_round_label,
+      'winner', v_winner,
+      'reason', v_loser || ' clock expired (auto-forfeit)',
+      'endedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'finalFen', v_final_fen,
+      'plyCount', v_ply_count,
+      'clockSpent', jsonb_build_object(
+        'creator', v_creator_live_spent,
+        'joiner', v_joiner_live_spent
+      )
+    );
+
+    -- Stitch the new round onto match_result.rounds, recompute
+    -- score, then mark match.winner = v_winner so the UI lands
+    -- on the final results screen.
+    v_match_result := coalesce(r.match_result, '{}'::jsonb);
+    v_existing_rounds := coalesce(v_match_result->'rounds', '[]'::jsonb);
+    -- Idempotent: skip if a round with this label is already
+    -- recorded (a returning client may have resolved it
+    -- between the time we read the row and now).
+    if exists (
+      select 1 from jsonb_array_elements(v_existing_rounds) elt
+      where elt->>'round' = v_round_label
+    ) then
+      continue;
+    end if;
+    v_existing_rounds := v_existing_rounds || jsonb_build_array(v_round_entry);
+
+    -- Score: 1 point per round won, 0.5 for draws. We only ever
+    -- add a winning entry here so just bump the winner's tally.
+    v_score_creator := coalesce(nullif(v_match_result->'score'->>'creator','')::numeric, 0);
+    v_score_joiner  := coalesce(nullif(v_match_result->'score'->>'joiner','')::numeric, 0);
+    if v_winner = 'creator' then v_score_creator := v_score_creator + 1;
+    else v_score_joiner := v_score_joiner + 1;
+    end if;
+
+    v_match_result := jsonb_set(v_match_result, '{rounds}', v_existing_rounds, true);
+    v_match_result := jsonb_set(v_match_result, '{score}', jsonb_build_object(
+      'creator', v_score_creator,
+      'joiner', v_score_joiner
+    ), true);
+    v_match_result := jsonb_set(v_match_result, '{winner}', to_jsonb(v_winner), true);
+
+    -- Pause the clock (set turnStartedAtMs to null on whichever
+    -- side was running) so the UI doesn't keep ticking after
+    -- we close the match.
+    v_round_state := jsonb_set(v_round_state, '{endedAt}', to_jsonb(now()), true);
+    if v_clock->'creator'->>'turnStartedAtMs' is not null then
+      v_round_state := jsonb_set(
+        v_round_state,
+        '{clock,creator}',
+        jsonb_build_object('spentMs', v_creator_live_spent),
+        true
+      );
+    end if;
+    if v_clock->'joiner'->>'turnStartedAtMs' is not null then
+      v_round_state := jsonb_set(
+        v_round_state,
+        '{clock,joiner}',
+        jsonb_build_object('spentMs', v_joiner_live_spent),
+        true
+      );
+    end if;
+
+    update arena_rooms
+    set status = 'done',
+        match_result = v_match_result,
+        round_state = v_round_state,
+        updated_at = now()
+    where id = r.id;
+  end loop;
+
+  ---------------------------------------------------------------
+  -- 3. Anything still active after 24h is genuinely orphaned -
+  --    the clock-expiry resolver above didn't fire (e.g. clock
+  --    was never started, or we read an unparseable shape).
+  --    Hard delete as last resort.
+  ---------------------------------------------------------------
+  delete from arena_rooms
+  where status in ('warmup_round_1','warmup_round_2','round_1','round_2','tiebreak','prompting')
+    and updated_at < now() - interval '24 hours';
 end;
 $$ language plpgsql security definer;
 
@@ -1474,8 +1661,12 @@ do $$ begin
   end if;
 end $$;
 
+-- Run every 10 min so a player who closes their laptop with a
+-- pending move gets resolved promptly rather than waiting a
+-- full hour. Staggered offset to avoid stomping on the seek
+-- cleanup job.
 select cron.schedule(
   'ochess-cleanup-stale-arena-rooms',
-  '23 */1 * * *',
+  '7,17,27,37,47,57 * * * *',
   $cron$select cleanup_stale_arena_rooms()$cron$
 );
