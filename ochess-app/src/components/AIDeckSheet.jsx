@@ -209,7 +209,15 @@ export default function AIDeckSheet({
           <input
             ref={inputRef}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              // Free-text typing breaks the chip-driven illusion.
+              // If the user was on a chip and edits the input,
+              // drop the chip selection so the highlighted chip
+              // stops claiming credit for whatever they're now
+              // typing.
+              if (activeChip) setActiveChip(null);
+            }}
             placeholder="e.g. hanging queens in the najdorf"
             className="w-full bg-surface-container border border-white/[0.06] px-3 py-2.5 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40"
             onKeyDown={(e) => { if (e.key === "Enter") generate(); }}
@@ -220,9 +228,24 @@ export default function AIDeckSheet({
           {COMMON_WEAKNESS_CHIPS.map((chip) => (
             <button key={chip.id}
               onClick={() => {
-                const next = activeChip === chip.id ? null : chip.id;
-                setActiveChip(next);
-                if (next) setQuery((q) => q ? q : chip.label.toLowerCase());
+                // Three transitions, all of which end with the
+                // input matching the highlighted chip exactly:
+                //   - clicking the active chip toggles it off
+                //     and clears the query;
+                //   - clicking a different chip ALWAYS replaces
+                //     the query with the new chip's label (the
+                //     bug fix - we used to keep the old query
+                //     around, so flipping between chips left the
+                //     stale text in the input);
+                //   - clicking from an empty / typed state into
+                //     a chip writes the chip's label.
+                if (activeChip === chip.id) {
+                  setActiveChip(null);
+                  setQuery("");
+                  return;
+                }
+                setActiveChip(chip.id);
+                setQuery(chip.label.toLowerCase());
               }}
               className={`px-2.5 py-1 font-headline text-[10px] font-bold uppercase tracking-wide transition-colors ${
                 activeChip === chip.id
