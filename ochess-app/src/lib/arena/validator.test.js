@@ -259,14 +259,26 @@ describe("validateRules - simulation (opt-in only)", () => {
   });
 
   it("runs simulation when explicitly opted in via runSimulation:true", () => {
-    const report = validateRules(vanillaRules(), {
+    // Use a sparse endgame position (K+R vs K) so the
+    // per-ply move generation cost stays small. The full-board
+    // vanilla starting position spends most of its plies in
+    // 30-40 legal moves with king-safety filtering, which on
+    // slower CI runners can exceed vitest's 5s default. The
+    // assertion here only checks that the simulator wired up
+    // correctly - the stats numbers don't matter.
+    const report = validateRules({
+      extends: "vanilla",
+      // Rook on a2 (off the king file) so the position is
+      // legal under the new "no king starts in check" check.
+      startingFen: "4k3/8/8/8/8/8/R7/4K3 w - - 0 1",
+    }, {
       runSimulation: true,
-      simulations: 10,
-      simulationPlyCap: 60,
+      simulations: 5,
+      simulationPlyCap: 20,
       random: seededRandom(1),
     });
     expect(report.stats).toBeDefined();
-    expect(report.stats.games).toBe(10);
+    expect(report.stats.games).toBe(5);
   });
 
   it("simulation findings become WARNINGS, never hard rejections", () => {
