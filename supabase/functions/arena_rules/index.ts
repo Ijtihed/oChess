@@ -136,71 +136,68 @@ async function recordRateLimitedCall(req: Request): Promise<RateLimitResult> {
 
 const SYSTEM_PROMPT = `You are an expert chess variant designer. The user describes a variant in natural language; you produce a strict JSON rule diff that an engine can read directly.
 
-The engine accepts diffs that EXTEND vanilla chess. The shape:
+CRITICAL OUTPUT FORMAT:
+- Reply with ONLY a single JSON object. No markdown fences, no comments, no prose, no trailing commas.
+- The output must be parseable by JavaScript JSON.parse on the first try.
+- Every key/value pair you write must be syntactically valid JSON.
 
-{
-  "extends": "vanilla",
-  "name": "Short label (1-3 words)",
-  "description": "1-2 sentences: what this variant does in plain English.",
-  "overrides": {
-    "startingFen": "8/8/8/8/8/8/8/8 w - - 0 1",   // optional, must be a valid FEN
-    "maxPlies": 400                                  // optional, 10..2000
-  },
-  "pieces": {                                        // optional, only the pieces being changed
-    "p" | "n" | "b" | "r" | "q" | "k": {
-      "moves": [ MovePrimitive, ... ],
-      "castling": { kingside?, queenside?, requireUnmoved?, requireEmpty: [], requireSafe: [] },
-      "promotion": { "type": ["n","b","r","q"] }
-    }
-  },
-  "byColor": {                                       // optional, per-color overrides (asymmetric variants)
-    "w" | "b": { "p" | "n" | "b" | "r" | "q" | "k": <piece spec same shape as above> }
-  },
-  "capture": {                                       // optional capture mechanics
-    "explosionRadius": 0..3,                        // 0 = standard, 1 = atomic-style
-    "convert": false                                // currently always false
-  },
-  "winConditions": [                                 // ORDERED, first to fire ends the game
-    { "type": "checkmate" } |
-    { "type": "capture_king" } |
-    { "type": "first_to_n_captures", "target": 1..64 } |
-    { "type": "race_to_squares", "piece": "p|n|b|r|q|k", "squaresWhite": ["e8"], "squaresBlack": ["e1"] } |
-    { "type": "last_standing" }
-  ]
-}
+Top-level fields the engine accepts (omit any you don't need):
+- "extends": always the string "vanilla".
+- "name": short label, max 3 words.
+- "description": 1-2 sentences describing the variant in plain English.
+- "overrides": object with optional "startingFen" (valid FEN string) and optional "maxPlies" (integer 10..2000).
+- "pieces": object keyed by piece type ("p", "n", "b", "r", "q", "k"). Only include pieces you are actually changing.
+- "byColor": object keyed by color ("w" or "b"), each containing a pieces-shaped subobject. Only use this for asymmetric variants.
+- "capture": object with optional "explosionRadius" (integer 0..3) and optional "convert" (boolean, currently must be false).
+- "winConditions": ordered array of win condition objects, first to fire ends the game.
 
-Move primitives - all coordinates are (file, rank) pairs from White's POV; the engine flips dr automatically for Black:
+Each piece spec is an object with these optional fields:
+- "moves": array of move primitives (see below).
+- "castling": object with optional booleans "kingside", "queenside", "requireUnmoved" and optional arrays "requireEmpty" and "requireSafe".
+- "promotion": object with array "type", each entry being one of "n", "b", "r", "q".
 
-  { "kind": "slide", "dirs": [[df,dr], ...], "maxRange"?: 1..8 }
-    Slide in directions until blocked. Like rook/bishop/queen.
+Move primitives (used inside "moves" arrays). Coordinates are [file_delta, rank_delta] pairs from White's POV; the engine flips rank for Black.
 
-  { "kind": "leap", "offsets": [[df,dr], ...] }
-    Single-square jump per offset. Like knight/king. Multiple offsets = multiple targets.
+1. Slide primitive:
+   { "kind": "slide", "dirs": [[df,dr], ...], "maxRange": 1..8 }
+   The "maxRange" field is optional. Slides in each direction until blocked.
 
-  { "kind": "step", "dirs": [[df,dr], ...], "conditions"?: { "onlyFirstMove"?: bool, "onlyCapture"?: bool, "onlyNonCapture"?: bool, "enPassant"?: bool } }
-    Single-square step with conditions. Used for pawn-style moves.
+2. Leap primitive:
+   { "kind": "leap", "offsets": [[df,dr], ...] }
+   Single-square jump per offset. Knight and king moves use this.
+
+3. Step primitive:
+   { "kind": "step", "dirs": [[df,dr], ...], "conditions": { ... } }
+   Single-square step. The "conditions" field is optional and may contain any of these booleans: "onlyFirstMove", "onlyCapture", "onlyNonCapture", "enPassant".
+
+Win condition objects (used inside "winConditions" array):
+- { "type": "checkmate" }
+- { "type": "capture_king" }
+- { "type": "first_to_n_captures", "target": 1..64 }
+- { "type": "race_to_squares", "piece": "p" | "n" | "b" | "r" | "q" | "k", "squaresWhite": ["e8"], "squaresBlack": ["e1"] }
+- { "type": "last_standing" }
 
 Constraints / common pitfalls:
-- DO NOT include [0,0] in any dirs/offsets - it loops forever.
-- maxRange must be 1..8 if specified.
-- Slide and step ALWAYS need a "dirs" array; leap ALWAYS needs an "offsets" array.
+- Never include [0,0] in any dirs or offsets array.
+- "maxRange" must be in 1..8 if specified.
+- Slide and step always need a "dirs" array. Leap always needs an "offsets" array.
 - "extends" is always "vanilla".
-- If a piece doesn't change, omit it. Don't restate vanilla moves.
-- Only set "byColor" when the variant is asymmetric (e.g. "Only black can castle"). Otherwise put all overrides under "pieces".
-- Win conditions are evaluated in order. Put variant-specific conditions BEFORE checkmate so they fire first.
+- If a piece doesn't change, omit it entirely. Do not restate vanilla moves.
+- Only set "byColor" when the variant is asymmetric. Otherwise place overrides under "pieces".
+- Win conditions are evaluated in order. Put variant-specific conditions before checkmate so they fire first.
 - Keep "name" punchy (3 words max). Keep "description" to 1-2 sentences.
-- LEGAL STARTING POSITION: when you provide a custom startingFen, neither king may be in check on move 1. That means: no rook / queen / bishop staring down an open file or diagonal at a king, no enemy knight a knight-hop away from a king, no enemy pawn one diagonal step from a king. Place pieces between the kings or behind them; never set up a check before the game starts.
-- Vanilla baseline DEFAULTS:
-    p: 1-step forward (no capture), 2-step forward from rank 2 (no capture, only first move), diagonal capture, diagonal en passant, promotion to n/b/r/q.
-    n: leap to all 8 knight offsets.
-    b: slide along 4 diagonals.
-    r: slide along 4 orthogonals.
-    q: slide along 8 directions.
-    k: leap to 8 surrounding squares + castling kingside/queenside if rights remain.
+- LEGAL STARTING POSITION: when you provide a custom startingFen, neither king may be in check on move 1. No rook, queen, or bishop on an open line of sight to a king. No enemy knight a knight-hop away from a king. No enemy pawn one diagonal step from a king. Place pieces between the kings or behind them; never set up a check before the game starts.
+- Vanilla baseline defaults (do NOT restate these unless changing them):
+  - p: 1-step forward (no capture), 2-step forward from rank 2 (first move only, no capture), diagonal capture, diagonal en passant, promotion to n/b/r/q.
+  - n: leap to all 8 knight offsets.
+  - b: slide along 4 diagonals.
+  - r: slide along 4 orthogonals.
+  - q: slide along 8 directions.
+  - k: leap to 8 surrounding squares plus castling kingside and queenside if rights remain.
 
-Be CREATIVE. Lean into the user's intent and make the variant feel distinct, not just a tiny tweak of vanilla. If they say "kings start in the middle", actually rewrite the FEN and put the kings on d4/d5. If they say "knight wars", make knights powerful and the rest weak. If their prompt is sparse, embellish a bit while staying playable.
+Be CREATIVE. Lean into the user's intent and make the variant feel distinct, not just a tiny tweak of vanilla. If they say "kings start in the middle", actually rewrite the FEN and put the kings near the middle of the board. If they say "knight wars", make knights powerful and the rest weak. If their prompt is sparse, embellish a bit while staying playable.
 
-Tested example variants for inspiration (don't copy verbatim - use them as patterns):
+Tested example variants for inspiration (do not copy verbatim - use them as patterns):
 
   "Kings in the middle":
   {
@@ -423,21 +420,197 @@ async function recordSpendOrBlock(
   };
 }
 
-function parseRulesJson(content: string): { ok: boolean; rules?: Record<string, unknown>; error?: string } {
+/**
+ * Parse Gemini's textual response into a rules object. Tolerant
+ * of common LLM output mistakes:
+ *
+ *   1. Markdown fences (```json ... ```)
+ *   2. Trailing commas before } or ]
+ *   3. JavaScript-style comments (// ... and / * ... * /)
+ *   4. Prose wrapping the JSON object (e.g. "Here you go:\n{...}")
+ *
+ * Strategy: try strict JSON.parse first (the happy path is fast).
+ * On failure, sanitize step-by-step and retry. As a last resort,
+ * extract the largest balanced {...} substring and parse that.
+ *
+ * Exported separately from `parseRulesJson` so the unit tests can
+ * exercise the sanitizer directly without standing up a Deno
+ * runtime.
+ */
+export function tolerantParseJson(input: string): { ok: boolean; value?: unknown; error?: string } {
+  if (typeof input !== "string") {
+    return { ok: false, error: "input is not a string" };
+  }
+
+  // Pass 1: strict.
+  const trimmed = input.trim();
   try {
-    // Defensive: strip markdown fences if the model leaked them.
-    const cleaned = content
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/```\s*$/i, "")
-      .trim();
-    const parsed = JSON.parse(cleaned);
-    if (!parsed || typeof parsed !== "object") {
-      return { ok: false, error: "Top-level JSON wasn't an object" };
+    return { ok: true, value: JSON.parse(trimmed) };
+  } catch { /* fall through */ }
+
+  // Pass 2: strip markdown fences + retry strict.
+  let cleaned = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  try {
+    return { ok: true, value: JSON.parse(cleaned) };
+  } catch { /* fall through */ }
+
+  // Pass 3: strip JS comments. Skip strings so a "//" inside a
+  // value doesn't trip us up.
+  cleaned = stripJsComments(cleaned);
+  try {
+    return { ok: true, value: JSON.parse(cleaned) };
+  } catch { /* fall through */ }
+
+  // Pass 4: strip trailing commas (also string-aware).
+  cleaned = stripTrailingCommas(cleaned);
+  try {
+    return { ok: true, value: JSON.parse(cleaned) };
+  } catch { /* fall through */ }
+
+  // Pass 5: extract the outermost balanced {...} object and try
+  // again. Catches "Here's your JSON:\n{...}\nHope it helps!".
+  const objSlice = extractFirstJsonObject(cleaned);
+  if (objSlice) {
+    try {
+      return { ok: true, value: JSON.parse(objSlice) };
+    } catch (e) {
+      return { ok: false, error: `Couldn't parse JSON: ${e instanceof Error ? e.message : String(e)}` };
     }
-    return { ok: true, rules: parsed };
+  }
+
+  // Last attempt to surface a helpful error message.
+  try {
+    JSON.parse(cleaned);
+    return { ok: false, error: "Unknown parse failure" };
   } catch (e) {
     return { ok: false, error: `Couldn't parse JSON: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+/** Remove // line comments and /* block comments * / outside string literals. */
+function stripJsComments(src: string): string {
+  let out = "";
+  let i = 0;
+  let inString: false | '"' | "'" = false;
+  let escape = false;
+  while (i < src.length) {
+    const c = src[i];
+    if (inString) {
+      out += c;
+      if (escape) {
+        escape = false;
+      } else if (c === "\\") {
+        escape = true;
+      } else if (c === inString) {
+        inString = false;
+      }
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = c;
+      out += c;
+      i++;
+      continue;
+    }
+    // Line comment.
+    if (c === "/" && src[i + 1] === "/") {
+      i += 2;
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    // Block comment.
+    if (c === "/" && src[i + 1] === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** Remove trailing commas before } or ] outside string literals. */
+function stripTrailingCommas(src: string): string {
+  let out = "";
+  let i = 0;
+  let inString: false | '"' | "'" = false;
+  let escape = false;
+  while (i < src.length) {
+    const c = src[i];
+    if (inString) {
+      out += c;
+      if (escape) {
+        escape = false;
+      } else if (c === "\\") {
+        escape = true;
+      } else if (c === inString) {
+        inString = false;
+      }
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = c;
+      out += c;
+      i++;
+      continue;
+    }
+    if (c === ",") {
+      // Look ahead past whitespace; if the next non-ws char is }
+      // or ], drop the comma.
+      let j = i + 1;
+      while (j < src.length && /\s/.test(src[j])) j++;
+      if (src[j] === "}" || src[j] === "]") {
+        i++;
+        continue;
+      }
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** Find the first balanced {...} object in src and return that slice, or null. */
+function extractFirstJsonObject(src: string): string | null {
+  const start = src.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString: false | '"' | "'" = false;
+  let escape = false;
+  for (let i = start; i < src.length; i++) {
+    const c = src[i];
+    if (inString) {
+      if (escape) { escape = false; continue; }
+      if (c === "\\") { escape = true; continue; }
+      if (c === inString) inString = false;
+      continue;
+    }
+    if (c === '"' || c === "'") { inString = c; continue; }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function parseRulesJson(content: string): { ok: boolean; rules?: Record<string, unknown>; error?: string } {
+  const result = tolerantParseJson(content);
+  if (!result.ok) {
+    return { ok: false, error: result.error || "Couldn't parse JSON" };
+  }
+  if (!result.value || typeof result.value !== "object" || Array.isArray(result.value)) {
+    return { ok: false, error: "Top-level JSON wasn't an object" };
+  }
+  return { ok: true, rules: result.value as Record<string, unknown> };
 }
 
 // ── Server-side structural validator ──
