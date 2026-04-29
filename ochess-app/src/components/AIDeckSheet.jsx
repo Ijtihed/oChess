@@ -227,15 +227,32 @@ export default function AIDeckSheet({
           ))}
         </div>
 
-        <button onClick={generate}
-          disabled={loading || cooldownSec > 0}
-          className="btn btn-primary w-full py-3 text-sm">
-          {loading
-            ? "Loading\u2026 building decks"
-            : cooldownSec > 0
-              ? `Wait ${cooldownSec}s`
-              : "Generate decks"}
-        </button>
+        {(() => {
+          // Recompute cheap source check on every render so the
+          // button enables itself the moment a freshly-imported
+          // batch lands in the parent's `cards` prop.
+          const hasSource = cards.some(
+            (c) => c?.type === "mistake" || c?.type === "puzzle",
+          );
+          return (
+            <>
+              <button onClick={generate}
+                disabled={loading || cooldownSec > 0 || !hasSource}
+                className="btn btn-primary w-full py-3 text-sm disabled:opacity-30 disabled:pointer-events-none">
+                {loading
+                  ? "Loading\u2026 building decks"
+                  : cooldownSec > 0
+                    ? `Wait ${cooldownSec}s`
+                    : "Generate decks"}
+              </button>
+              {!hasSource && (
+                <p className="text-[11px] text-on-surface-variant/45 leading-snug">
+                  No mistake or puzzle cards yet. Import a few games or fail a puzzle first &mdash; the AI builds decks by slicing those.
+                </p>
+              )}
+            </>
+          );
+        })()}
 
         {/* Status line. Priority order: error \u2192 cooldown
             \u2192 quiet usage. Empty when idle so the sheet stays

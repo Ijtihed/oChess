@@ -20,7 +20,6 @@ import {
   RATING,
   deserializeSharedCard,
   addCardIfNew,
-  predictIntervalsFor,
   summarizeDeck,
   forecastDeckNextDays,
   loadAIExplanations,
@@ -50,36 +49,28 @@ function uciToMove(uci) {
 }
 
 // Anki-style rating buttons. The `desc` is a one-word recall
-// label that explains *when* to pick this rating - the previous
-// version showed only "Again / Hard / Good / Easy" and an
-// interval ("1m / 10m / 1d / 4d"), which was opaque to anyone
-// who hadn't already used Anki.
-//
-// Memorization-vs-understanding maps onto these the same way
-// Anki advises for any rote material: if you got the move right
-// but didn't actually see why, that's "Hard" (or even "Again"
-// if you can't reconstruct the idea). "Easy" is reserved for
-// "I'd see this instantly forever" - over-using it stretches
-// the interval too far and the card stops teaching you.
+// label that explains *when* to pick this rating. The previous
+// version showed both this label AND a predicted interval ("Again
+// 1m / Hard 10m / Good 1d / Easy 4d") under each button, but the
+// interval was misleading - it was deterministic by design (no
+// fuzz applied to the prediction so re-renders stayed stable),
+// while the actual rating goes through `computeNextReview` WITH
+// fuzz, so the displayed value rarely matched what got persisted.
+// We hide it now and rely on the recall descriptor alone, plus
+// the StatePill / queue widgets in the sidebar for actual
+// progress signal.
 //
 // Visual: tone-only borders on a neutral surface fill, matching
-// the rest of the app's quieter button palette. The `tone` value
-// is also used to tint the predicted-interval line so the
-// per-rating signal stays legible without the loud bg fills the
-// previous design used.
+// the rest of the app's quieter button palette.
 const RATING_BUTTONS = [
   { label: "Again", desc: "Forgot / got it wrong",   value: RATING.AGAIN, key: "AGAIN",
-    classes: "bg-surface-low border border-error/30 text-on-surface-variant/70 hover:border-error/50 hover:text-error",
-    intervalText: "text-error/70" },
+    classes: "bg-surface-low border border-error/30 text-on-surface-variant/70 hover:border-error/50 hover:text-error" },
   { label: "Hard",  desc: "Right but unsure / slow", value: RATING.HARD,  key: "HARD",
-    classes: "bg-surface-low border border-amber-500/30 text-on-surface-variant/70 hover:border-amber-500/50 hover:text-amber-300",
-    intervalText: "text-amber-300/70" },
+    classes: "bg-surface-low border border-amber-500/30 text-on-surface-variant/70 hover:border-amber-500/50 hover:text-amber-300" },
   { label: "Good",  desc: "Knew it without effort",  value: RATING.GOOD,  key: "GOOD",
-    classes: "bg-surface-low border border-primary/30 text-on-surface-variant/70 hover:border-primary/50 hover:text-primary",
-    intervalText: "text-primary/70" },
+    classes: "bg-surface-low border border-primary/30 text-on-surface-variant/70 hover:border-primary/50 hover:text-primary" },
   { label: "Easy",  desc: "Spotted it instantly",    value: RATING.EASY,  key: "EASY",
-    classes: "bg-surface-low border border-emerald-500/30 text-on-surface-variant/70 hover:border-emerald-500/50 hover:text-emerald-300",
-    intervalText: "text-emerald-300/70" },
+    classes: "bg-surface-low border border-emerald-500/30 text-on-surface-variant/70 hover:border-emerald-500/50 hover:text-emerald-300" },
 ];
 
 function orientationFor(card) {
@@ -417,7 +408,6 @@ export default function ReviewPage() {
     setLineIndex(0);
     setPlayedSan([]);
     setWrongAttempt(null);
-    setIntervalHints(null);
     // The opponent-reply lock can survive card transitions (a
     // mid-line navigation away leaves it true) - reset it here
     // so the new card's first move isn't silently rejected.
@@ -552,10 +542,6 @@ export default function ReviewPage() {
   const [lineIndex, setLineIndex] = useState(0);
   const [playedSan, setPlayedSan] = useState([]);
   const [wrongAttempt, setWrongAttempt] = useState(null);
-  // Predicted intervals per rating button - real-Anki UX hint
-  // ("Again 1m / Hard 10m / Good 1d / Easy 4d"). Computed lazily
-  // when the user reaches the rating phase.
-  const [intervalHints, setIntervalHints] = useState(null);
 
   // Tracker for outstanding setTimeouts so the cleanup effect can
   // cancel them on unmount AND so we can flush them on every card
@@ -592,30 +578,23 @@ export default function ReviewPage() {
     setLineIndex(0);
     setPlayedSan([]);
     setWrongAttempt(null);
-    setIntervalHints(null);
     awaitingOpponentRef.current = false;
     gameRef.current = null;
   }, [clearPendingTimeouts]);
 
-  // Advance the displayed FEN to whatever's currently in gameRef
-  // and surface the predicted intervals. Called after the line is
-  // fully played out (or revealed), at the rating-prompt phase.
-  // Clears any leftover wrong-attempt flash so the rate UI doesn't
-  // render the red "Not quite" banner alongside the rating buttons
-  // (the banner is supposed to be a transient prompt-phase
-  // affordance only). Also flushes any queued opponent-reply
-  // timeout - the user has either solved or revealed, so further
-  // automated mutations of gameRef would just race the rate UI.
+  // Move into the rating phase. Clears any leftover wrong-attempt
+  // flash so the rate UI doesn't render the red "Not quite"
+  // banner alongside the rating buttons (the banner is a
+  // transient prompt-phase affordance only). Also flushes any
+  // queued opponent-reply timeout - the user has either solved
+  // or revealed, so further automated mutations of gameRef would
+  // just race the rate UI.
   const enterRatePhase = useCallback((nextPhase) => {
     clearPendingTimeouts();
     awaitingOpponentRef.current = false;
     setPhase(nextPhase);
     setWrongAttempt(null);
-    if (card) {
-      const id = cardId(card);
-      setIntervalHints(predictIntervalsFor(schedules, id));
-    }
-  }, [card, schedules, clearPendingTimeouts]);
+  }, [clearPendingTimeouts]);
 
   // Auto-play the opponent's reply (the next entry in lineMoves
   // after a player move). Brief delay so the user sees the move
@@ -1223,8 +1202,11 @@ export default function ReviewPage() {
         )}
 
         <div className="flex flex-col xl:flex-row gap-6 xl:gap-8">
-          {/* Board column */}
-          <div className="flex-1 flex flex-col items-center xl:items-start max-w-[700px]">
+          {/* Board column - scales with viewport on big screens
+              the same way Analysis / Puzzles do so the board
+              isn't tiny on a 27" display. The non-XL fallback
+              keeps the legacy compact size for laptops + mobile. */}
+          <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
             <div className="w-full mb-4">
               {/* Type chip + SM-2 state pill + 3-dot overflow.
                   The session header already carries the deck name
@@ -1366,11 +1348,6 @@ export default function ReviewPage() {
                         title={r.desc}
                         className={`py-3 px-2 flex flex-col items-center justify-center text-center font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${r.classes}`}>
                         <span className="leading-none">{r.label}</span>
-                        {intervalHints && (
-                          <span className={`font-mono text-[9px] mt-1 normal-case tracking-normal leading-none ${r.intervalText}`}>
-                            {intervalHints[r.key] || ""}
-                          </span>
-                        )}
                         <span className="mt-1.5 text-[9px] opacity-70 normal-case font-normal tracking-normal leading-tight">
                           {r.desc}
                         </span>
@@ -1397,8 +1374,9 @@ export default function ReviewPage() {
           {/* Sidebar - card metadata + answer panel + AI coach
               widget + Anki queue breakdown + 7-day forecast. The
               session counter that used to live here is now in the
-              compact session header above the board. */}
-          <div className="w-full xl:w-[300px] shrink-0 space-y-4">
+              compact session header above the board. Width
+              matches Analysis for visual consistency. */}
+          <div className="w-full xl:w-[320px] shrink-0 space-y-4">
             {/* Card metadata - rating, themes, opening, source link.
                 All optional. Skipped if the card carries none.
                 `revealed` gates the spoiler-bearing fields (engine
@@ -1775,6 +1753,15 @@ function DeckBrowser({ decks, onOpen, onDelete, onOpenImport, onOpenAI }) {
   // `decks.length === 0` branch).
   const myDecksHasRows = drills.length > 0 || !!allDeck;
 
+  // The AI deck generator needs mistake / puzzle cards as input -
+  // it builds focused drills BY filtering the existing corpus.
+  // With only analysis/game/shared cards in play it has nothing
+  // to slice, so we disable the button with a clear hint pointing
+  // at Import games.
+  const hasAISource = decks.some(
+    (d) => d.id === "builtin:puzzles" || d.id === "builtin:mistakes",
+  ) || drills.length > 0;
+
   return (
     <div className="space-y-6 anim-fade-up">
       {builtins.length > 0 && (
@@ -1795,7 +1782,11 @@ function DeckBrowser({ decks, onOpen, onDelete, onOpenImport, onOpenAI }) {
             <div className="flex items-center gap-3">
               {onOpenAI && (
                 <button onClick={onOpenAI}
-                  className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
+                  disabled={!hasAISource}
+                  title={hasAISource
+                    ? "Generate focused decks from your mistakes with AI"
+                    : "Import games or save failed puzzles first \u2014 the AI needs mistake / puzzle cards to work from"}
+                  className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors disabled:opacity-30 disabled:pointer-events-none">
                   + Generate AI decks
                 </button>
               )}
