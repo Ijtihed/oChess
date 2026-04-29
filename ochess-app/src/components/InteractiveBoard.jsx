@@ -40,6 +40,15 @@ export default function InteractiveBoard({
   allowDrawingArrows = true,
   onBoardClick,
   squareAnnotation,
+  // Optional override for legal-move hints. When provided, the
+  // board uses this to compute the dot-hint targets instead of
+  // chess.js's `moves({ square, verbose: true })`. The override
+  // receives the source square and must return an array of
+  // { to, captured? } objects (matching the shape chess.js
+  // produces). Used by AI Arena to honor variant rules - chess.js
+  // doesn't know about "no castling" / "reverse pawns" / etc., so
+  // its hints would be wildly wrong without this hook.
+  legalMovesProvider,
 }) {
   const [prefs, setPrefs] = useState(loadPrefs);
   const pieceSet = pieceSetProp || prefs.pieceSet;
@@ -114,7 +123,14 @@ export default function InteractiveBoard({
 
     if (isPlayerTurn) {
       if (piece && piece.color === playerColor) {
-        const moves = chess.moves({ square, verbose: true });
+        // Variant rules go through the provider when supplied;
+        // otherwise fall back to chess.js's standard-rules
+        // move enumerator. The provider must return objects
+        // matching `{ to, captured? }` so the hint-rendering
+        // code below can stay agnostic about the source.
+        const moves = typeof legalMovesProvider === "function"
+          ? legalMovesProvider(square) || []
+          : chess.moves({ square, verbose: true });
         if (moves.length === 0) { playError(); flashIllegal(square); return; }
         setSelectedSq(square);
         setLegalTargets(moves);
@@ -129,7 +145,7 @@ export default function InteractiveBoard({
     }
     setSelectedSq(null);
     setLegalTargets([]);
-  }, [chess, interactive, flashIllegal, isPlayerTurn, playerColor]);
+  }, [chess, interactive, flashIllegal, isPlayerTurn, playerColor, legalMovesProvider]);
 
   const onBoardClickRef = useRef(onBoardClick);
   onBoardClickRef.current = onBoardClick;

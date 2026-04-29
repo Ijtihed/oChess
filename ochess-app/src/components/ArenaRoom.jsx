@@ -80,9 +80,52 @@ export default function ArenaRoom({ roomId }) {
       if (cancelled) return;
       setRoom((prev) => ({ ...(prev || {}), ...next }));
     });
+    // Backup polling. Realtime is the primary sync path, but
+    // the channel can silently die (network blip, server-side
+    // hiccup, table accidentally not on the publication). A
+    // 5s poll guarantees the UI converges even if realtime
+    // stops delivering UPDATE events. Cheap (one row by id).
+    const poll = setInterval(async () => {
+      if (cancelled) return;
+      const r = await getRoom(roomId);
+      if (cancelled || !r.ok || !r.room) return;
+      setRoom((prev) => {
+        // Avoid React re-rendering when nothing changed. We
+        // compare updated_at since it's the canonical change
+        // marker on the row.
+        if (prev?.updated_at === r.room.updated_at && prev?.status === r.room.status) {
+          return prev;
+        }
+        return { ...(prev || {}), ...r.room };
+      });
+    }, 5000);
     return () => {
       cancelled = true;
+      clearInterval(poll);
       unsub?.();
+    };
+  }, [roomId]);
+
+  // Refetch on tab focus / visibility return. If the user
+  // switched tabs or backgrounded the browser long enough for
+  // the realtime channel to time out, a refocus shouldn't
+  // require waiting for the next 5s poll tick.
+  useEffect(() => {
+    if (!roomId) return undefined;
+    let cancelled = false;
+    const refresh = async () => {
+      const r = await getRoom(roomId);
+      if (cancelled || !r.ok || !r.room) return;
+      setRoom((prev) => ({ ...(prev || {}), ...r.room }));
+    };
+    const onFocus = () => { refresh(); };
+    const onVis = () => { if (!document.hidden) refresh(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, [roomId]);
 
@@ -504,16 +547,26 @@ function Warmup({ room, setRoom, role, roomId }) {
   const [position, setPosition] = useState(() => Position.fromFen(rules.startingFen || VANILLA_FEN));
   const [highlight, setHighlight] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(WARMUP_DURATION_S);
-  const [ready, setReady] = useState(false);
+
+  // Hydrate `ready` from the room row so a reload mid-warmup
+  // doesn't lose the flag. If this user already pushed
+  // readiness for the current round before reloading, the DB
+  // remembers it and we re-mount with the same state.
+  const myReadyKey = role === "creator" ? "warmup_creator_ready" : "warmup_joiner_ready";
+  const initialReady = (room.round_state || {})[myReadyKey] === round;
+  const [ready, setReady] = useState(initialReady);
   const abortRef = useRef(null);
   // Track whether we've already pushed our readiness flag so
   // the persistence effect doesn't fire on every parent room
-  // update.
-  const readinessSyncedRef = useRef(false);
+  // update. Pre-armed when the DB already has our flag (reload
+  // case) so we don't redundantly re-write.
+  const readinessSyncedRef = useRef(initialReady);
 
   // Reset board if rules CHANGE (round 1 -> round 2). Keys off
   // the JSON of the rules diff so a no-op realtime echo of the
-  // same rules doesn't wipe the timer.
+  // same rules doesn't wipe the timer. Round transitions clear
+  // ready / readinessSyncedRef because the new round's flags
+  // are scoped to the new round value.
   useEffect(() => {
     setPosition(Position.fromFen(rules.startingFen || VANILLA_FEN));
     setHighlight({});
@@ -589,6 +642,30 @@ function Warmup({ room, setRoom, role, roomId }) {
     })();
   }, [ready, oppReady, round, room.status, roomId, setRoom]);
 
+  // Per-square legal-move enumerator wired to the VARIANT
+  // rules, fed to InteractiveBoard so its dot-hint affordance
+  // shows the right squares for "no castling" / "reverse
+  // pawns" / etc. Without this the board would default to
+  // chess.js's standard-rules hints, which are wildly wrong
+  // for any variant. The shape matches the one chess.js
+  // produces (`{ to, captured?, promotion? }`) so the board
+  // doesn't need to special-case anything.
+  const legalMovesProvider = useCallback((square) => {
+    if (position.turn !== myColor) return [];
+    return generateLegalMoves(position, rules)
+      .filter((m) => m.from === square)
+      .map((m) => ({
+        to: m.to,
+        promotion: m.promotion,
+        // Mark capture moves so the board renders the larger
+        // capture-ring rather than the central dot. We have
+        // to look at the destination square because the
+        // engine doesn't pre-stamp the captured piece on
+        // pseudo-moves the way chess.js does.
+        captured: !!position.pieceAt(m.to) || !!m.enPassant,
+      }));
+  }, [position, rules, myColor]);
+
   // When the user makes a legal move, apply it then ask the
   // bot for a reply. The async bot respects an abort signal
   // so unmounting / advancing past warmup doesn't fire a
@@ -655,14 +732,22 @@ function Warmup({ room, setRoom, role, roomId }) {
             Playing as <span className="font-bold text-on-surface-variant/85">{myColor === "w" ? "White" : "Black"}</span> against a random-move dummy.
           </p>
         </div>
-        <InteractiveBoard
-          fen={position.toFen()}
-          onMove={onUserMove}
-          orientation={orientation}
-          playerColor={myColor}
-          interactive={position.turn === myColor && !ready}
-          highlightSquares={highlight}
-        />
+        {/* Height-aware width cap. The board is aspect-square,
+            so without this it can grow taller than the viewport
+            on widescreen monitors and force vertical scrolling.
+            Mirrors the math used by OnlineGameScreen / GameScreen
+            (the chrome above + below the board takes ~11rem). */}
+        <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
+          <InteractiveBoard
+            fen={position.toFen()}
+            onMove={onUserMove}
+            orientation={orientation}
+            playerColor={myColor}
+            interactive={position.turn === myColor && !ready}
+            highlightSquares={highlight}
+            legalMovesProvider={legalMovesProvider}
+          />
+        </div>
       </div>
 
       <div className="w-full xl:w-[280px] shrink-0 space-y-3">
