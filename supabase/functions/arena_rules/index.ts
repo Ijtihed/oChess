@@ -324,7 +324,7 @@ function estimateMicroUsdFromPromptChars(promptChars: number, maxOutputTokens: n
   return estimateMicroUsd(estIn, maxOutputTokens);
 }
 
-async function callGemini(systemPrompt: string, userPrompt: string, model: string, maxTokens = 2000): Promise<GeminiResult> {
+async function callGemini(systemPrompt: string, userPrompt: string, model: string, maxTokens = 4000): Promise<GeminiResult> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, error: "GEMINI_API_KEY not configured" };
   const url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
@@ -698,7 +698,10 @@ Deno.serve(async (req) => {
   // estimated cost would push us over the monthly cap, refuse
   // BEFORE making the API call so we never get billed for it.
   const promptCharsEst = SYSTEM_PROMPT.length + body.prompt.length + 500;
-  const estMicroUsd = estimateMicroUsdFromPromptChars(promptCharsEst, 2000) * 2;
+  // Output budget matches the callGemini default (4000). x2 for
+  // the auto-retry path so we never under-estimate when the
+  // first response gets truncated and we retry.
+  const estMicroUsd = estimateMicroUsdFromPromptChars(promptCharsEst, 4000) * 2;
   const preCheck = await recordSpendOrBlock(req, "arena_rules", model, 0, 0, 0);
   if (preCheck.ok && !preCheck.allowed && preCheck.usedMicroUsd + estMicroUsd > preCheck.capMicroUsd) {
     return new Response(JSON.stringify({
