@@ -12,6 +12,7 @@ import StudyPage from "./components/StudyPage";
 import BotsPage from "./components/BotsPage";
 import VariantsPage from "./components/VariantsPage";
 import ReviewPage from "./components/ReviewPage";
+import ArenaPage from "./components/ArenaPage";
 import Profile from "./components/Profile";
 import PublicProfile from "./components/PublicProfile";
 import GameScreen, { getSavedGame, clearSavedGame } from "./components/GameScreen";
@@ -191,6 +192,8 @@ function AppShell() {
             <Route path="/bots" element={<BotsPage />} />
             <Route path="/variants" element={<VariantsPage />} />
             <Route path="/review" element={<ReviewPage />} />
+            <Route path="/arena" element={<ArenaPage />} />
+            <Route path="/arena/:roomId" element={<ArenaPage />} />
             <Route path="/game" element={<GameRoute />} />
             <Route path="/variant-game" element={<VariantGameRoute />} />
             <Route path="/game/online/:gameId" element={<OnlineGameRoute />} />

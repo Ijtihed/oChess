@@ -243,6 +243,64 @@ create table if not exists coach_calls (
 create index if not exists idx_coach_calls_user_created
   on coach_calls(user_id, created_at desc);
 
+-- ── arena_rooms (AI Arena - prompt-driven variant chess) ──
+-- Each room hosts a 2-player match where each side defines the
+-- rules for one round (Round 1 = creator's rules, Round 2 =
+-- joiner's rules, optional vanilla tie-break round). Phase 1
+-- ships with a fixed catalog of rule modifiers; Phase 2 will
+-- add the AI prompt -> rules pipeline.
+--
+-- Rules columns are jsonb because the rule object is a free-
+-- shape diff document the engine resolves at runtime. Storing
+-- it as text would lose query / index ergonomics and make rule
+-- preview broken on the joining side.
+create table if not exists arena_rooms (
+  id uuid primary key default gen_random_uuid(),
+  creator_id uuid not null references profiles(id) on delete cascade,
+  joiner_id uuid references profiles(id) on delete set null,
+  creator_name text,
+  joiner_name text,
+  rules_creator jsonb,        -- rule diff or full spec set by the creator
+  rules_joiner jsonb,         -- rule diff or full spec set by the joiner
+  status text not null default 'waiting_for_joiner',
+  -- Lifecycle states the orchestrator transitions through:
+  --   'waiting_for_joiner'  - creator just made the room
+  --   'prompting'           - both joined, picking rules independently
+  --   'warmup_round_1'      - 30s synchronized warmup vs random AI
+  --   'round_1'             - 1v1 under creator's rules
+  --   'warmup_round_2'      - 30s warmup with joiner's rules
+  --   'round_2'             - 1v1 under joiner's rules
+  --   'tiebreak'            - vanilla 1+0 sudden death (only if 1-1)
+  --   'done'                - match complete, results in `match_result`
+  --   'abandoned'           - one side bailed mid-flight
+  match_result jsonb,         -- { winner: 'creator'|'joiner'|null, rounds: [...] }
+  -- Round-state buffer the orchestrator updates as rounds
+  -- progress. Shape: { round, fen, plyCount, captureTallyW,
+  -- captureTallyB, lastMoveAt }. Persisting it lets a returning
+  -- player rejoin mid-round without losing state.
+  round_state jsonb,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+-- ── arena_moves (move log per round) ──
+-- Append-only ledger of every move played in a room, scoped by
+-- round so the orchestrator can replay round 1 history when
+-- showing the round-summary screen and so the realtime channel
+-- only has to broadcast small deltas.
+create table if not exists arena_moves (
+  room_id uuid not null references arena_rooms(id) on delete cascade,
+  round int not null,
+  ply int not null,
+  fen text not null,
+  move_from text not null,
+  move_to text not null,
+  promotion text,
+  san text,
+  ts timestamptz default now(),
+  primary key (room_id, round, ply)
+);
+
 -- ────────────────────────────────────────────────────────────────
 -- INDEXES
 -- ────────────────────────────────────────────────────────────────
@@ -266,6 +324,11 @@ create index if not exists idx_challenges_code on challenges(code);
 create index if not exists idx_challenges_status on challenges(status);
 create index if not exists idx_puzzle_attempts_user on puzzle_attempts(user_id);
 create index if not exists idx_puzzle_attempts_puzzle on puzzle_attempts(puzzle_id);
+create index if not exists idx_arena_rooms_creator on arena_rooms(creator_id);
+create index if not exists idx_arena_rooms_joiner on arena_rooms(joiner_id);
+create index if not exists idx_arena_rooms_status on arena_rooms(status);
+create index if not exists idx_arena_rooms_updated on arena_rooms(updated_at desc);
+create index if not exists idx_arena_moves_room on arena_moves(room_id, round, ply);
 
 -- ────────────────────────────────────────────────────────────────
 -- ROW LEVEL SECURITY
@@ -289,6 +352,8 @@ alter table friendships enable row level security;
 -- which checks auth.uid() internally before writing. RLS-on +
 -- no-policies = nobody reads/writes directly with the anon key.
 alter table coach_calls enable row level security;
+alter table arena_rooms enable row level security;
+alter table arena_moves enable row level security;
 
 -- ── profiles ──
 drop policy if exists "Public profiles are viewable by everyone" on profiles;
@@ -436,6 +501,67 @@ create policy "Users can update friendships involving them" on friendships
   for update using (auth.uid() in (user_id, friend_id)) with check (auth.uid() in (user_id, friend_id));
 create policy "Users can delete own friendships" on friendships
   for delete using (auth.uid() in (user_id, friend_id));
+
+-- ── arena_rooms ──
+-- Read access is open by room id (the share-link-only access
+-- model means knowing the URL = entitled to read), but writes
+-- are tightly scoped: only the creator can insert; only
+-- creator or current joiner can update; only the creator can
+-- delete. The status / round_state mutations the orchestrator
+-- needs ride on top of these update policies + an auth.uid()
+-- check inside each row so a stranger can't hijack the room
+-- by guessing the URL.
+drop policy if exists "Anyone can read arena rooms by id" on arena_rooms;
+drop policy if exists "Auth users can create own arena rooms" on arena_rooms;
+drop policy if exists "Participants can update arena rooms" on arena_rooms;
+drop policy if exists "Auth users can join unfilled arena rooms" on arena_rooms;
+drop policy if exists "Creator can delete own arena rooms" on arena_rooms;
+create policy "Anyone can read arena rooms by id" on arena_rooms
+  for select using (true);
+create policy "Auth users can create own arena rooms" on arena_rooms
+  for insert with check (auth.uid() = creator_id);
+-- Joiners need a way to claim the room (write joiner_id +
+-- joiner_name) when the seat is open AND they aren't the
+-- creator. Once joined, this UPDATE permission is what lets
+-- the orchestrator advance status / round_state from either
+-- side; the policy lets either current participant update
+-- the row.
+create policy "Auth users can join unfilled arena rooms" on arena_rooms
+  for update using (
+    auth.role() = 'authenticated'
+      and joiner_id is null
+      and creator_id <> auth.uid()
+  ) with check (
+    -- The joiner stamp must belong to the caller; the creator
+    -- must not change.
+    joiner_id = auth.uid()
+  );
+create policy "Participants can update arena rooms" on arena_rooms
+  for update using (
+    auth.uid() in (creator_id, joiner_id)
+  ) with check (
+    auth.uid() in (creator_id, joiner_id)
+  );
+create policy "Creator can delete own arena rooms" on arena_rooms
+  for delete using (auth.uid() = creator_id);
+
+-- ── arena_moves ──
+-- Move log mirrors the room's read policy (open read so
+-- spectators / replays work) but only allows participants of
+-- the parent room to insert. UPDATE / DELETE are not exposed
+-- to clients - moves are append-only.
+drop policy if exists "Anyone can read arena moves" on arena_moves;
+drop policy if exists "Participants can append arena moves" on arena_moves;
+create policy "Anyone can read arena moves" on arena_moves
+  for select using (true);
+create policy "Participants can append arena moves" on arena_moves
+  for insert with check (
+    exists (
+      select 1 from arena_rooms r
+      where r.id = arena_moves.room_id
+        and auth.uid() in (r.creator_id, r.joiner_id)
+    )
+  );
 
 -- ────────────────────────────────────────────────────────────────
 -- TRIGGERS

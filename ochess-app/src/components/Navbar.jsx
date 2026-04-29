@@ -8,6 +8,7 @@ const NAV_LINKS = [
   { id: "play",     label: "Play" },
   { id: "puzzles",  label: "Puzzles" },
   { id: "variants", label: "Variants" },
+  { id: "arena",    label: "Arena" },
   { id: "analysis", label: "Analysis" },
   { id: "study",    label: "Study" },
   { id: "review",   label: "Anki" },
