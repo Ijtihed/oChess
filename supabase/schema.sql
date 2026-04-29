@@ -1432,3 +1432,50 @@ select cron.schedule(
   '17 */6 * * *',
   $cron$select cleanup_stale_games()$cron$
 );
+
+-- ── cleanup_stale_arena_rooms: housekeeping (call from a cron job) ──
+--
+-- Arena rooms are short-lived lobby+session containers. When players
+-- abandon a room mid-flow we end up with orphans: lobbies waiting
+-- forever for a joiner that never arrives, and in-progress matches
+-- where one or both players closed the tab and the clock fully
+-- expired with no live client to detect it. The function purges:
+--
+--   * Rooms still in `waiting_for_joiner` with no joiner_id after
+--     1 hour of inactivity. These are forgotten share-links.
+--   * Rooms in any active session state (prompting, warmup_*, round_*,
+--     tiebreak) that haven't been touched in 4 hours. Plenty of slack
+--     for the longest legitimate match (round timer is 10+0 = 20-30
+--     min wall-clock, so 4h means both sides went cold).
+--
+-- We hard-delete the arena_rooms row in both cases. The `games` table
+-- already holds completed-round history (those rows survive). Move
+-- logs in `arena_moves` cascade off the room delete, which is fine -
+-- nobody is reading them once the room is gone.
+create or replace function cleanup_stale_arena_rooms()
+returns void as $$
+begin
+  delete from arena_rooms
+  where (
+    (status = 'waiting_for_joiner' and joiner_id is null and updated_at < now() - interval '1 hour')
+    or
+    (status in ('prompting','warmup_round_1','warmup_round_2','round_1','round_2','tiebreak')
+     and updated_at < now() - interval '4 hours')
+  );
+end;
+$$ language plpgsql security definer;
+
+revoke execute on function cleanup_stale_arena_rooms() from public, authenticated, anon;
+grant execute on function cleanup_stale_arena_rooms() to service_role;
+
+do $$ begin
+  if exists (select 1 from cron.job where jobname = 'ochess-cleanup-stale-arena-rooms') then
+    perform cron.unschedule('ochess-cleanup-stale-arena-rooms');
+  end if;
+end $$;
+
+select cron.schedule(
+  'ochess-cleanup-stale-arena-rooms',
+  '23 */1 * * *',
+  $cron$select cleanup_stale_arena_rooms()$cron$
+);

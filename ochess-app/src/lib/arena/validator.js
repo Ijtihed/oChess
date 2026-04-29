@@ -2,42 +2,46 @@
  * Validator for AI Arena rule objects.
  *
  * AI-produced rules are untrusted - the model can hallucinate
- * piece moves that don't terminate, win conditions that can
- * never fire, starting positions missing kings, etc. The
- * validator runs three layers of checks before a rules object
- * is allowed to go live:
+ * piece moves that don't loop forever, win conditions that
+ * can never fire, starting positions missing kings, etc. The
+ * validator runs three layers of checks:
  *
  *   1. Static structure: well-formed JSON, every required
  *      field present, sane types, primitives reference real
  *      directions, win conditions are recognized.
  *
- *   2. Static reachability: starting position has both kings
- *      (for variants that use them), every piece has at least
- *      one move primitive that COULD produce a move from
- *      somewhere on the board.
+ *   2. Starting position: both kings present (for variants
+ *      that use checkmate), the first mover has at least one
+ *      legal move, win conditions reference squares / pieces
+ *      that exist on the board.
  *
- *   3. Simulation: run N random games to completion and check
- *      they actually terminate (don't hit the ply cap) and
- *      that both colors win at least one game (rules aren't
- *      catastrophically one-sided).
+ *   3. Mobility / fairness check: from the starting position,
+ *      both colors have comparable piece mobility. This is a
+ *      cheap deterministic check (one ply of move generation
+ *      per side) that catches "white can move, black is hard-
+ *      locked" without needing to simulate full games. We do
+ *      NOT run random-walk simulation by default - it's both
+ *      slow (synchronous on the main thread) AND it produces
+ *      false positives for variants where random play rarely
+ *      finds checkmate (knight-queens, no-king-side endings,
+ *      etc.).
+ *
+ * Simulation IS available behind opts.runSimulation = true so
+ * tests / admin tooling can still exercise it, but the default
+ * path stays fast + deterministic.
  *
  * The validator returns a structured report so the UI can
  * surface the specific problem. Soft warnings are flagged
- * separately from hard rejections - "60% of games hit the ply
- * cap" is suspicious but might be playable; "starting position
- * has no white king" is a hard reject.
+ * separately from hard rejections - "starting mobility is
+ * skewed 4:1" is suspicious but might be playable; "starting
+ * position has no white king" is a hard reject.
  *
  * @typedef {Object} ValidatorReport
  * @property {boolean} valid                          Hard reject if false.
  * @property {string[]} errors                        Hard rejections.
  * @property {string[]} warnings                      Soft issues; UI may surface but doesn't block.
- * @property {Object} [stats]                         Simulation stats when ran.
- * @property {number} stats.games                     Total simulated games.
- * @property {number} stats.terminated                Games that ended via a win condition.
- * @property {number} stats.plyCapped                 Games that hit the ply cap.
- * @property {number} stats.whiteWins
- * @property {number} stats.blackWins
- * @property {number} stats.draws
+ * @property {Object} [mobility]                      Per-color move-count snapshot from the start.
+ * @property {Object} [stats]                         Simulation stats when explicitly opted in.
  */
 
 import { Position } from "./position";
@@ -62,9 +66,10 @@ const KNOWN_PRIMITIVE_KINDS = new Set(["slide", "leap", "step"]);
  *
  * @param {Object} rulesInput
  * @param {Object} [opts]
- * @param {number} [opts.simulations]                 Default 50.
- * @param {number} [opts.simulationPlyCap]            Default 200.
- * @param {boolean} [opts.skipSimulation]             Skip layer 3.
+ * @param {boolean} [opts.runSimulation]              Opt in to the random-walk simulator (slow, false-positive-prone). Default false.
+ * @param {number}  [opts.simulations]                Used only when runSimulation=true. Default 50.
+ * @param {number}  [opts.simulationPlyCap]           Used only when runSimulation=true. Default 200.
+ * @param {boolean} [opts.skipSimulation]             Legacy alias for !runSimulation. Ignored if runSimulation is set.
  * @param {() => number} [opts.random]                Inject a deterministic RNG for tests.
  * @returns {ValidatorReport}
  */
@@ -95,9 +100,22 @@ export function validateRules(rulesInput, opts = {}) {
   validateStartingPosition(startingPosition, resolved, errors, warnings);
   if (errors.length > 0) return { valid: false, errors, warnings };
 
-  // ── Layer 3: simulation ──
+  // ── Layer 3a: structural mobility / fairness check ──
+  // Cheap, deterministic, and a much better signal than a
+  // random-walk simulator for whether the variant is broken.
+  // Compare both colors' starting move count - if one side has
+  // zero moves or the ratio is catastrophic we flag it. This
+  // runs synchronously but is O(legal-moves-from-start), no
+  // recursion.
+  const mobility = analyzeMobility(startingPosition, resolved, errors, warnings);
+
+  // ── Layer 3b: random-walk simulation (opt-in) ──
+  // Only runs when explicitly requested. Useful for admin
+  // tooling and the engine test suite, NOT in the lobby's
+  // post-AI-call validation path.
   let stats;
-  if (!opts.skipSimulation) {
+  const wantSim = opts.runSimulation === true;
+  if (wantSim) {
     stats = simulate(resolved, opts);
     interpretSimulationStats(stats, errors, warnings, opts);
   }
@@ -106,8 +124,66 @@ export function validateRules(rulesInput, opts = {}) {
     valid: errors.length === 0,
     errors,
     warnings,
-    stats,
+    mobility,
+    ...(stats ? { stats } : {}),
   };
+}
+
+// ── Layer 3a: starting-position mobility analyzer ──────────
+
+/**
+ * Cheap deterministic fairness check: count legal moves for
+ * each color from the starting position. Catches the obvious
+ * failure modes:
+ *
+ *   - One color has zero legal moves (rules hard-lock that
+ *     side from the very first turn).
+ *   - One color has < 5% of the other's moves AND fewer than
+ *     5 moves total (severely cripled but not fully blocked).
+ *
+ * Returns the per-color move counts so the UI can surface
+ * them. Does NOT run simulation, does NOT iterate beyond a
+ * single ply, does NOT depend on randomness.
+ */
+function analyzeMobility(position, rules, errors, warnings) {
+  const whiteMoves = countMovesFor(position, rules, "w");
+  const blackMoves = countMovesFor(position, rules, "b");
+
+  if (whiteMoves === 0) {
+    errors.push("white has zero legal moves from the starting position");
+  }
+  if (blackMoves === 0) {
+    errors.push("black has zero legal moves from the starting position");
+  }
+
+  if (whiteMoves > 0 && blackMoves > 0) {
+    const min = Math.min(whiteMoves, blackMoves);
+    const max = Math.max(whiteMoves, blackMoves);
+    const ratio = max / min;
+    // Severe asymmetry, but only flag as a hard error when one
+    // side is genuinely starved. A 2:1 mobility advantage on
+    // turn 1 is normal for asymmetric variants and should NOT
+    // hard-fail. Hard reject only when one side has very few
+    // moves AND the ratio is extreme (12:1+).
+    if (min < 5 && ratio >= 12) {
+      errors.push(`mobility is severely one-sided: white has ${whiteMoves} legal moves, black has ${blackMoves} (${ratio.toFixed(1)}:1)`);
+    } else if (ratio >= 4) {
+      warnings.push(`starting mobility is asymmetric: white ${whiteMoves} / black ${blackMoves} (${ratio.toFixed(1)}:1)`);
+    }
+  }
+
+  return { white: whiteMoves, black: blackMoves };
+}
+
+function countMovesFor(position, rules, color) {
+  if (position.turn === color) {
+    return generateLegalMoves(position, rules).length;
+  }
+  // Flip side-to-move on a clone to count the OTHER color's
+  // move set without mutating the source.
+  const sim = position.clone();
+  sim.turn = color;
+  return generateLegalMoves(sim, rules).length;
 }
 
 // ── Layer 1: structure ─────────────────────────────────────
@@ -308,32 +384,33 @@ function simulate(rules, opts) {
   };
 }
 
-function interpretSimulationStats(stats, errors, warnings, opts) {
+function interpretSimulationStats(stats, errors, warnings, _opts) {
   if (!stats) return;
-  // Hard reject: very few games terminate. If 80%+ hit the ply
-  // cap the rules are likely broken (no terminal condition can
-  // fire from typical positions).
+  // Random-walk simulation is a noisy signal: in nontrivial
+  // variants, random play almost never finds checkmate even
+  // when the rules are perfectly fair. Treat ALL simulation
+  // findings as soft warnings; the structural mobility check
+  // in layer 3a is the real fairness gate.
   const termFrac = stats.terminated / Math.max(1, stats.games);
   if (termFrac < 0.2) {
-    errors.push(`only ${Math.round(termFrac * 100)}% of simulated games terminated within the ply cap (need 20%+)`);
-  } else if (termFrac < 0.5) {
-    warnings.push(`only ${Math.round(termFrac * 100)}% of simulated games terminated within the ply cap (rules may be slow)`);
+    warnings.push(`only ${Math.round(termFrac * 100)}% of simulated games ended within the ply cap (random play struggles to find checkmate)`);
   }
-
-  // Hard reject: catastrophically one-sided. If one color
-  // wins zero games out of 50 the rules are unbalanced.
-  if (stats.whiteWins === 0 && stats.games >= 20) {
-    errors.push("white never won in simulation - rules look one-sided in black's favor");
-  }
-  if (stats.blackWins === 0 && stats.games >= 20) {
-    errors.push("black never won in simulation - rules look one-sided in white's favor");
-  }
-
-  // Warn on heavy skew (10:1+).
-  if (stats.whiteWins > 0 && stats.blackWins > 0) {
-    const skew = Math.max(stats.whiteWins, stats.blackWins) / Math.min(stats.whiteWins, stats.blackWins);
-    if (skew > 10) {
-      warnings.push(`win rate is ${stats.whiteWins} W / ${stats.blackWins} B - heavily skewed`);
+  // Win-rate skew, but only relevant when at least 10 games
+  // actually terminated. A "0 wins for black" out of 1
+  // terminated game is sample-size noise, not a fairness
+  // signal.
+  if (stats.terminated >= 10) {
+    if (stats.whiteWins === 0) {
+      warnings.push("random simulation didn't surface a white win (small sample, may not reflect actual play)");
+    }
+    if (stats.blackWins === 0) {
+      warnings.push("random simulation didn't surface a black win (small sample, may not reflect actual play)");
+    }
+    if (stats.whiteWins > 0 && stats.blackWins > 0) {
+      const skew = Math.max(stats.whiteWins, stats.blackWins) / Math.min(stats.whiteWins, stats.blackWins);
+      if (skew > 10) {
+        warnings.push(`simulated win rate is ${stats.whiteWins}W / ${stats.blackWins}B - heavily skewed`);
+      }
     }
   }
 }

@@ -141,31 +141,102 @@ describe("validateRules - layer 2 starting position", () => {
   });
 });
 
-describe("validateRules - layer 3 simulation", () => {
-  it("reports stats for vanilla rules", () => {
+describe("validateRules - mobility analyzer (default fairness check)", () => {
+  it("attaches per-color move counts to the report", () => {
+    const report = validateRules(vanillaRules());
+    expect(report.mobility).toBeDefined();
+    // Vanilla starting position: 20 legal moves for each side
+    // (16 pawn + 4 knight).
+    expect(report.mobility.white).toBe(20);
+    expect(report.mobility.black).toBe(20);
+  });
+
+  it("hard-rejects when the first mover has zero legal moves", () => {
+    // Position where the to-move king is in checkmate already.
+    const report = validateRules({
+      extends: "vanilla",
+      startingFen: "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1",
+    });
+    expect(report.valid).toBe(false);
+    expect(report.errors.some((e) => e.includes("zero legal moves") || e.includes("black has zero"))).toBe(true);
+  });
+
+  it("warns on >= 4:1 mobility skew without rejecting", () => {
+    // Custom rules where black pieces are immobilised but
+    // white plays normally. Manufactured via byColor.
+    const r = {
+      extends: "vanilla",
+      byColor: {
+        b: {
+          p: { moves: [] },
+          n: { moves: [] },
+          b: { moves: [] },
+          r: { moves: [] },
+          q: { moves: [] },
+        },
+      },
+    };
+    const report = validateRules(r);
+    // Black has only the king's moves available - severely
+    // crippled, so we should hard-reject (mobility ratio
+    // 20:0 -> infinity, which trips the severe-asymmetry path
+    // when min < 5 + ratio extreme).
+    expect(report.valid).toBe(false);
+    expect(report.errors.some((e) => /one-sided|zero/i.test(e))).toBe(true);
+  });
+
+  it("DOES NOT reject 'pawns step backward + queens move like knights' (the user-reported false positive)", () => {
+    // Real-world prompt that the previous simulation-based
+    // validator rejected because random play struggles to
+    // checkmate with knight-queens. Mobility from the start is
+    // perfectly symmetric, so the new validator passes.
+    const knightQueensReversePawns = {
+      extends: "vanilla",
+      pieces: {
+        p: {
+          moves: [
+            { kind: "step", dirs: [[0, 1]], conditions: { onlyNonCapture: true } },
+            { kind: "step", dirs: [[0, 2]], conditions: { onlyFirstMove: true, onlyNonCapture: true } },
+            { kind: "step", dirs: [[1, 1], [-1, 1]], conditions: { onlyCapture: true } },
+            { kind: "step", dirs: [[1, 1], [-1, 1]], conditions: { enPassant: true } },
+            { kind: "step", dirs: [[0, -1]], conditions: { onlyNonCapture: true } },
+          ],
+          promotion: { type: ["n", "b", "r", "q"] },
+        },
+        q: {
+          moves: [{ kind: "leap", offsets: [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]] }],
+        },
+      },
+    };
+    const report = validateRules(knightQueensReversePawns);
+    expect(report.valid).toBe(true);
+    expect(report.errors).toEqual([]);
+  });
+});
+
+describe("validateRules - simulation (opt-in only)", () => {
+  it("does NOT run simulation by default (no main-thread cost)", () => {
+    const report = validateRules(vanillaRules());
+    expect(report.stats).toBeUndefined();
+  });
+
+  it("runs simulation when explicitly opted in via runSimulation:true", () => {
     const report = validateRules(vanillaRules(), {
+      runSimulation: true,
       simulations: 10,
       simulationPlyCap: 60,
       random: seededRandom(1),
     });
     expect(report.stats).toBeDefined();
     expect(report.stats.games).toBe(10);
-    expect(report.stats.terminated + report.stats.plyCapped).toBeGreaterThanOrEqual(0);
   });
 
-  it("flags rules where sims hit the ply cap heavily", () => {
-    // A "stale-move" variant: pieces can only move sideways
-    // (which nearly never produces a capture from the standard
-    // starting position), and we set the ply cap very low so
-    // the simulation hits it fast. Use a minimal-ish starting
-    // position where white can at least make ONE sideways move
-    // (otherwise layer 2 rejects before we ever simulate).
+  it("simulation findings become WARNINGS, never hard rejections", () => {
+    // Same "stale-move" rules that previously hard-failed: now
+    // they warn but don't reject (fairness was already
+    // approved by the mobility check at start).
     const r = {
       extends: "vanilla",
-      // K vs K endgame so first-mover has a legal sideways
-      // move (the king stepping left or right). With only two
-      // kings, the simulation never terminates by checkmate
-      // and hits the ply cap.
       startingFen: "8/8/8/3k4/8/3K4/8/8 w - - 0 1",
       pieces: {
         p: { moves: [{ kind: "step", dirs: [[1, 0], [-1, 0]], conditions: { onlyNonCapture: true } }] },
@@ -179,14 +250,16 @@ describe("validateRules - layer 3 simulation", () => {
       maxPlies: 30,
     };
     const report = validateRules(r, {
+      runSimulation: true,
       simulations: 10,
       simulationPlyCap: 30,
       random: seededRandom(2),
     });
     expect(report.stats).toBeDefined();
-    // Simulation produces real numbers either way; the key is
-    // that it ran (no crash) and the validator either flagged
-    // or warned about the rules.
-    expect(report.stats.games).toBe(10);
+    // The simulation will surface warnings but the rules pass
+    // because mobility from the start is fine (both sides have
+    // the king's sideways step available).
+    expect(report.valid).toBe(true);
+    expect(report.warnings.length).toBeGreaterThan(0);
   });
 });

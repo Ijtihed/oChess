@@ -101,15 +101,16 @@ export async function generateArenaRules(prompt) {
     return { ok: false, error: "AI returned malformed rules." };
   }
 
-  // Second-pass full validation locally. The server does
-  // structural checks; here we run the simulation-based check
-  // too, so a rule set that would never terminate or that's
-  // catastrophically one-sided is still rejected even if the
-  // server deploy is stale.
-  const localReport = validateRules(merged.rules, {
-    simulations: 25,
-    simulationPlyCap: 120,
-  });
+  // Second-pass structural validation locally. The server does
+  // the same checks but a stale deployment shouldn't be the
+  // line of defense, so we re-run them here. NO simulation -
+  // random play is a noisy fairness signal that produces
+  // false rejections for perfectly playable variants (e.g.
+  // knight-queens) AND blocks the main thread for several
+  // seconds. Layer 3a's deterministic mobility check covers
+  // the real failure modes (one side has zero legal moves,
+  // mobility is catastrophically asymmetric).
+  const localReport = validateRules(merged.rules);
   if (!localReport.valid) {
     return {
       ok: false,

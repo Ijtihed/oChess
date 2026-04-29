@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 // Mocks: keep the smoke tests focused on which BRANCH renders,
@@ -22,8 +22,9 @@ vi.mock("../lib/arena/service", () => ({
   createRoom: vi.fn(),
 }));
 
+const mockGenerateArenaRules = vi.fn();
 vi.mock("../lib/arena/ai-rules", () => ({
-  generateArenaRules: vi.fn(),
+  generateArenaRules: (...args) => mockGenerateArenaRules(...args),
   isAIRulesAvailable: () => true,
 }));
 
@@ -32,6 +33,7 @@ import ArenaPage from "./ArenaPage";
 beforeEach(() => {
   mockUser = null;
   mockAuthLoading = false;
+  mockGenerateArenaRules.mockReset();
 });
 
 describe("ArenaPage", () => {
@@ -80,6 +82,54 @@ describe("ArenaPage", () => {
     );
     expect(screen.getByPlaceholderText(/abc-123/i)).toBeDefined();
     expect(screen.getByText(/Join room/i)).toBeDefined();
+  });
+
+  it("surfaces a rate-limit cooldown after generate fails with retryAfterSeconds", async () => {
+    mockUser = { id: "user-1", name: "Alice", guest: false };
+    mockGenerateArenaRules.mockResolvedValueOnce({
+      ok: false,
+      error: "Slow down: 3 generations per minute.",
+      rateLimited: true,
+      retryAfterSeconds: 12,
+    });
+    render(
+      <MemoryRouter>
+        <ArenaPage />
+      </MemoryRouter>
+    );
+    const textarea = screen.getByPlaceholderText(/Pawns can move backwards/i);
+    fireEvent.change(textarea, { target: { value: "knights leap twice" } });
+    const generateBtn = screen.getByText(/Generate rules/i);
+    fireEvent.click(generateBtn);
+    // Cooldown copy appears; the create button should be replaced
+    // by a disabled "Wait Ns" indicator.
+    await waitFor(() => {
+      expect(screen.getByText(/Wait\s*1[12]s/i)).toBeDefined();
+    });
+    expect(screen.getByText(/Slow down/i)).toBeDefined();
+  });
+
+  it("renders validator error feedback when AI returns a malformed rules object", async () => {
+    mockUser = { id: "user-1", name: "Alice", guest: false };
+    mockGenerateArenaRules.mockResolvedValueOnce({
+      ok: false,
+      error: "AI rules failed local validation. Try rephrasing the prompt.",
+      validatorErrors: [
+        "white has zero legal moves from the starting position",
+        "winCondition[0]: race_to_squares squares array is empty",
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <ArenaPage />
+      </MemoryRouter>
+    );
+    fireEvent.change(screen.getByPlaceholderText(/Pawns can move backwards/i), { target: { value: "x" } });
+    fireEvent.click(screen.getByText(/Generate rules/i));
+    await waitFor(() => {
+      expect(screen.getByText(/zero legal moves/i)).toBeDefined();
+    });
+    expect(screen.getByText(/race_to_squares squares array is empty/i)).toBeDefined();
   });
 
   it("with a roomId param, mounts the room component (not the landing)", () => {
