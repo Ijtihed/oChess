@@ -4,7 +4,17 @@ import { useAuth } from "./AuthProvider";
 import SocialPanel from "./SocialPanel";
 import InteractiveBoard from "./InteractiveBoard";
 import PlayerBar, { getCaptured } from "./PlayerBar";
-import { playMoveSound, playError } from "../lib/sounds";
+import {
+  playMoveSound,
+  playError,
+  playGameStart,
+  playVictory,
+  playDefeat,
+  playDraw,
+  playLowTime,
+  playChatNotify,
+  playOfferNotify,
+} from "../lib/sounds";
 import {
   getRoom,
   joinRoom,
@@ -15,7 +25,9 @@ import {
   loadMoves,
   recordRoundGame,
   createRoom,
+  openChatChannel,
 } from "../lib/arena/service";
+import { moderateChat } from "../lib/chat";
 import { resolveRules, vanillaRules } from "../lib/arena/rules";
 import { Position } from "../lib/arena/position";
 import { generateLegalMoves } from "../lib/arena/move-gen";
@@ -987,8 +999,8 @@ function Warmup({ room, setRoom, role, roomId }) {
     playMoveSound({ flags: move.captured ? "c" : "n" });
     setPosition(next);
     setHighlight({
-      [move.from]: { backgroundColor: "rgba(76,175,80,0.25)" },
-      [move.to]:   { backgroundColor: "rgba(76,175,80,0.35)" },
+      [move.from]: { backgroundColor: "rgba(255,255,255,0.07)" },
+      [move.to]:   { backgroundColor: "rgba(255,255,255,0.11)" },
     });
     return true;
   }, [position, myColor, rules]);
@@ -1150,13 +1162,34 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   const myColor = colorFor(role, status);
   const colorPair = colorPairFor(roundLabel === "tiebreak" ? 1 : roundLabel);
 
-  // Board state. Fen comes from the room's round_state so a
-  // late-joiner / rejoin gets exactly what's on the board.
+  // Board state. The canonical FEN lives in the room's
+  // round_state so a late-joiner / rejoin / opponent's move
+  // re-renders at the right position. To keep my own moves
+  // feeling instant we ALSO keep a local optimistic
+  // `localPosition` that wins over the room FEN whenever it's
+  // ahead, then snaps back to the room FEN once the DB
+  // round-trip lands. Without this, every move waits for
+  // appendMove + updateRoom to resolve before the piece
+  // visually moves - that's the "kind of slow" the user
+  // reported.
   const fenFromRoom = room.round_state?.fen || rules.startingFen || VANILLA_FEN;
+  const roomPlyCount = room.round_state?.plyCount || 0;
+  const [localPosition, setLocalPosition] = useState(null);
+  const [localPly, setLocalPly] = useState(0);
+
+  // When the room catches up (or surpasses) our local
+  // optimistic ply, drop the local override.
+  useEffect(() => {
+    if (localPosition && roomPlyCount >= localPly) {
+      setLocalPosition(null);
+    }
+  }, [roomPlyCount, localPly, localPosition]);
+
   const position = useMemo(() => {
+    if (localPosition) return localPosition;
     try { return Position.fromFen(fenFromRoom); }
     catch { return Position.fromFen(VANILLA_FEN); }
-  }, [fenFromRoom]);
+  }, [fenFromRoom, localPosition]);
 
   // Move history for this round. Loaded from arena_moves on
   // mount and kept in sync via realtime + manual appends.
@@ -1165,9 +1198,12 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   const [highlight, setHighlight] = useState({});
   const [resignError, setResignError] = useState(null);
   const [confirmResign, setConfirmResign] = useState(false);
+  const [confirmDraw, setConfirmDraw] = useState(false);
   const confirmTimerRef = useRef(null);
+  const drawTimerRef = useRef(null);
   useEffect(() => () => {
     if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    if (drawTimerRef.current) clearTimeout(drawTimerRef.current);
   }, []);
 
   // Initial move-log load + realtime appends.
@@ -1218,50 +1254,130 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
 
   // Apply a confirmed move locally + write it to the DB. Both
   // sides use this; whoever's turn it is calls it from the
-  // board's onMove. The opponent's client sees the INSERT and
-  // applies the same move on their copy.
+  // board's onMove. The opponent's client sees the room
+  // round_state update via realtime and re-derives their
+  // position from the new FEN.
+  //
+  // Optimistic flow: we compute the next position + sound +
+  // highlight + move-list entry SYNCHRONOUSLY so the user
+  // sees their move land instantly, then fire the DB writes
+  // in the background. We don't await them - if they fail
+  // the realtime push from the room update will rectify; if
+  // the LOCAL apply somehow disagrees with what the DB
+  // accepts, the next room update will overwrite localPosition.
   const advanceRoundEndedRef = useRef(false);
-  const onUserMove = useCallback(async (move) => {
+  const onUserMove = useCallback((move) => {
     if (position.turn !== myColor) return false;
     if (gameStatus.ended) return false;
     if (snapshot[role]?.expired) return false;
     let next;
     try { next = applyMove(position, move, rules); }
     catch { playError(); return false; }
+
+    // Sound + highlight match OnlineGameScreen so the play
+    // surface feels identical. White tints for the last
+    // move, capture/non-capture variants of the move sound.
     playMoveSound({ flags: move.captured ? "c" : "n" });
     setHighlight({
-      [move.from]: { backgroundColor: "rgba(76,175,80,0.25)" },
-      [move.to]:   { backgroundColor: "rgba(76,175,80,0.35)" },
+      [move.from]: { backgroundColor: "rgba(255,255,255,0.07)" },
+      [move.to]:   { backgroundColor: "rgba(255,255,255,0.11)" },
     });
-    // Find the SAN the engine stamped on the move so the move
-    // list gets a readable label.
+
     const lastHistory = next.history[next.history.length - 1];
     const nextStatus = checkGameStatus(next, rules);
     const newClock = commitClockMove(clock, role, { endTurn: !nextStatus.ended });
+    const ply = (room.round_state?.plyCount || 0) + 1;
+    const round = roundLabel === "tiebreak" ? 99 : roundLabel;
     const nextRoundState = {
       ...(room.round_state || {}),
       fen: next.toFen(),
-      plyCount: (room.round_state?.plyCount || 0) + 1,
+      plyCount: ply,
       clock: newClock,
     };
 
-    // Write the move log row + the room update. We await the
-    // append because the round-end effect that reads the move
-    // log to build PGN runs immediately after this and would
-    // otherwise miss the final move.
-    const ply = (room.round_state?.plyCount || 0) + 1;
-    const round = roundLabel === "tiebreak" ? 99 : roundLabel;
-    await appendMove({ roomId, round, ply, fen: nextRoundState.fen, move: { ...move, san: lastHistory?.san } });
-    const update = await updateRoom(roomId, { round_state: nextRoundState });
-    if (update?.ok && update.room && setRoom) {
-      setRoom((prev) => ({ ...(prev || {}), ...update.room }));
-    }
+    // ── Optimistic local apply ──
+    setLocalPosition(next);
+    setLocalPly(ply);
     setMoves((prev) => [
       ...prev,
       { round, ply, fen: nextRoundState.fen, move_from: move.from, move_to: move.to, promotion: move.promotion || null, san: lastHistory?.san || null, ts: new Date().toISOString() },
     ]);
+
+    // ── DB writes in the background ──
+    // Fire-and-forget. The room realtime update from
+    // updateRoom will replace localPosition once it lands.
+    // appendMove still needs to resolve before round-end
+    // PGN reconstruction, so we await the BACKGROUND task
+    // chain inside the same async handler the round-end
+    // effect can observe (the `lastWriteRef` promise).
+    const writePromise = (async () => {
+      try {
+        await appendMove({ roomId, round, ply, fen: nextRoundState.fen, move: { ...move, san: lastHistory?.san } });
+        const update = await updateRoom(roomId, { round_state: nextRoundState });
+        if (update?.ok && update.room && setRoom) {
+          setRoom((prev) => ({ ...(prev || {}), ...update.room }));
+        }
+      } catch (e) {
+        // Network glitch - the realtime push from a peer's
+        // future move OR a manual refetch will rectify.
+        // eslint-disable-next-line no-console
+        console.warn("arena/onUserMove writes failed:", e);
+      }
+    })();
+    lastWriteRef.current = writePromise;
     return true;
   }, [position, myColor, rules, gameStatus, snapshot, role, clock, room.round_state, roomId, setRoom, roundLabel]);
+
+  // Most recent in-flight write promise. The round-end effect
+  // awaits this before reading the move log so the final move
+  // is guaranteed to be persisted in time for PGN building.
+  const lastWriteRef = useRef(Promise.resolve());
+
+  // ── Chat: ephemeral broadcast through Supabase Realtime ──
+  // Mirrors OnlineGameScreen exactly; messages aren't
+  // persisted (closing the tab loses history). Bell sound on
+  // incoming, banlist on send via shared moderateChat.
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const chatScrollRef = useRef(null);
+  const chatChannelRef = useRef(null);
+  useEffect(() => {
+    if (!roomId) return undefined;
+    const myDisplayName = user?.name || (role === "creator" ? room.creator_name : room.joiner_name) || "Player";
+    const myId = user?.id;
+    const ch = openChatChannel(roomId, (msg) => {
+      if (!msg?.text) return;
+      // Drop our own echoes - broadcast.self is already
+      // false on the channel but defensive in case it ever
+      // changes.
+      if (msg.userId && msg.userId === myId) return;
+      setChatMessages((prev) => [...prev, msg]);
+      playChatNotify();
+    });
+    chatChannelRef.current = { ch, myId, myDisplayName };
+    return () => {
+      try { ch.unsubscribe(); } catch { /* ignore */ }
+      chatChannelRef.current = null;
+    };
+  }, [roomId, role, room.creator_name, room.joiner_name, user?.id, user?.name]);
+
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [chatMessages.length]);
+
+  const onSendChat = useCallback(() => {
+    const cleaned = moderateChat(chatInput);
+    if (!cleaned) {
+      setChatInput("");
+      return;
+    }
+    const ctx = chatChannelRef.current;
+    if (!ctx) return;
+    ctx.ch.send({ userId: ctx.myId, name: ctx.myDisplayName, text: cleaned });
+    setChatMessages((prev) => [...prev, { userId: ctx.myId, name: ctx.myDisplayName, text: cleaned, ts: new Date().toISOString() }]);
+    setChatInput("");
+  }, [chatInput]);
 
   // Round-end resolver. Runs whenever gameStatus or clock
   // status flips. Whichever client gets here first writes the
@@ -1286,6 +1402,10 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     }
     advanceRoundEndedRef.current = true;
     (async () => {
+      // Wait for any in-flight optimistic move write to land
+      // so the final move is in arena_moves before we
+      // reconstruct PGN below.
+      try { await lastWriteRef.current; } catch { /* ignore */ }
       const entry = buildRoundEntry({
         round: roundLabel,
         gameStatus,
@@ -1364,6 +1484,78 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     })();
   }, [gameStatus, snapshot, status, roundLabel, position, room, roomId, setRoom, colorPair, rulesDiff, isTiebreak]);
 
+  // Opponent-move sound: when room.round_state.plyCount
+  // advances past what we already locally know about, the
+  // change came from the opponent. Play the move sound and
+  // light up the last-move highlight so the opponent's
+  // response feels equivalent to ours.
+  const lastSeenPlyRef = useRef(0);
+  useEffect(() => {
+    const ply = roomPlyCount;
+    if (ply <= lastSeenPlyRef.current) return;
+    const isOurOptimistic = localPosition && localPly === ply;
+    lastSeenPlyRef.current = ply;
+    if (isOurOptimistic) return;
+    // Find the move the opponent just made so we can highlight
+    // its squares + decide capture vs non-capture for sound.
+    const justPlayed = moves.find((m) => m.ply === ply) || moves[moves.length - 1];
+    if (justPlayed?.move_from && justPlayed?.move_to) {
+      setHighlight({
+        [justPlayed.move_from]: { backgroundColor: "rgba(255,255,255,0.07)" },
+        [justPlayed.move_to]:   { backgroundColor: "rgba(255,255,255,0.11)" },
+      });
+    }
+    // Best-effort capture detection: if the SAN includes 'x'
+    // it's a capture. Falls back to the non-capture sound.
+    const wasCapture = typeof justPlayed?.san === "string" && justPlayed.san.includes("x");
+    playMoveSound({ flags: wasCapture ? "c" : "n" });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomPlyCount]);
+
+  // Round-start ping: play the gentle "game start" sound once
+  // per round so the transition from warmup -> round 1, round
+  // 1 -> round 2, etc. has an audible cue.
+  const roundStartedRef = useRef(null);
+  useEffect(() => {
+    const key = `${status}:${roundLabel}`;
+    if (roundStartedRef.current === key) return;
+    if (status === "round_1" || status === "round_2" || status === "tiebreak") {
+      roundStartedRef.current = key;
+      playGameStart();
+    }
+  }, [status, roundLabel]);
+
+  // Round-end audio cue: play victory/defeat/draw exactly
+  // once when the round resolves. We key on the most recent
+  // round entry in match_result so the sound fires after the
+  // result is committed.
+  const roundEndSoundRef = useRef(null);
+  useEffect(() => {
+    const rounds = room.match_result?.rounds || [];
+    const latest = rounds[rounds.length - 1];
+    if (!latest) return;
+    const key = `${latest.round}:${latest.endedAt}`;
+    if (roundEndSoundRef.current === key) return;
+    roundEndSoundRef.current = key;
+    if (latest.winner === role) playVictory();
+    else if (latest.winner == null) playDraw();
+    else playDefeat();
+  }, [room.match_result, role]);
+
+  // Low-time alert: my clock dropping under 30s plays the
+  // chess.com-style ticking nudge once per round.
+  const lowTimeFiredRef = useRef(null);
+  useEffect(() => {
+    const my = snapshot[role];
+    if (!my || my.expired) return;
+    const roundKey = `${status}:${roundLabel}`;
+    if (lowTimeFiredRef.current === roundKey) return;
+    if (my.remainingMs < 30_000 && my.remainingMs > 0) {
+      lowTimeFiredRef.current = roundKey;
+      playLowTime();
+    }
+  }, [snapshot, role, status, roundLabel]);
+
   // Resign action.
   const onResign = useCallback(() => {
     if (!confirmResign) {
@@ -1407,6 +1599,101 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
       }
     })();
   }, [confirmResign, role, roundLabel, status, position, room, roomId, setRoom, colorPair]);
+
+  // Draw offer flow. State is synced through round_state.drawOffer:
+  //   { from: 'creator'|'joiner', round: <roundLabel> }
+  // Either side can offer; the other side sees the incoming
+  // banner and can Accept (round ends as a draw) or Decline
+  // (offer cleared).
+  const MAX_DRAW_OFFERS = 3;
+  const drawOffersBySide = room.round_state?.drawOffersUsed || {};
+  const myDrawOffersUsed = drawOffersBySide[role] || 0;
+  const drawOffer = room.round_state?.drawOffer;
+  const incomingDraw = drawOffer && drawOffer.from && drawOffer.from !== role && drawOffer.round === roundLabel;
+  const myPendingDrawOffer = drawOffer && drawOffer.from === role && drawOffer.round === roundLabel;
+
+  // Audible cue when a draw offer arrives, exactly like Play.
+  const lastDrawOfferKeyRef = useRef(null);
+  useEffect(() => {
+    if (!incomingDraw) {
+      lastDrawOfferKeyRef.current = null;
+      return;
+    }
+    const key = `${drawOffer.from}:${drawOffer.round}:${drawOffer.ts || ""}`;
+    if (lastDrawOfferKeyRef.current === key) return;
+    lastDrawOfferKeyRef.current = key;
+    playOfferNotify();
+  }, [incomingDraw, drawOffer]);
+
+  const onDrawOffer = useCallback(async () => {
+    if (gameStatus.ended) return;
+    if (myDrawOffersUsed >= MAX_DRAW_OFFERS) return;
+    if (myPendingDrawOffer) return;       // already pending
+    if (!confirmDraw) {
+      setConfirmDraw(true);
+      if (drawTimerRef.current) clearTimeout(drawTimerRef.current);
+      drawTimerRef.current = setTimeout(() => setConfirmDraw(false), 4000);
+      return;
+    }
+    if (drawTimerRef.current) clearTimeout(drawTimerRef.current);
+    setConfirmDraw(false);
+    const round_state = {
+      ...(room.round_state || {}),
+      drawOffer: { from: role, round: roundLabel, ts: new Date().toISOString() },
+      drawOffersUsed: { ...drawOffersBySide, [role]: myDrawOffersUsed + 1 },
+    };
+    const result = await updateRoom(roomId, { round_state });
+    if (result?.ok && result.room && setRoom) {
+      setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+    }
+  }, [gameStatus.ended, myDrawOffersUsed, myPendingDrawOffer, confirmDraw, room.round_state, role, roundLabel, drawOffersBySide, roomId, setRoom]);
+
+  const onDrawDecline = useCallback(async () => {
+    if (!incomingDraw) return;
+    const round_state = {
+      ...(room.round_state || {}),
+      drawOffer: null,
+    };
+    const result = await updateRoom(roomId, { round_state });
+    if (result?.ok && result.room && setRoom) {
+      setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+    }
+  }, [incomingDraw, room.round_state, roomId, setRoom]);
+
+  const onDrawAccept = useCallback(async () => {
+    if (!incomingDraw) return;
+    if (advanceRoundEndedRef.current) return;
+    advanceRoundEndedRef.current = true;
+    const entry = buildRoundEntry({
+      round: roundLabel,
+      gameStatus: { ended: true, winner: null, reason: "draw by agreement" },
+      reasonOverride: "draw by agreement",
+      forcedWinnerColor: null,
+      finalFen: position.toFen(),
+      plyCount: room.round_state?.plyCount || 0,
+    });
+    const newMatch = appendRound(room.match_result, entry);
+    const nextStatus = nextStatusAfterRound(status, newMatch);
+    const finalMatch = nextStatus === "done" ? finalizeMatch(newMatch) : newMatch;
+    const round_state = {
+      ...(room.round_state || {}),
+      drawOffer: null,
+      clock: pauseClock(room.round_state?.clock),
+      endedAt: new Date().toISOString(),
+    };
+    const result = await updateRoom(roomId, {
+      match_result: finalMatch,
+      round_state,
+      status: nextStatus,
+    });
+    if (!result?.ok) {
+      advanceRoundEndedRef.current = false;
+      return;
+    }
+    if (result?.room && setRoom) {
+      setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+    }
+  }, [incomingDraw, role, roundLabel, status, position, room, roomId, setRoom]);
 
   // History replay. When user clicks a move in the move list,
   // we render that historical FEN read-only; click "Live" to
@@ -1510,6 +1797,21 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
           <div className="w-full xl:w-[340px] shrink-0 flex flex-col gap-3">
             {!gameStatus.ended && (
               <div className="flex gap-2 shrink-0 flex-wrap">
+                <button onClick={onDrawOffer} disabled={myDrawOffersUsed >= MAX_DRAW_OFFERS || !!myPendingDrawOffer}
+                  className={`py-2.5 px-3 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
+                    myDrawOffersUsed >= MAX_DRAW_OFFERS ? "bg-surface-low/50 border border-white/[0.02] text-on-surface-variant/15"
+                    : myPendingDrawOffer ? "bg-amber-500/10 border border-amber-500/15 text-amber-400/60"
+                    : confirmDraw ? "bg-amber-500/20 text-amber-400 border border-amber-500/20"
+                    : "bg-surface-low border border-white/[0.04] text-on-surface-variant/35 hover:text-amber-400 hover:border-amber-500/15"
+                  }`}>
+                  {myDrawOffersUsed >= MAX_DRAW_OFFERS
+                    ? "No draws left"
+                    : myPendingDrawOffer
+                      ? "Draw pending\u2026"
+                      : confirmDraw
+                        ? "Tap to offer"
+                        : `Draw${myDrawOffersUsed > 0 ? ` (${MAX_DRAW_OFFERS - myDrawOffersUsed})` : ""}`}
+                </button>
                 <button onClick={onResign}
                   className={`flex-1 py-2.5 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
                     confirmResign
@@ -1525,7 +1827,27 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
               <p className="text-[11px] text-error">{resignError}</p>
             )}
 
+            {incomingDraw && (
+              <div className="bg-primary/10 border border-primary/20 p-3">
+                <span className="text-[12px] text-primary font-bold block mb-2">Opponent offers a draw</span>
+                <div className="flex gap-2">
+                  <button onClick={onDrawAccept} className="flex-1 py-2 bg-primary text-on-primary font-headline text-[10px] font-bold uppercase">Accept</button>
+                  <button onClick={onDrawDecline} className="flex-1 py-2 bg-surface-low text-on-surface-variant/50 font-headline text-[10px] font-bold uppercase">Decline</button>
+                </div>
+              </div>
+            )}
+
             <VariantRulesCard rules={rulesDiff} isTiebreak={isTiebreak} roundLabel={roundLabel} />
+
+            <ChatPanel
+              messages={chatMessages}
+              input={chatInput}
+              onInputChange={setChatInput}
+              onSend={onSendChat}
+              myUserId={user?.id}
+              myDisplayName={user?.name || (role === "creator" ? room.creator_name : room.joiner_name) || "you"}
+              scrollRef={chatScrollRef}
+            />
 
             <MoveList
               moves={moves}
@@ -1613,12 +1935,55 @@ function VariantRulesCard({ rules, isTiebreak, roundLabel }) {
   );
 }
 
-// ── Sub-components: move list ──────────────────────────────
+// ── Sub-components: move list, chat ────────────────────────
 //
 // Clocks now live inline in PlayerBar so the arena play
 // surface matches the regular online game UI. The dedicated
 // ClockPanel + ClockRow components were removed - their job
 // is fully covered by PlayerBar's embedded ClockDisplay.
+
+/**
+ * Tiny ephemeral chat surface that mirrors the one in
+ * OnlineGameScreen. Messages live in component state only -
+ * closing the tab loses history. Send-on-Enter, 200-char cap
+ * via moderateChat in the parent, banned words drop the
+ * message silently.
+ */
+function ChatPanel({ messages, input, onInputChange, onSend, myUserId, myDisplayName, scrollRef }) {
+  return (
+    <div className="bg-surface-container border border-white/[0.04] shrink-0">
+      <div className="p-2 border-b border-white/[0.03]">
+        <h2 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">Chat</h2>
+      </div>
+      <div ref={scrollRef} className="max-h-[140px] overflow-y-auto p-2.5 space-y-1.5">
+        {messages.length === 0 && <p className="text-[11px] text-on-surface-variant/20 italic">Say hello...</p>}
+        {messages.map((msg, i) => {
+          const isMe = msg.userId === myUserId;
+          return (
+            <p key={i} className={`text-[11px] leading-relaxed break-words ${isMe ? "text-primary/70" : "text-on-surface-variant/60"}`}>
+              <span className="font-bold text-[10px]">{isMe ? myDisplayName : (msg.name || "Opponent")}: </span>
+              {msg.text}
+            </p>
+          );
+        })}
+      </div>
+      <div className="flex border-t border-white/[0.03]">
+        <input
+          value={input}
+          onChange={(e) => onInputChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && input.trim()) onSend(); }}
+          placeholder="Type a message..."
+          maxLength={200}
+          className="flex-1 bg-transparent px-2.5 py-2 text-[11px] text-on-surface placeholder:text-on-surface-variant/20 outline-none"
+        />
+        <button onClick={onSend} disabled={!input.trim()}
+          className="px-3 text-[10px] font-bold text-primary/50 hover:text-primary transition-colors disabled:opacity-30">
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function MoveList({ moves, activeIndex, onJump }) {
   if (!moves || moves.length === 0) {

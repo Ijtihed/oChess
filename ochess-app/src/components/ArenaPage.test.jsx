@@ -20,6 +20,7 @@ vi.mock("../lib/supabase", () => ({
 
 vi.mock("../lib/arena/service", () => ({
   createRoom: vi.fn(),
+  listActiveRoomsForUser: vi.fn(async () => ({ ok: true, rooms: [] })),
 }));
 
 const mockGenerateArenaRules = vi.fn();

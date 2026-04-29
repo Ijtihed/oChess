@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import SocialPanel from "./SocialPanel";
 import { isOnline } from "../lib/supabase";
-import { createRoom } from "../lib/arena/service";
+import { createRoom, listActiveRoomsForUser } from "../lib/arena/service";
 import { generateArenaRules, isAIRulesAvailable } from "../lib/arena/ai-rules";
 import { resolveRules } from "../lib/arena/rules";
 import { describeRules } from "../lib/arena/rule-preview";
@@ -85,6 +85,7 @@ export default function ArenaPage() {
         <p className="anim-fade-up text-sm text-on-surface-variant/40 mb-6" style={{ "--delay": "0.06s" }}>
           Describe a chess variant in your own words. AI builds the rules, you and your opponent each design one round, then 1v1.
         </p>
+        <RejoinBanner user={user} navigate={navigate} />
         <div className="grid gap-6 md:grid-cols-2">
           <CreatePanel user={user} navigate={navigate} />
           <JoinPanel navigate={navigate} />
@@ -93,6 +94,84 @@ export default function ArenaPage() {
       <SocialPanel />
     </div>
   );
+}
+
+/**
+ * "You have a live match" affordance for the lobby. Pulls the
+ * caller's currently-active arena rooms and renders a one-line
+ * resume button per room (capped at 5 - in practice users only
+ * have 0 or 1 live rooms because they have to finish or
+ * abandon to start another).
+ *
+ * Hidden when there are no active rooms so the lobby is clean
+ * for first-time users. Refreshes when the page mounts; we
+ * deliberately don't poll because the lobby refresh on a
+ * tab switch is enough cadence for "did my opponent just
+ * join?".
+ */
+function RejoinBanner({ user, navigate }) {
+  const [rooms, setRooms] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    let cancelled = false;
+    (async () => {
+      const result = await listActiveRoomsForUser(user.id);
+      if (cancelled) return;
+      setLoading(false);
+      if (result.ok) setRooms(result.rooms || []);
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
+  if (loading || rooms.length === 0) return null;
+
+  return (
+    <div className="anim-fade-up mb-6 p-4 bg-primary/10 border border-primary/30 space-y-2" style={{ "--delay": "0.08s" }}>
+      <h2 className="font-headline text-[10px] font-bold uppercase tracking-widest text-primary/70">
+        Resume your match
+      </h2>
+      <div className="space-y-2">
+        {rooms.map((room) => {
+          const opponentName = room.creator_id === user.id
+            ? (room.joiner_name || "opponent")
+            : (room.creator_name || "host");
+          const statusLabel = formatRoomStatus(room.status);
+          return (
+            <button key={room.id}
+              onClick={() => navigate(`/arena/${room.id}`)}
+              className="w-full flex items-center justify-between gap-3 px-3 py-2 bg-surface-low border border-white/[0.04] hover:border-primary/30 transition-colors text-left">
+              <div className="min-w-0">
+                <span className="font-headline text-[13px] font-bold text-primary block">
+                  vs {opponentName}
+                </span>
+                <span className="text-[11px] text-on-surface-variant/55">
+                  {statusLabel}
+                </span>
+              </div>
+              <span className="font-headline text-[10px] font-bold uppercase tracking-widest text-primary/70 shrink-0">
+                Resume
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatRoomStatus(status) {
+  switch (status) {
+    case "waiting_for_joiner": return "Waiting for opponent";
+    case "prompting": return "Picking rules";
+    case "warmup_round_1": return "Warmup \u00b7 round 1";
+    case "warmup_round_2": return "Warmup \u00b7 round 2";
+    case "round_1": return "Round 1 in progress";
+    case "round_2": return "Round 2 in progress";
+    case "tiebreak": return "Tie-break";
+    default: return status;
+  }
 }
 
 // ── Create flow ────────────────────────────────────────────

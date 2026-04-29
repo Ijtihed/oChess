@@ -11,14 +11,9 @@ import useClock from "../hooks/useClock";
 import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, playLowTime, playChatNotify, playOfferNotify, preloadAll } from "../lib/sounds";
 import { supabase } from "../lib/supabase";
 import { createVariantGame } from "../lib/variants";
-
-
-const BAD_WORDS = new Set(["fuck","shit","bitch","nigger","nigga","faggot","retard","cunt","dick","pussy","asshole","bastard","whore","slut","cock","kys","kill yourself","stfu"]);
-function moderateChat(text) {
-  const lower = text.toLowerCase();
-  for (const w of BAD_WORDS) { if (lower.includes(w)) return null; }
-  return text.slice(0, 200);
-}
+// moderateChat lives in ../lib/chat.js so the Arena route can
+// share the same banlist + truncation behavior.
+import { moderateChat } from "../lib/chat";
 
 /**
  * Apply server-stored time-control state to the live clock.

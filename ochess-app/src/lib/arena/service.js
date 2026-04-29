@@ -69,6 +69,47 @@ export async function createRoom({ creatorId, creatorName, rulesCreator } = {}) 
 }
 
 /**
+ * Fetch the user's currently-active arena rooms. Used by the
+ * /arena lobby to surface a "rejoin" affordance when the user
+ * walked away from a match mid-flow. Excludes finished /
+ * abandoned rooms; orders by the most recently updated so
+ * the freshest match shows up first.
+ *
+ * @param {string} userId
+ * @returns {Promise<{ ok: boolean, rooms?: Array, error?: string }>}
+ */
+export async function listActiveRoomsForUser(userId) {
+  if (!supabase) return { ok: false, error: "Online features not configured." };
+  if (!userId) return { ok: false, error: "Sign in required." };
+  try {
+    // Match either seat. RLS already restricts the SELECT to
+    // rooms the caller is participating in, but we still apply
+    // the predicate so the wire payload stays small if RLS is
+    // ever loosened.
+    const activeStatuses = [
+      "waiting_for_joiner",
+      "prompting",
+      "warmup_round_1",
+      "warmup_round_2",
+      "round_1",
+      "round_2",
+      "tiebreak",
+    ];
+    const { data, error } = await supabase
+      .from("arena_rooms")
+      .select("*")
+      .or(`creator_id.eq.${userId},joiner_id.eq.${userId}`)
+      .in("status", activeStatuses)
+      .order("updated_at", { ascending: false })
+      .limit(5);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, rooms: data || [] };
+  } catch (e) {
+    return { ok: false, error: e?.message || "Unknown error" };
+  }
+}
+
+/**
  * Fetch a single room by id. Used by the join page to render
  * the lobby state when the user lands via share link.
  */
@@ -367,6 +408,57 @@ export function subscribeRoom(roomId, onUpdate) {
     try {
       client.removeChannel(channel);
     } catch { /* ignore */ }
+  };
+}
+
+/**
+ * Open a Supabase Realtime broadcast channel for chat messages
+ * within a room. Mirrors the broadcast pattern used by
+ * `lib/online-game.js` so the UX is identical: ephemeral
+ * messages, no DB persistence, broadcast.self=false so the
+ * sender doesn't double-render their own message.
+ *
+ * Returns `{ send, unsubscribe }`. Caller passes `onMessage`
+ * to receive remote messages and calls `send({ userId, name,
+ * text })` to broadcast.
+ *
+ * @param {string} roomId
+ * @param {(msg: { userId: string, name: string, text: string, ts: string }) => void} onMessage
+ * @returns {{ send: (msg: { userId: string, name: string, text: string }) => void, unsubscribe: () => void }}
+ */
+export function openChatChannel(roomId, onMessage) {
+  if (!supabase || !roomId) {
+    return { send: () => {}, unsubscribe: () => {} };
+  }
+  const client = getRealtimeClient();
+  if (!client) return { send: () => {}, unsubscribe: () => {} };
+  const channel = client
+    .channel(`arena_chat_${roomId}`, { config: { broadcast: { self: false } } })
+    .on("broadcast", { event: "chat" }, (payload) => {
+      try {
+        onMessage?.(payload.payload);
+      } catch (e) {
+        logErr("openChatChannel callback threw:", e);
+      }
+    })
+    .subscribe((status) => {
+      log(`arena_chat_${roomId} channel:`, status);
+    });
+  return {
+    send: ({ userId, name, text }) => {
+      try {
+        channel.send({
+          type: "broadcast",
+          event: "chat",
+          payload: { userId, name, text, ts: new Date().toISOString() },
+        });
+      } catch (e) {
+        logErr("openChatChannel.send failed:", e);
+      }
+    },
+    unsubscribe: () => {
+      try { client.removeChannel(channel); } catch { /* ignore */ }
+    },
   };
 }
 
