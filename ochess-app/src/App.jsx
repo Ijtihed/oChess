@@ -264,7 +264,12 @@ function OnlineGameRoute() {
   if (!gameData || authLoading) {
     return (
       <div className="min-h-screen min-h-[100dvh] bg-surface flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          <span className="text-[11px] uppercase tracking-widest text-on-surface-variant/40">
+            Loading game&hellip;
+          </span>
+        </div>
       </div>
     );
   }

@@ -187,7 +187,7 @@ export function setAIExplanation(map, id, explanation, model) {
   };
 }
 
-export { RATING, STATE };
+export { RATING, STATE, createScheduleState };
 
 // ─────────────────────────────────────────────────────────────────────
 // Card sharing — encode a card to a URL fragment, decode on the

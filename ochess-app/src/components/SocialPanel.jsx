@@ -178,7 +178,7 @@ export default function SocialPanel() {
           <div className="flex items-center gap-2">
             <h3 className="font-headline text-sm font-bold uppercase tracking-widest text-on-surface-variant/30">Friends</h3>
             {loading && (
-              <div className="w-3 h-3 border border-primary/30 border-t-primary rounded-full animate-spin" />
+              <div className="w-3 h-3 border border-primary/30 border-t-primary rounded-full animate-spin" aria-label="Loading" />
             )}
           </div>
           {isLoggedIn && (
@@ -276,8 +276,11 @@ export default function SocialPanel() {
 
         {/* Friends list */}
         {loading && friends.length === 0 && !loadError ? (
-          <div className="flex justify-center py-6">
+          <div className="flex flex-col items-center gap-2 py-6">
             <div className="w-4 h-4 border-2 border-primary/20 border-t-primary/60 rounded-full animate-spin" />
+            <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30">
+              Loading friends&hellip;
+            </span>
           </div>
         ) : friends.length > 0 ? (
           <div className="space-y-1">

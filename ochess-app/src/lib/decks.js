@@ -90,7 +90,7 @@ const BUILTIN_DECKS = [
 ];
 
 /** Apply a drill-set filter to a card. Mirrors the same predicates
- *  as the StudyPlanPanel "Today's plan" picker so deck counts and
+ *  as the AIDeckSheet preview's match-counter so deck counts and
  *  the actual session always agree. */
 function matchDrillSet(set, card) {
   if (card.type !== "mistake" && card.type !== "puzzle") return false;

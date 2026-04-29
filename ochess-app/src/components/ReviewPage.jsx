@@ -3,7 +3,8 @@ import { useSearchParams } from "react-router-dom";
 import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
 import SocialPanel from "./SocialPanel";
-import StudyPlanPanel from "./StudyPlanPanel";
+import ImportGamesPanel from "./ImportGamesPanel";
+import AIDeckSheet from "./AIDeckSheet";
 import { playMoveSound, playVictory, playError } from "../lib/sounds";
 import { filterCardsByQuery, COMMON_WEAKNESS_CHIPS } from "../lib/study-plan";
 import {
@@ -26,6 +27,9 @@ import {
   saveAIExplanations,
   getAIExplanation,
   setAIExplanation,
+  buildShareUrl,
+  setSchedule,
+  createScheduleState,
 } from "../lib/review-cards";
 import { explainCardWithAI, isAIAvailable } from "../lib/coach-llm";
 import { loadDrillSets, removeDrillSet, saveDrillSets } from "../lib/drill-sets";
@@ -57,11 +61,25 @@ function uciToMove(uci) {
 // if you can't reconstruct the idea). "Easy" is reserved for
 // "I'd see this instantly forever" - over-using it stretches
 // the interval too far and the card stops teaching you.
+//
+// Visual: tone-only borders on a neutral surface fill, matching
+// the rest of the app's quieter button palette. The `tone` value
+// is also used to tint the predicted-interval line so the
+// per-rating signal stays legible without the loud bg fills the
+// previous design used.
 const RATING_BUTTONS = [
-  { label: "Again", desc: "Forgot / got it wrong",     value: RATING.AGAIN, key: "AGAIN", color: "bg-error/20 text-error hover:bg-error/30 border border-error/10" },
-  { label: "Hard",  desc: "Right but unsure / slow",   value: RATING.HARD,  key: "HARD",  color: "bg-amber-500/15 text-amber-300 hover:bg-amber-500/20 border border-amber-500/15" },
-  { label: "Good",  desc: "Knew it without effort",    value: RATING.GOOD,  key: "GOOD",  color: "bg-primary/10 text-primary/85 hover:bg-primary/15 border border-primary/15" },
-  { label: "Easy",  desc: "Spotted it instantly",      value: RATING.EASY,  key: "EASY",  color: "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/15" },
+  { label: "Again", desc: "Forgot / got it wrong",   value: RATING.AGAIN, key: "AGAIN",
+    classes: "bg-surface-low border border-error/30 text-on-surface-variant/70 hover:border-error/50 hover:text-error",
+    intervalText: "text-error/70" },
+  { label: "Hard",  desc: "Right but unsure / slow", value: RATING.HARD,  key: "HARD",
+    classes: "bg-surface-low border border-amber-500/30 text-on-surface-variant/70 hover:border-amber-500/50 hover:text-amber-300",
+    intervalText: "text-amber-300/70" },
+  { label: "Good",  desc: "Knew it without effort",  value: RATING.GOOD,  key: "GOOD",
+    classes: "bg-surface-low border border-primary/30 text-on-surface-variant/70 hover:border-primary/50 hover:text-primary",
+    intervalText: "text-primary/70" },
+  { label: "Easy",  desc: "Spotted it instantly",    value: RATING.EASY,  key: "EASY",
+    classes: "bg-surface-low border border-emerald-500/30 text-on-surface-variant/70 hover:border-emerald-500/50 hover:text-emerald-300",
+    intervalText: "text-emerald-300/70" },
 ];
 
 function orientationFor(card) {
@@ -82,6 +100,23 @@ function orientationFor(card) {
  */
 function playerColorFor(card) {
   return (card?.fen || "").includes(" b ") ? "b" : "w";
+}
+
+/**
+ * Resolve a "View source" URL for a card, or null if there isn't
+ * one. Mistake / shared cards carry an explicit `source_url`; for
+ * puzzle cards we fall back to a Lichess training URL synthesized
+ * from `puzzleId` (puzzles default to lichess unless explicitly
+ * tagged otherwise). Returns null when no useful URL exists,
+ * which the overflow-menu uses to hide the row entirely.
+ */
+function cardSourceUrl(card) {
+  if (!card) return null;
+  if (typeof card.source_url === "string" && card.source_url) return card.source_url;
+  if (card.type === "puzzle" && card.puzzleId) {
+    return `https://lichess.org/training/${card.puzzleId}`;
+  }
+  return null;
 }
 
 /** Card-type chip rendered above the prompt - icon + label in
@@ -122,6 +157,73 @@ function StatePill({ state, intervalDays }) {
   );
 }
 
+/**
+ * Card-action overflow menu. Replaces the previous full-width
+ * "Skip / Remove from deck" button row that lived under the
+ * rating buttons - the rare destructive actions (Remove, Reset)
+ * and one-off actions (Share, View source) don't deserve as much
+ * visual weight as the rating row, so we tuck them behind a
+ * single 3-dot button next to the type chip.
+ *
+ * Click-away closes the menu. Each action receives the closing
+ * callback so a clicked item can drop the menu before its work
+ * (e.g. removing the card from state would unmount the menu
+ * anyway, but explicit close keeps the UX consistent).
+ *
+ * The "Remove" item retains the two-step confirm that the inline
+ * button used to provide: first click flips its label to "Tap
+ * again to remove", second click within ~4 s actually deletes.
+ */
+function CardOverflowMenu({ items }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  const visibleItems = items.filter((it) => !it.hidden);
+  if (visibleItems.length === 0) return null;
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen((o) => !o)}
+        title="More actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="w-7 h-7 flex items-center justify-center bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary hover:bg-surface-high transition-colors active:scale-[0.96]">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="5" cy="12" r="1.6" />
+          <circle cx="12" cy="12" r="1.6" />
+          <circle cx="19" cy="12" r="1.6" />
+        </svg>
+      </button>
+      {open && (
+        <div role="menu"
+          className="absolute right-0 top-9 z-20 min-w-[180px] bg-surface-container border border-white/[0.06] py-1 shadow-xl">
+          {visibleItems.map((it) => (
+            <button key={it.id}
+              role="menuitem"
+              disabled={it.disabled}
+              onClick={() => { it.onClick?.(); if (!it.keepOpen) setOpen(false); }}
+              className={`w-full text-left px-3 py-2 font-headline text-[11px] font-bold uppercase tracking-wide transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                it.danger
+                  ? it.armed
+                    ? "bg-error/15 text-error animate-pulse"
+                    : "text-on-surface-variant/60 hover:text-error hover:bg-surface-high"
+                  : "text-on-surface-variant/65 hover:text-primary hover:bg-surface-high"
+              }`}>
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Deck filters mirror the card `type` field that PuzzlesPage /
 // AnalysisPage / GameScreen attach when saving. "all" is the default;
 // the others narrow the queue so a user who's accumulated 200 cards
@@ -148,27 +250,29 @@ export default function ReviewPage() {
   const [phase, setPhase] = useState("prompt");
   const [highlight, setHighlight] = useState({});
   const [reviewed, setReviewed] = useState(0);
-  // Deck browser: the deck the user is currently studying. null
-  // means "show the deck list, not a single-card session". Today
-  // tab opens with `activeDeckId === null` so the user lands on
-  // the browser; clicking a deck flips this to its id.
-  const [activeDeckId, setActiveDeckId] = useState(null);
-  // Legacy chip filter, kept for the Plan-tab "Practice now" path
+  // URL-driven navigation. Two query params:
+  //   ?tab=today|import   - top-level mode (defaults to today)
+  //   ?deck=<id>          - active deck for the session view
+  // Sharing a deck-link to yourself / a friend now actually works,
+  // and the browser back button takes you from session -> browser.
+  // Local state is derived from searchParams so we never end up
+  // with state and URL out of sync.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const topTab = searchParams.get("tab") === "import" ? "import" : "today";
+  const activeDeckId = searchParams.get("deck") || null;
+  // Legacy chip filter, kept for the Import-tab "Practice now" path
   // and the in-session deck filters at the top of the board area.
   // It's redundant with the deck browser for normal navigation but
   // useful as a quick narrowing inside an active deck.
   const [deckFilter, setDeckFilter] = useState("all");
-  // Top-level tab: "today" runs the standard SM-2 flow you've always
-  // had; "plan" surfaces the new pulled-from-your-games study plan
-  // (StudyPlanPanel handles its own state + persistence).
-  const [topTab, setTopTab] = useState("today");
   // Optional plan-driven filter - set when the user clicks "Start
-  // session" from the Plan tab (either ad-hoc filter or a saved
+  // session" from the Import tab (either ad-hoc filter or a saved
   // drill set). We narrow the SM-2 queue to the same chip /
   // free-text filter so the session matches what they picked. The
   // optional setName is shown in the banner so the user knows
   // they're drilling "Hanging queens" instead of just `"hanging
-  // queen"`.
+  // queen"`. These stay as local state because they're ephemeral
+  // session config the user shouldn't accidentally URL-share.
   const [planQuery, setPlanQuery] = useState("");
   const [planChipId, setPlanChipId] = useState(null);
   const [planSetName, setPlanSetName] = useState("");
@@ -184,13 +288,19 @@ export default function ReviewPage() {
   // without ref-ordering ambiguity.
   const awaitingOpponentRef = useRef(false);
 
+  // AI deck-generator sheet. Opened from the deck browser via
+  // "+ Generate AI decks". The sheet manages its own request /
+  // result / cooldown state internally - we only pass it the
+  // shared card collection + drill-set state so saves land in
+  // the same store the deck browser reads.
+  const [aiSheetOpen, setAiSheetOpen] = useState(false);
+
   // Card share import - if the URL has `?import=<base64>`, decode the
   // shared card, dedupe against the existing deck, and append. Then
   // strip the query param so a refresh doesn't re-import (which would
   // be benign thanks to addCardIfNew but would surface the toast
   // again). Lives at the top so it runs before the empty-state check
   // and the user immediately sees the imported card.
-  const [searchParams, setSearchParams] = useSearchParams();
   const [shareToast, setShareToast] = useState(null);
   useEffect(() => {
     const payload = searchParams.get("import");
@@ -318,19 +428,45 @@ export default function ReviewPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardKey]);
 
+  // URL-bound navigation helpers. We do partial updates against the
+  // existing searchParams so unrelated query params (notably
+  // `?import=<base64>` while it's still in the URL) survive each
+  // navigation. `replace: true` is used everywhere so users don't
+  // accumulate dozens of history entries while flipping decks.
+  const updateParams = useCallback((mutator) => {
+    const next = new URLSearchParams(searchParams);
+    mutator(next);
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const setTopTab = useCallback((tab) => {
+    updateParams((p) => {
+      if (tab === "today") p.delete("tab");
+      else p.set("tab", tab);
+      // Switching top-level tab leaves any in-session deck behind.
+      p.delete("deck");
+    });
+    setPhase("prompt");
+    setHighlight({});
+    setReviewed(0);
+  }, [updateParams]);
+
   const startPlanSession = useCallback(({ query, chipId, setName } = {}) => {
     setPlanQuery(query || "");
     setPlanChipId(chipId || null);
     setPlanSetName(setName || "");
-    setDeckFilter("all"); // Don't double-narrow; Plan filter takes over.
-    // Plan-tab sessions are deliberately ephemeral - skip the deck
-    // browser and drop straight into the focused queue.
-    setActiveDeckId(null);
-    setTopTab("today");
+    setDeckFilter("all"); // Don't double-narrow; plan filter takes over.
+    // Import-tab sessions are deliberately ephemeral - skip the deck
+    // browser and drop straight into the focused queue. Land on
+    // Today so the user sees the board, not the import panel.
+    updateParams((p) => {
+      p.delete("tab");
+      p.delete("deck");
+    });
     setPhase("prompt");
     setHighlight({});
     setReviewed(0);
-  }, []);
+  }, [updateParams]);
 
   const clearPlanSession = useCallback(() => {
     setPlanQuery("");
@@ -340,25 +476,29 @@ export default function ReviewPage() {
 
   // Open a deck from the browser. Clears any plan-driven filter so
   // the deck's match predicate is the only thing narrowing the
-  // queue.
+  // queue. Sets ?deck=<id> in the URL.
   const openDeck = useCallback((deckId) => {
-    setActiveDeckId(deckId);
     setPlanQuery("");
     setPlanChipId(null);
     setPlanSetName("");
     setDeckFilter("all");
+    updateParams((p) => {
+      p.delete("tab");
+      if (deckId) p.set("deck", deckId);
+      else p.delete("deck");
+    });
     setPhase("prompt");
     setHighlight({});
     setReviewed(0);
-  }, []);
+  }, [updateParams]);
 
   // Return to the deck browser without losing scheduling progress.
   const closeDeck = useCallback(() => {
-    setActiveDeckId(null);
+    updateParams((p) => p.delete("deck"));
     setPhase("prompt");
     setHighlight({});
     setReviewed(0);
-  }, []);
+  }, [updateParams]);
 
   // Delete a user-created drill set deck. Built-in decks (puzzle /
   // mistake / etc.) can't be deleted - they auto-disappear when
@@ -368,8 +508,10 @@ export default function ReviewPage() {
     const next = removeDrillSet(drillSets, deck.drillSetId);
     setDrillSets(next);
     saveDrillSets(next);
-    if (activeDeckId === deck.id) setActiveDeckId(null);
-  }, [drillSets, activeDeckId]);
+    if (activeDeckId === deck.id) {
+      updateParams((p) => p.delete("deck"));
+    }
+  }, [drillSets, activeDeckId, updateParams]);
 
   // If localStorage is mutated by another page (e.g. user adds a card
   // from the analysis board in another tab), refresh on focus or
@@ -390,7 +532,7 @@ export default function ReviewPage() {
   }, []);
 
   // Re-pull drill sets when the user toggles back to the Today tab.
-  // The Plan tab can save new drills (AI coach Save-as-drill /
+  // The Import tab can save new drills (AI coach Save-as-drill /
   // Save-all-as-drills); without this they only show up after a
   // tab refocus.
   useEffect(() => {
@@ -678,6 +820,74 @@ export default function ReviewPage() {
     resetCard();
   }, [card, resetCard, confirmRemove]);
 
+  // Reset-schedule action mirrors Remove's two-step confirm. The
+  // user clicks once to arm; the menu item flips its label and
+  // tone, and a second click within 4 s replaces the card's
+  // schedule with a fresh STATE.NEW entry. Useful when a rating
+  // landed wrong (mis-clicked Easy on a card you barely knew),
+  // since neither rate nor skip can resurrect a card from the
+  // far-future review interval an over-eager Easy creates.
+  const [confirmReset, setConfirmReset] = useState(false);
+  const confirmResetTimerRef = useRef(null);
+  useEffect(() => () => {
+    if (confirmResetTimerRef.current) clearTimeout(confirmResetTimerRef.current);
+  }, []);
+  const resetSchedule = useCallback(() => {
+    if (!card) return;
+    if (!confirmReset) {
+      setConfirmReset(true);
+      if (confirmResetTimerRef.current) clearTimeout(confirmResetTimerRef.current);
+      confirmResetTimerRef.current = setTimeout(() => setConfirmReset(false), 4000);
+      return;
+    }
+    if (confirmResetTimerRef.current) clearTimeout(confirmResetTimerRef.current);
+    setConfirmReset(false);
+    const id = cardId(card);
+    setSchedules((prev) => {
+      const next = setSchedule(prev, id, createScheduleState());
+      saveSchedules(next);
+      return next;
+    });
+    resetCard();
+  }, [card, resetCard, confirmReset]);
+
+  // Share + view-source one-shot actions. Share writes the
+  // deserializable share URL to the clipboard and surfaces the
+  // result through the same ShareToast used for `?import=`
+  // imports, so users get one consistent toast for both flows.
+  const shareCard = useCallback(async () => {
+    if (!card) return;
+    const url = buildShareUrl(card);
+    if (!url) {
+      setShareToast({ kind: "error", text: "Couldn't build a share link for this card." });
+      return;
+    }
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+        setShareToast({ kind: "ok", text: "Share link copied to clipboard." });
+      } else {
+        setShareToast({ kind: "info", text: url });
+      }
+    } catch {
+      setShareToast({ kind: "error", text: "Couldn't copy to clipboard." });
+    }
+    setTimeout(() => setShareToast(null), 4000);
+  }, [card]);
+
+  const viewSource = useCallback(() => {
+    if (!card) return;
+    // Prefer an explicit source_url (set by mistake-card writers
+    // and the share importer), otherwise synthesize a Lichess
+    // training URL from the puzzleId for puzzle cards. Mistake
+    // cards without a source_url and analysis / game / shared
+    // cards have no useful source - the menu item is hidden in
+    // those cases via `cardSourceUrl(card)`.
+    const url = cardSourceUrl(card);
+    if (!url) return;
+    if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
+  }, [card]);
+
   // ── AI explanation request state ──
   // The "Explain with AI" button below the answer panel kicks off a
   // request to the coach Edge Function in mode=explain. Result is
@@ -744,19 +954,22 @@ export default function ReviewPage() {
   // 7-day forecast for the upcoming-reviews chart.
   const deckForecast = useMemo(() => forecastDeckNextDays(scopedCards, schedules, 7), [scopedCards, schedules]);
 
-  // Top-level tab strip is shared across every state - the Plan tab is
-  // useful even before the user has any cards (so they can build the
-  // initial deck), and useful after they've reviewed everything (so
-  // they can pull more games).
+  // Top-level tab strip is shared across every state - the Import
+  // tab is useful even before the user has any cards (so they can
+  // build the initial deck), and useful after they've reviewed
+  // everything (so they can pull more games). Pill style matches
+  // the Play page's Humans/Bots tabs for cross-page consistency.
   const TopTabs = (
-    <div className="anim-fade-up flex gap-1 mb-5 border-b border-white/[0.04]" style={{ "--delay": "0.04s" }}>
+    <div className="anim-fade-up flex gap-1 mb-6" style={{ "--delay": "0.08s" }}>
       {[
-        { id: "today", label: "Today" },
-        { id: "plan",  label: "Plan"  },
+        { id: "today",  label: "Today" },
+        { id: "import", label: "Import games" },
       ].map((t) => (
         <button key={t.id} onClick={() => setTopTab(t.id)}
-          className={`px-4 py-2 font-headline text-[12px] font-bold uppercase tracking-wide transition-colors ${
-            topTab === t.id ? "text-primary border-b-2 border-primary -mb-px" : "text-on-surface-variant/40 hover:text-primary"
+          className={`px-5 py-2.5 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
+            topTab === t.id
+              ? "bg-primary text-on-primary"
+              : "bg-surface-low border border-white/[0.04] text-on-surface-variant/50 hover:text-primary"
           }`}
         >
           {t.label}
@@ -766,28 +979,32 @@ export default function ReviewPage() {
   );
 
   // Inline banner shown after a `?import=<card>` URL adds a shared
-  // card. Stays for 5 s then auto-dismisses.
+  // card. Stays for 5 s then auto-dismisses. Restyled to match the
+  // Play "Resume game" banner idiom (surface-container + accent
+  // border) instead of a strong tonal fill.
   const ShareToast = shareToast ? (
     <div className={`anim-fade-up mb-4 px-4 py-3 border text-[12px] ${
-      shareToast.kind === "error" ? "bg-error/10 border-error/20 text-error"
-      : shareToast.kind === "info" ? "bg-surface-low border-white/[0.06] text-on-surface-variant/65"
-      : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+      shareToast.kind === "error"
+        ? "bg-surface-container border-error/20 text-error"
+        : shareToast.kind === "info"
+        ? "bg-surface-container border-white/[0.06] text-on-surface-variant/65"
+        : "bg-surface-container border-primary/20 text-primary"
     }`}>
       {shareToast.text}
     </div>
   ) : null;
 
-  if (topTab === "plan") {
+  if (topTab === "import") {
     return (
       <div className="flex">
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
           <h1 className="anim-fade-up font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1" style={{ "--delay": "0.05s" }}>Review</h1>
           <p className="anim-fade-up text-sm text-on-surface-variant/40 mb-6" style={{ "--delay": "0.06s" }}>
-            Drill the positions where you keep slipping up.
+            Pull your recent games and turn the mistakes into review cards.
           </p>
           {TopTabs}
           {ShareToast}
-          <StudyPlanPanel onStartSession={startPlanSession} />
+          <ImportGamesPanel onDone={() => setTopTab("today")} />
         </div>
         <SocialPanel />
       </div>
@@ -804,9 +1021,9 @@ export default function ReviewPage() {
           <div className="text-center py-10">
             <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">No cards yet</h2>
             <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-5">
-              Save positions from the Analysis board, your bot games, or failed puzzles - or open the{" "}
-              <button onClick={() => setTopTab("plan")} className="text-primary hover:underline font-bold">Plan tab</button>{" "}
-              to import your chess.com / Lichess games and auto-extract mistake cards.
+              Save positions from the Analysis board, your bot games, or failed puzzles - or open{" "}
+              <button onClick={() => setTopTab("import")} className="text-primary hover:underline font-bold">Import games</button>{" "}
+              to pull your chess.com / Lichess games and auto-extract mistake cards.
             </p>
           </div>
         </div>
@@ -816,10 +1033,9 @@ export default function ReviewPage() {
   }
 
   // Deck browser - the default Today view. The user picks a deck
-  // from the list (or starts a Plan-tab "Practice now" session via
-  // the StudyPlanPanel which routes through startPlanSession and
-  // skips this branch). Only shown when no deck / plan filter is
-  // active.
+  // from the list, or jumps to Import games to add more cards, or
+  // launches the AI deck generator sheet. Only shown when no deck
+  // and no plan filter are active.
   const inPlanSession = !!(planChipId || planQuery);
   if (topTab === "today" && !activeDeck && !inPlanSession) {
     return (
@@ -835,19 +1051,28 @@ export default function ReviewPage() {
             decks={decks}
             onOpen={openDeck}
             onDelete={deleteDeck}
-            onOpenPlan={() => setTopTab("plan")}
+            onOpenImport={() => setTopTab("import")}
+            onOpenAI={() => setAiSheetOpen(true)}
           />
         </div>
         <SocialPanel />
+        <AIDeckSheet
+          open={aiSheetOpen}
+          onClose={() => setAiSheetOpen(false)}
+          cards={cards}
+          drillSets={drillSets}
+          onDrillSetsChange={setDrillSets}
+          onPracticeDeck={startPlanSession}
+        />
       </div>
     );
   }
 
   if (!card) {
-    // We're inside a session (an open deck or a Plan-tab Practice
-    // session) and the queue is empty. Offer the right escape -
-    // back to the deck browser, or back to the plan, depending on
-    // how the session started.
+    // We're inside a session (an open deck or an Import-tab
+    // Practice session) and the queue is empty. Offer the right
+    // escape - back to the deck browser, or back to import,
+    // depending on how the session started.
     return (
       <div className="flex">
         <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
@@ -871,14 +1096,14 @@ export default function ReviewPage() {
                 </button>
               )}
               {inPlanSession && (
-                <button onClick={() => { clearPlanSession(); setActiveDeckId(null); }}
+                <button onClick={() => { clearPlanSession(); closeDeck(); }}
                   className="btn btn-primary px-5 py-2 text-xs">
                   Pick another deck
                 </button>
               )}
-              <button onClick={() => setTopTab("plan")}
+              <button onClick={() => setTopTab("import")}
                 className="btn btn-secondary px-5 py-2 text-xs">
-                Open Plan
+                Import games
               </button>
             </div>
             <p className="text-[11px] uppercase tracking-widest text-on-surface-variant/25">
@@ -900,50 +1125,63 @@ export default function ReviewPage() {
   const fen = gameRef.current ? gameRef.current.fen() : card.fen;
   const orientation = orientationFor(card);
 
+  // Session-header label. Resolves the active deck name, the named
+  // drill set if the user came from Import, the chip label, or the
+  // raw query - in that order. Falls back to "Review" so the h1
+  // never reads as empty.
+  const sessionLabel = activeDeck
+    ? activeDeck.name
+    : planSetName
+      ? planSetName
+      : planChipId
+        ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
+        : planQuery
+          ? `"${planQuery}"`
+          : "Review";
+
   return (
     <div className="flex">
-      <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
+      <div className="flex-1 min-w-0 max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10 min-h-[calc(100dvh-4rem)]">
         {TopTabs}
         {ShareToast}
 
-        {/* Active-deck header. When the user is studying a deck
-            from the browser, show its name + a "Switch deck"
-            button so they can return to the browser without
-            losing schedule progress. The Plan-tab "Practice now"
-            path uses the same banner for visual consistency. */}
+        {/* Compact session header. Replaces the old "Studying X"
+            banner with an Analysis/Puzzles-style header: small
+            breadcrumb above, deck name as h1, inline reviewed/left
+            counter on the right. Keeps the page identifiable
+            without dominating the screen the way the big "Review"
+            hero would. */}
         {(activeDeck || inPlanSession) && (
-          <div className="anim-fade-up mb-5">
-            <div className="flex items-center justify-between gap-3 px-4 py-3 bg-primary/5 border border-primary/15">
-              <span className="text-[12px] text-on-surface-variant/65">
-                Studying{" "}
-                <span className="font-bold text-primary">
-                  {activeDeck
-                    ? activeDeck.name
-                    : planSetName
-                      ? planSetName
-                      : planChipId
-                        ? COMMON_WEAKNESS_CHIPS.find((c) => c.id === planChipId)?.label || planChipId
-                        : `"${planQuery}"`}
-                </span>
-                {activeDeck?.isAICoach && (
-                  <span className="ml-2 px-1.5 py-0.5 bg-primary/15 text-primary font-headline text-[9px] font-bold uppercase tracking-widest">
-                    AI
-                  </span>
-                )}
-              </span>
+          <div className="anim-fade-up mb-5" style={{ "--delay": "0.05s" }}>
+            <div className="flex items-baseline justify-between gap-3 flex-wrap mb-1">
               <button onClick={() => activeDeck ? closeDeck() : clearPlanSession()}
-                className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors shrink-0">
-                {activeDeck ? "Switch deck" : "Clear filter"}
+                className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors flex items-center gap-1">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+                {activeDeck ? "All decks" : "Clear filter"}
               </button>
+              <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30">
+                {reviewed} reviewed &middot; {remaining} left
+              </span>
             </div>
-            {/* Deck-level summary banner for AI-generated decks.
-                The AI writes a 1-2 sentence "what this deck is and
-                why it matters for you" line when generating;
-                surfacing it here gives the user that context every
-                time they study the deck without needing the Plan
-                tab. Hand-saved decks (no summary) skip this. */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="font-headline text-xl sm:text-2xl font-extrabold tracking-tighter text-primary leading-tight">
+                {sessionLabel}
+              </h1>
+              {activeDeck?.isAICoach && (
+                <span className="px-1.5 py-0.5 bg-primary/15 text-primary font-headline text-[9px] font-bold uppercase tracking-widest">
+                  AI
+                </span>
+              )}
+            </div>
+            {/* Deck-level summary for AI-generated decks. The AI
+                writes a 1-2 sentence "what this deck is" line when
+                generating; surfacing it here gives the user that
+                context every time they study the deck. Hand-saved
+                decks (no summary) skip this. */}
             {activeDeck?.summary && (
-              <p className="mt-2 px-4 py-3 text-[12px] text-on-surface-variant/65 bg-surface-low border border-white/[0.04] leading-relaxed">
+              <p className="mt-3 px-4 py-3 text-[12px] text-on-surface-variant/65 bg-surface-low border border-white/[0.04] leading-relaxed">
                 {activeDeck.summary}
               </p>
             )}
@@ -951,9 +1189,10 @@ export default function ReviewPage() {
         )}
 
         {/* Legacy deck-filter chips - only shown when there's NO
-            active deck, since the deck browser is the primary
-            navigation now. Kept for the Plan-tab "Practice now"
-            path so users still have a quick narrow there. */}
+            active deck (i.e. the user came in through the
+            Import-tab Practice-now path and never picked a deck).
+            Restyled to match Play's Humans/Bots tab pattern for
+            cross-page consistency. */}
         {!activeDeck && (
         <div className="anim-fade-up flex flex-wrap gap-1.5 mb-5" style={{ "--delay": "0.04s" }}>
           {DECK_FILTERS.map((f) => {
@@ -965,10 +1204,10 @@ export default function ReviewPage() {
                 key={f.id}
                 disabled={empty}
                 onClick={() => setDeckFilter(f.id)}
-                className={`px-3 py-1.5 font-headline text-[11px] font-bold uppercase tracking-wide transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                className={`px-4 py-2 font-headline text-[11px] font-bold uppercase tracking-wide transition-colors active:scale-[0.96] disabled:opacity-30 disabled:pointer-events-none ${
                   active
                     ? "bg-primary text-on-primary"
-                    : "bg-surface-low border border-white/[0.04] text-on-surface-variant/55 hover:text-primary hover:bg-surface-high"
+                    : "bg-surface-container border border-white/[0.04] text-on-surface-variant/55 hover:text-primary hover:bg-surface-high"
                 }`}
               >
                 {f.label}
@@ -983,24 +1222,55 @@ export default function ReviewPage() {
           {/* Board column */}
           <div className="flex-1 flex flex-col items-center xl:items-start max-w-[700px]">
             <div className="w-full mb-4">
-              {/* Type chip + SM-2 state pill side-by-side. Replaces the
-                  old plain-text "Puzzle · Rating 1500 · fork" line with
-                  a colour-coded affordance the user can scan in a
-                  second. */}
+              {/* Type chip + SM-2 state pill + 3-dot overflow.
+                  The session header already carries the deck name
+                  + reviewed/left counter, so this row stays
+                  compact and only describes the current CARD (not
+                  the whole session). The overflow menu replaces
+                  the previous "Skip / Remove" button row that
+                  lived under the rating buttons - rare destructive
+                  actions don't deserve as much weight as ratings,
+                  so they're tucked behind a single button here. */}
               <div className="flex items-center gap-2 flex-wrap mb-2">
                 <CardTypeChip card={card} />
                 <StatePill
                   state={schedules[cardId(card)]?.state || "new"}
                   intervalDays={schedules[cardId(card)]?.intervalDays || 0}
                 />
-                <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/30">
-                  {reviewed + 1} of {reviewed + remaining}
-                </span>
+                <div className="ml-auto">
+                  <CardOverflowMenu items={[
+                    { id: "share", label: "Share card", onClick: shareCard },
+                    {
+                      id: "view-source",
+                      label: "View source",
+                      onClick: viewSource,
+                      hidden: !cardSourceUrl(card),
+                    },
+                    {
+                      id: "reset",
+                      label: confirmReset ? "Tap again to reset" : "Reset schedule",
+                      onClick: resetSchedule,
+                      danger: true,
+                      armed: confirmReset,
+                      keepOpen: !confirmReset,
+                    },
+                    {
+                      id: "remove",
+                      label: confirmRemove ? "Tap again to remove" : "Remove from deck",
+                      onClick: removeCurrent,
+                      danger: true,
+                      armed: confirmRemove,
+                      keepOpen: !confirmRemove,
+                    },
+                  ]} />
+                </div>
               </div>
-              <h1 className="font-headline text-xl sm:text-2xl font-extrabold tracking-tighter text-primary leading-tight">
+              {/* Card prompt drops to h2-equivalent sizing because
+                  the session h1 already owns the page title. */}
+              <h2 className="font-headline text-lg sm:text-xl font-extrabold tracking-tighter text-on-surface leading-tight">
                 {getCardType(card).prompt(card)}
-              </h1>
-              <p className="text-[12px] text-on-surface-variant/55 mt-1.5 leading-snug">
+              </h2>
+              <p className="text-[12px] text-on-surface-variant/55 mt-1 leading-snug">
                 {getCardType(card).instruction(card)}
               </p>
             </div>
@@ -1070,106 +1340,30 @@ export default function ReviewPage() {
 
               {(phase === "correct" || phase === "revealed") && (
                 <>
-                  {/* Explanation panel. Prefers a writer-supplied
-                      answerText / notes, falls back to a coach-tone
-                      template using the card's metadata. Always
-                      shows for mistake / puzzle / game cards so the
-                      user gets feedback every solve, not only on
-                      cards that happened to ship with hand-written
-                      notes.
-                      
-                      Below the templated note, the user can ask
-                      the coach Edge Function for a deeper, AI-
-                      generated explanation. Result is cached per-
-                      card so the rate limit doesn't fire on a
-                      card the user already asked about. */}
-                  {(() => {
-                    const explanation = explainCard(card);
-                    const cardKeyForAI = cardId(card);
-                    const aiExplanation = getAIExplanation(aiExplanations, cardKeyForAI);
-                    if (!explanation && !aiExplanation) return null;
-                    const canAskAI = isAIAvailable() && !!card.played_san && !!card.best_san;
-                    return (
-                      <div className={`p-4 mb-3 border space-y-3 ${
-                        phase === "correct" ? "bg-emerald-500/5 border-emerald-500/10" : "bg-surface-container border-white/[0.04]"
-                      }`}>
-                        <div>
-                          <span className={`text-xs font-headline font-bold uppercase tracking-wide block mb-2 ${
-                            phase === "correct" ? "text-emerald-400" : "text-on-surface-variant/50"
-                          }`}>
-                            {phase === "correct" ? "Solved" : "Answer"}
-                          </span>
-                          {explanation && (
-                            <p className="text-sm text-on-surface-variant/70 leading-relaxed">{explanation}</p>
-                          )}
-                        </div>
-
-                        {aiExplanation && (
-                          <div className="pt-3 border-t border-white/[0.05]">
-                            <span className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/60 block mb-1.5">
-                              Coach take
-                            </span>
-                            <p className="text-sm text-on-surface-variant/75 leading-relaxed">{aiExplanation}</p>
-                          </div>
-                        )}
-
-                        {canAskAI && !aiExplanation && (
-                          <div className="pt-3 border-t border-white/[0.05] space-y-2">
-                            <div className="flex items-center gap-3">
-                              <button
-                                onClick={requestAIExplanation}
-                                disabled={aiExplainLoading || aiCooldownSec > 0}
-                                className="px-3 py-1.5 bg-primary/10 border border-primary/20 font-headline text-[10px] font-bold uppercase tracking-widest text-primary/80 hover:bg-primary/15 hover:text-primary transition-colors active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none shrink-0"
-                              >
-                                {aiExplainLoading
-                                  ? "Asking coach..."
-                                  : aiCooldownSec > 0
-                                    ? `Try again in ${aiCooldownSec}s`
-                                    : "Explain with AI"}
-                              </button>
-                              {!aiExplainError && (
-                                <span className="text-[11px] text-on-surface-variant/40 leading-snug">
-                                  Get a deeper, position-aware take from the coach.
-                                </span>
-                              )}
-                            </div>
-                            {aiExplainError && (
-                              <p className="text-[12px] text-amber-300/80 leading-relaxed bg-amber-500/5 border border-amber-500/15 px-3 py-2">
-                                {aiExplainError}
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                  {/* Section header for the rating row + a one-
-                      line guidance about how to interpret the
-                      buttons. The previous version showed only
-                      "Again / Hard / Good / Easy", which is
-                      meaningless to anyone who hasn't already
-                      used Anki, and it left the memorization-
-                      vs-understanding nuance unaddressed. The
-                      hint here tells the user to grade *recall*
-                      (did you actually see the idea?) rather
-                      than just whether they got the move. */}
-                  <div className="flex items-baseline justify-between gap-2 mb-2">
-                    <span className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/45">
-                      How was that?
+                  {/* Minimal "Solved" / "Revealed" banner. The
+                      detailed templated explanation + AI coach
+                      take now live in dedicated sidebar widgets so
+                      the rating buttons sit immediately under the
+                      board, where the user's eyes already are. */}
+                  <div className="flex items-baseline justify-between gap-2 mb-3">
+                    <span className={`font-headline text-[10px] font-bold uppercase tracking-widest ${
+                      phase === "correct" ? "text-emerald-400" : "text-on-surface-variant/50"
+                    }`}>
+                      {phase === "correct" ? "Solved" : "Revealed"}
                     </span>
                     <span className="text-[10px] text-on-surface-variant/35 leading-snug text-right">
                       Rate your recall, not just the move. Memorized without
-                      understanding = "Hard".
+                      understanding = &quot;Hard&quot;.
                     </span>
                   </div>
                   <div className="grid grid-cols-4 gap-1.5 mb-2">
                     {RATING_BUTTONS.map((r) => (
                       <button key={r.value} onClick={() => rate(r.value)}
                         title={r.desc}
-                        className={`py-3 px-2 flex flex-col items-center justify-center text-center font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${r.color}`}>
+                        className={`py-3 px-2 flex flex-col items-center justify-center text-center font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${r.classes}`}>
                         <span className="leading-none">{r.label}</span>
                         {intervalHints && (
-                          <span className="font-mono text-[9px] opacity-60 mt-1 normal-case tracking-normal leading-none">
+                          <span className={`font-mono text-[9px] mt-1 normal-case tracking-normal leading-none ${r.intervalText}`}>
                             {intervalHints[r.key] || ""}
                           </span>
                         )}
@@ -1179,39 +1373,27 @@ export default function ReviewPage() {
                       </button>
                     ))}
                   </div>
+                  {/* Inline Skip text-link. Distinct from rating
+                      Again - skip defers 5 minutes without
+                      lapsing the card. Kept as a quiet text
+                      action so it doesn't compete with the
+                      rating row visually. */}
+                  <div className="flex justify-end mt-2">
+                    <button onClick={skip}
+                      title="Defer this card 5 minutes - no penalty"
+                      className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/35 hover:text-primary transition-colors">
+                      Skip for now
+                    </button>
+                  </div>
                 </>
               )}
-
-              {/* Card-management actions, distinct from the
-                  rating row above. Skip ≠ rating Again - it
-                  defers without penalty (Again would lapse a
-                  review card to relearning + drop ease). Remove
-                  is destructive so the second click is the
-                  confirm; the first click flips the label to
-                  "Tap again to remove" so it can't fire by
-                  accident. */}
-              <div className="flex gap-2 mt-3">
-                <button onClick={skip}
-                  title="Defer this card 5 minutes - no penalty"
-                  className="flex-1 py-2 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-primary transition-colors">
-                  Skip for now
-                </button>
-                <button onClick={removeCurrent}
-                  title={confirmRemove ? "Tap again to permanently remove this card from your collection" : "Permanently remove this card"}
-                  className={`flex-1 py-2 border font-headline text-[10px] font-bold uppercase tracking-wide transition-colors ${
-                    confirmRemove
-                      ? "bg-error/15 border-error/30 text-error animate-pulse"
-                      : "bg-surface-low border-white/[0.04] text-on-surface-variant/30 hover:text-error hover:border-error/20"
-                  }`}>
-                  {confirmRemove ? "Tap again to remove" : "Remove from deck"}
-                </button>
-              </div>
             </div>
           </div>
 
-          {/* Sidebar - rich card metadata + Anki-style queue
-              breakdown + 7-day forecast. Replaces the old plain
-              "cards due / total" block. */}
+          {/* Sidebar - card metadata + answer panel + AI coach
+              widget + Anki queue breakdown + 7-day forecast. The
+              session counter that used to live here is now in the
+              compact session header above the board. */}
           <div className="w-full xl:w-[300px] shrink-0 space-y-4">
             {/* Card metadata - rating, themes, opening, source link.
                 All optional. Skipped if the card carries none.
@@ -1219,6 +1401,32 @@ export default function ReviewPage() {
                 line, eval loss, themes) so the user can't read the
                 answer off the sidebar before solving. */}
             <CardMetadata card={card} revealed={phase === "correct" || phase === "revealed"} />
+
+            {/* Answer panel - templated explanation of why the
+                engine line is preferred. Only renders after the
+                user solves or reveals so it can't spoil the
+                answer. Replaces the inline emerald box that used
+                to sit above the rating row. */}
+            {(phase === "correct" || phase === "revealed") && (
+              <AnswerPanel card={card} phase={phase} />
+            )}
+
+            {/* AI Coach widget - cached / on-demand AI explanation.
+                Gated by reveal so it can't spoil the answer; only
+                shown for cards that carry the played_san +
+                best_san pair the coach needs. Loading state spells
+                "Asking coach\u2026" out instead of leaving a bare
+                spinner. */}
+            {(phase === "correct" || phase === "revealed") && (
+              <CoachTake
+                card={card}
+                aiExplanations={aiExplanations}
+                loading={aiExplainLoading}
+                error={aiExplainError}
+                cooldownSec={aiCooldownSec}
+                onRequest={requestAIExplanation}
+              />
+            )}
 
             {/* Anki queue breakdown - Today's queue grouped by state
                 so the user knows whether they're seeing new cards
@@ -1229,19 +1437,6 @@ export default function ReviewPage() {
                 deck page. Lets the user see the upcoming load
                 before they get there. */}
             <Forecast forecast={deckForecast} />
-
-            {/* Session counter - kept compact so the rest of the
-                sidebar can breathe. */}
-            <div className="p-3 bg-surface-container border border-white/[0.04] grid grid-cols-2 gap-1.5">
-              <div className="text-center">
-                <span className="font-headline text-2xl font-extrabold text-primary block leading-none">{reviewed}</span>
-                <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25 mt-1 block">Done today</span>
-              </div>
-              <div className="text-center">
-                <span className="font-headline text-2xl font-extrabold text-on-surface-variant/45 block leading-none">{deckSummary.dueNow}</span>
-                <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25 mt-1 block">Still due</span>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -1382,6 +1577,84 @@ function CardMetadata({ card, revealed = false }) {
 }
 
 /**
+ * Templated answer panel. Surfaces the writer-supplied
+ * `answerText` / `notes` for cards that ship with hand-written
+ * coaching, and falls back to a tone-template via `explainCard`
+ * for everything else (so puzzle / mistake / game cards always
+ * get feedback after solving, not just curated ones). Renders as
+ * a sidebar widget so the rating buttons can sit immediately
+ * under the board.
+ */
+function AnswerPanel({ card, phase }) {
+  const explanation = explainCard(card);
+  if (!explanation) return null;
+  return (
+    <div className="p-4 bg-surface-low border border-white/[0.04]">
+      <h3 className={`font-headline text-[10px] font-bold uppercase tracking-widest mb-2 ${
+        phase === "correct" ? "text-emerald-400" : "text-on-surface-variant/45"
+      }`}>
+        {phase === "correct" ? "Solved" : "Answer"}
+      </h3>
+      <p className="text-sm text-on-surface-variant/70 leading-relaxed">{explanation}</p>
+    </div>
+  );
+}
+
+/**
+ * AI Coach widget. Three states by precedence:
+ *
+ *   1. Cached explanation already exists -> render it.
+ *   2. Card carries the (played_san, best_san) pair the coach
+ *      needs -> render the request button + a one-line
+ *      "what this is" prompt. Loading state spells "Asking
+ *      coach\u2026" so a user staring at a spinner knows what's
+ *      blocking them. Cooldown countdown comes from the rate-
+ *      limit response.
+ *   3. Card lacks the pair (e.g. analysis-card stubs) or AI is
+ *      unavailable -> widget hides itself entirely so the
+ *      sidebar doesn't render an unactionable button.
+ */
+function CoachTake({ card, aiExplanations, loading, error, cooldownSec, onRequest }) {
+  if (!card) return null;
+  const id = cardId(card);
+  const cached = getAIExplanation(aiExplanations, id);
+  const canAskAI = isAIAvailable() && !!card.played_san && !!card.best_san;
+  if (!cached && !canAskAI) return null;
+  return (
+    <div className="p-4 bg-surface-low border border-white/[0.04] space-y-3">
+      <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-primary/60">
+        Coach take
+      </h3>
+      {cached && (
+        <p className="text-sm text-on-surface-variant/75 leading-relaxed">{cached}</p>
+      )}
+      {!cached && canAskAI && (
+        <>
+          <p className="text-[11px] text-on-surface-variant/40 leading-snug">
+            Get a deeper, position-aware take from the coach.
+          </p>
+          <button
+            onClick={onRequest}
+            disabled={loading || cooldownSec > 0}
+            className="w-full px-3 py-2 bg-surface-container border border-primary/20 font-headline text-[10px] font-bold uppercase tracking-widest text-primary/80 hover:bg-surface-high hover:text-primary transition-colors active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none">
+            {loading
+              ? "Loading\u2026 asking coach"
+              : cooldownSec > 0
+                ? `Try again in ${cooldownSec}s`
+                : "Explain with AI"}
+          </button>
+          {error && (
+            <p className="text-[11px] text-amber-300/80 leading-relaxed bg-amber-500/5 border border-amber-500/15 px-3 py-2">
+              {error}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
  * Anki-style queue breakdown showing how many cards are in each
  * state today. Mirrors the New / Learning / Review counts you'd
  * see at the top of an Anki study session.
@@ -1461,15 +1734,19 @@ function Forecast({ forecast }) {
  * Today-tab deck list. Each row is a focused, clickable deck.
  *
  * Sectioned: built-in type-decks first (Puzzles, Game mistakes,
- * Analysis, ...), then user-created drill sets, then the catch-all
- * "All cards" deck at the bottom for the "actually I want to see
- * everything" use case.
+ * Analysis, ...), then "My decks" - user-created drill sets first,
+ * AI-generated drills next, and the catch-all "All cards" pseudo-
+ * deck as the last row. Collapsing "Everything" into the My decks
+ * tail keeps the browser to two scannable groups instead of three
+ * tiny ones; the user still has the escape hatch when they want a
+ * single firehose queue.
  *
- * Drill sets show a delete button. Built-ins don't (they're
- * type-derived, they auto-disappear when the type has zero cards).
- * Coach-tagged drill sets get a subtle "AI" pill.
+ * Drill sets show a delete button. Built-ins and "All cards" don't
+ * - they're derived from the card collection and auto-disappear
+ * when the underlying types are empty. Coach-tagged drill sets get
+ * a subtle "AI" pill on the row.
  */
-function DeckBrowser({ decks, onOpen, onDelete, onOpenPlan }) {
+function DeckBrowser({ decks, onOpen, onDelete, onOpenImport, onOpenAI }) {
   const builtins = decks.filter((d) => d.kind === "builtin" && d.id !== "builtin:all");
   const drills = decks.filter((d) => d.kind === "drill");
   const allDeck = decks.find((d) => d.id === "builtin:all");
@@ -1479,14 +1756,20 @@ function DeckBrowser({ decks, onOpen, onDelete, onOpenPlan }) {
       <div className="text-center py-10 anim-fade-up">
         <h2 className="font-headline text-2xl font-extrabold tracking-tighter text-primary mb-3">No decks yet</h2>
         <p className="text-sm text-on-surface-variant/40 max-w-md mx-auto leading-relaxed mb-5">
-          Save positions from the analysis board, fail a puzzle, or open the Plan tab to import games and auto-extract mistakes.
+          Save positions from the analysis board, fail a puzzle, or pull your recent games from the Import tab to auto-extract mistakes.
         </p>
-        <button onClick={onOpenPlan} className="btn btn-primary px-5 py-2 text-xs">
-          Open Plan
+        <button onClick={onOpenImport} className="btn btn-primary px-5 py-2 text-xs">
+          Import games
         </button>
       </div>
     );
   }
+
+  // "My decks" trailing pseudo-row - the All-cards firehose. Only
+  // surfaced when there's actual content, so the row doesn't appear
+  // in the truly-empty case (which is already handled above by the
+  // `decks.length === 0` branch).
+  const myDecksHasRows = drills.length > 0 || !!allDeck;
 
   return (
     <div className="space-y-6 anim-fade-up">
@@ -1498,26 +1781,37 @@ function DeckBrowser({ decks, onOpen, onDelete, onOpenPlan }) {
         </DeckSection>
       )}
 
-      <DeckSection
-        title="My decks"
-        subtitle={drills.length > 0
-          ? "Saved drills - click to study, or open the Plan tab to add more"
-          : "No saved drills yet. Open the Plan tab to generate decks from your weakness profile"}
-        action={(
-          <button onClick={onOpenPlan}
-            className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
-            + New deck (Plan)
-          </button>
-        )}
-      >
-        {drills.map((d) => (
-          <DeckCard key={d.id} deck={d} onClick={() => onOpen(d.id)} onDelete={() => onDelete(d)} />
-        ))}
-      </DeckSection>
-
-      {allDeck && (
-        <DeckSection title="Everything" subtitle="Fall back to the full collection if you want one big queue">
-          <DeckCard deck={allDeck} onClick={() => onOpen(allDeck.id)} muted />
+      {myDecksHasRows && (
+        <DeckSection
+          title="My decks"
+          subtitle={drills.length > 0
+            ? "Your saved drills. Click to study, or generate new decks with AI."
+            : "No saved drills yet. Generate decks from your weakness profile with AI, or open the Import tab to pull more games."}
+          action={(
+            <div className="flex items-center gap-3">
+              {onOpenAI && (
+                <button onClick={onOpenAI}
+                  className="text-[10px] font-headline font-bold uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
+                  + Generate AI decks
+                </button>
+              )}
+              <button onClick={onOpenImport}
+                className="text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors">
+                + Import games
+              </button>
+            </div>
+          )}
+        >
+          {drills.map((d) => (
+            <DeckCard key={d.id} deck={d} onClick={() => onOpen(d.id)} onDelete={() => onDelete(d)} />
+          ))}
+          {/* "All cards" tail - the catch-all firehose. Rendered
+              muted so it visually subordinates to the focused
+              decks above without being hidden in a separate
+              section. */}
+          {allDeck && (
+            <DeckCard deck={allDeck} onClick={() => onOpen(allDeck.id)} muted />
+          )}
         </DeckSection>
       )}
     </div>

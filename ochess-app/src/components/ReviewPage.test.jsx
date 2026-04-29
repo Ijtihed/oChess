@@ -7,7 +7,8 @@ vi.mock("./InteractiveBoard", () => ({
 }));
 
 vi.mock("./SocialPanel", () => ({ default: () => null }));
-vi.mock("./StudyPlanPanel", () => ({ default: () => <div data-testid="plan-panel" /> }));
+vi.mock("./ImportGamesPanel", () => ({ default: () => <div data-testid="import-panel" /> }));
+vi.mock("./AIDeckSheet", () => ({ default: () => null }));
 
 vi.mock("../lib/sounds", () => ({
   playMoveSound: vi.fn(),
@@ -42,11 +43,13 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
         <ReviewPage />
       </MemoryRouter>
     );
-    // Built-in section header + deck cards present.
+    // Built-in section header + deck cards present. "All cards"
+    // is now a trailing row inside "My decks", not a separate
+    // "Everything" section.
     expect(screen.getByText(/Built-in/i)).toBeDefined();
     expect(screen.getByText(/^Puzzles$/)).toBeDefined();
     expect(screen.getByText(/Game mistakes/i)).toBeDefined();
-    expect(screen.getByText(/^Everything$/)).toBeDefined();
+    expect(screen.getByText(/My decks/i)).toBeDefined();
     expect(screen.getByText(/^All cards$/)).toBeDefined();
     // Crucially: the deck browser does NOT immediately drop the
     // user into a per-card session. The board mount is gated
@@ -126,10 +129,12 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
     // either entry point should open the deck.
     const studyButton = screen.getAllByText(/^Study$/)[0];
     fireEvent.click(studyButton);
-    // Now the board is mounted + the active-deck banner appears.
+    // Now the board is mounted + the compact session header
+    // appears. Active deck name shows as the session h1, with an
+    // "All decks" breadcrumb back to the browser.
     expect(screen.getByTestId("board")).toBeDefined();
-    expect(screen.getByText(/Studying/i)).toBeDefined();
-    expect(screen.getByText(/Switch deck/i)).toBeDefined();
+    expect(screen.getByRole("heading", { level: 1, name: /Puzzles/i })).toBeDefined();
+    expect(screen.getByText(/All decks/i)).toBeDefined();
   });
 
   it("hides the eval-loss bar when eval_loss_cp is 0 (no real loss to show)", () => {
@@ -156,8 +161,9 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
     // (Again / Hard / Good / Easy) and an interval like "1m" /
     // "10m". New users had no way to tell *which* corresponded
     // to "I memorized but didn't understand" vs "trivially easy".
-    // Each button now carries a one-line desc, and a header above
-    // the row tells the user to grade recall, not just the move.
+    // Each button now carries a one-line desc, and a "Solved" /
+    // "Revealed" label above the row plus the recall hint frames
+    // them as recall ratings, not move-correctness ratings.
     localStorage.setItem("ochess_review_cards", JSON.stringify([
       { id: "ratecard", type: "puzzle",
         fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
@@ -171,7 +177,7 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
     // Reveal so the rating row mounts.
     const reveal = screen.getByText(/Show Answer|Reveal & Rate/i);
     fireEvent.click(reveal);
-    expect(screen.getByText(/How was that\?/i)).toBeDefined();
+    expect(screen.getByText(/^Revealed$/i)).toBeDefined();
     expect(screen.getByText(/Rate your recall/i)).toBeDefined();
     expect(screen.getByText(/Forgot/i)).toBeDefined();
     expect(screen.getByText(/Right but unsure/i)).toBeDefined();
@@ -181,9 +187,11 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
 
   it("'Remove from deck' is two-step: first click arms, second click confirms", () => {
     // Regression: a single click was wiping the card. Destructive
-    // actions need a confirm gate. First click flips copy to "Tap
-    // again to remove", second click within the window actually
-    // removes the card from the cards collection.
+    // actions need a confirm gate. The Remove action now lives in
+    // the card overflow menu (3-dot button next to the type chip);
+    // first click flips its label to "Tap again to remove",
+    // second click within the window actually removes the card
+    // from the cards collection.
     localStorage.setItem("ochess_review_cards", JSON.stringify([
       { id: "doomed", type: "puzzle",
         fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
@@ -194,12 +202,14 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
       </MemoryRouter>
     );
     fireEvent.click(screen.getAllByText(/^Study$/)[0]);
-    const removeBtn = screen.getByText(/Remove from deck/i);
-    fireEvent.click(removeBtn);
-    // Now the button is armed - card must still exist.
+    // Open the overflow menu via its accessible "More actions"
+    // affordance, then click Remove. Two separate clicks - the
+    // first arms the destructive action, the second confirms.
+    fireEvent.click(screen.getByTitle(/More actions/i));
+    fireEvent.click(screen.getByText(/^Remove from deck$/i));
+    // Card still exists; menu re-arms the row in place.
     expect(screen.getByText(/Tap again to remove/i)).toBeDefined();
     expect(JSON.parse(localStorage.getItem("ochess_review_cards") || "[]")).toHaveLength(1);
-    // Second click commits.
     fireEvent.click(screen.getByText(/Tap again to remove/i));
     expect(JSON.parse(localStorage.getItem("ochess_review_cards") || "[]")).toHaveLength(0);
   });

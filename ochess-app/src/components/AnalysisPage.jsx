@@ -919,7 +919,7 @@ export default function AnalysisPage() {
                   </div>
                   {evalLoading && !posEval && (
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-3 h-3 border border-on-surface-variant/20 border-t-on-surface-variant/50 rounded-full animate-spin" />
+                      <div className="w-3 h-3 border border-on-surface-variant/20 border-t-on-surface-variant/50 rounded-full animate-spin" aria-label="Loading evaluation" />
                     </div>
                   )}
                 </div>
@@ -999,7 +999,10 @@ export default function AnalysisPage() {
                     <span className="text-[13px] font-mono font-bold text-primary tabular-nums">{evalLabel}</span>
                   )}
                   {engineOn && evalLoading && (
-                    <div className="w-3 h-3 border border-primary/30 border-t-primary rounded-full animate-spin" />
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 border border-primary/30 border-t-primary rounded-full animate-spin" />
+                      <span className="text-[10px] text-on-surface-variant/40">Loading&hellip;</span>
+                    </div>
                   )}
                 </div>
                 <button onClick={() => setEngineOn(!engineOn)}

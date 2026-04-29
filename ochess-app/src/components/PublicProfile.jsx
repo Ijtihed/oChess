@@ -136,7 +136,12 @@ export default function PublicProfile() {
     return (
       <div className="flex min-h-[calc(100dvh-4rem)]">
         <div className="flex-1 flex items-center justify-center">
-          <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+            <span className="text-[11px] uppercase tracking-widest text-on-surface-variant/40">
+              Loading profile&hellip;
+            </span>
+          </div>
         </div>
         <SocialPanel />
       </div>

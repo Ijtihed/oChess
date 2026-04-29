@@ -1136,7 +1136,7 @@ function PlayerBar({ name, rating, captured = [], advantage = 0, pieceColor, tim
             {name[0]}
           </span>
           {thinking && (
-            <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 border-2 border-surface bg-surface rounded-full flex items-center justify-center">
+            <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 border-2 border-surface bg-surface rounded-full flex items-center justify-center" aria-label="Bot is thinking">
               <div className="w-2 h-2 border border-primary/40 border-t-primary rounded-full animate-spin" />
             </div>
           )}
@@ -1259,7 +1259,7 @@ function EvalBar({ evals, currentPly, orientation }) {
       </div>
       {!hasAny && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-3 h-3 border border-on-surface-variant/20 border-t-on-surface-variant/50 rounded-full animate-spin" />
+          <div className="w-3 h-3 border border-on-surface-variant/20 border-t-on-surface-variant/50 rounded-full animate-spin" aria-label="Loading evaluation" />
         </div>
       )}
     </div>
