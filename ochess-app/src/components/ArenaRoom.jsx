@@ -275,9 +275,20 @@ function RoomBody({ room, setRoom, role, user, roomId }) {
   }
 
   // Warmup states.
+  //
+  // Both warmup_round_1 and warmup_round_2 hit this branch and
+  // return the same component type, which means React would
+  // re-use the Warmup instance across rounds without the key
+  // below. That caused per-round local state (practice
+  // position, in-flight bot move, secondsLeft) to leak from
+  // round 1's warmup into round 2's. Keying off status forces a
+  // fresh mount so the new round starts clean: position back to
+  // the rule's startingFen, bot move aborted, timer back to
+  // WARMUP_DURATION_S.
   if (room.status === "warmup_round_1" || room.status === "warmup_round_2") {
     return (
       <Warmup
+        key={room.status}
         room={room}
         setRoom={setRoom}
         role={role}
@@ -287,9 +298,19 @@ function RoomBody({ room, setRoom, role, user, roomId }) {
   }
 
   // Round play (rounds 1, 2, tie-break).
+  //
+  // Same React-instance-reuse hazard as warmup. round_2 ->
+  // tiebreak in particular skips the warmup intermediate (no
+  // tiebreak warmup), so without the key the previous round's
+  // localPosition, localPly, premove, moves[], confirmRemove,
+  // and clock-tick state would all bleed across. Keying off the
+  // status guarantees the new round starts from the room's
+  // freshly-initialised round_state with empty local state and
+  // a clean clock.
   if (room.status === "round_1" || room.status === "round_2" || room.status === "tiebreak") {
     return (
       <RoundPlay
+        key={room.status}
         room={room}
         setRoom={setRoom}
         role={role}
@@ -980,12 +1001,18 @@ function Warmup({ room, setRoom, role, roomId }) {
       // first determined by the round's color assignment, clock
       // budget by round type. Living in round_state means a
       // refresh / late-joiner picks up the same starting point.
+      //
+      // We REPLACE round_state wholesale (no spread) so leftover
+      // warmup-only fields (warmup_creator_ready, etc.) don't
+      // leak into the round. The round needs exactly: round
+      // number, starting fen, ply counter, fresh clock,
+      // started-at timestamp - nothing else from the warmup
+      // phase is meaningful here.
       const startingFen = rules.startingFen || VANILLA_FEN;
       const startingPos = Position.fromFen(startingFen);
       const colorPair = colorPairFor(round);
       const firstMover = colorPair.creator === startingPos.turn ? "creator" : "joiner";
       const round_state = {
-        ...(room.round_state || {}),
         round: round,
         fen: startingFen,
         plyCount: 0,
