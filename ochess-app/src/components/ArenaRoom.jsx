@@ -39,6 +39,7 @@ import { presetById } from "../lib/arena/presets";
 import { VANILLA_FEN } from "../lib/arena/schema";
 import { generateArenaRules, isAIRulesAvailable } from "../lib/arena/ai-rules";
 import { describeRules } from "../lib/arena/rule-preview";
+import { translateValidatorErrors } from "../lib/arena/error-messages";
 import { RulePreview } from "./ArenaPage";
 import {
   colorFor,
@@ -583,6 +584,49 @@ const JOINER_PROMPT_IDEAS = [
   { label: "Pawns sideways too", prompt: "Pawns can also move sideways one square without capturing." },
 ];
 
+/**
+ * Friendly translation of validator errors for the joiner's
+ * rule-prompt panel. Mirrors the FriendlyValidatorErrors
+ * component on the create panel - separate function so the
+ * two can drift independently if needed (different copy
+ * tone, etc.) without requiring a cross-file refactor.
+ */
+function FriendlyJoinerValidatorErrors({ errors }) {
+  const [showDetails, setShowDetails] = useState(false);
+  const friendly = useMemo(() => translateValidatorErrors(errors), [errors]);
+  return (
+    <div className="px-3 py-2.5 bg-amber-500/10 border border-amber-500/20 space-y-2">
+      <p className="text-[12px] text-amber-200/85 leading-relaxed font-headline font-bold">
+        {friendly.headline}
+      </p>
+      <p className="text-[11px] text-amber-200/60 leading-snug">
+        {friendly.hint}
+      </p>
+      {friendly.raw.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowDetails((v) => !v)}
+            className="text-[10px] uppercase tracking-widest text-amber-200/45 hover:text-amber-200/80 transition-colors"
+          >
+            {showDetails ? "Hide details" : "Show details"}
+          </button>
+          {showDetails && (
+            <ul className="mt-1.5 text-[10px] text-amber-200/40 leading-snug space-y-0.5 font-mono">
+              {friendly.raw.slice(0, 5).map((e, i) => (
+                <li key={i}>&middot; {e}</li>
+              ))}
+              {friendly.raw.length > 5 && (
+                <li className="italic">&hellip; and {friendly.raw.length - 5} more</li>
+              )}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function JoinerPromptIdeas({ onPick, disabled }) {
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -716,11 +760,7 @@ function JoinerRulePrompt({ onCommit }) {
         <p className="text-[12px] text-error leading-relaxed">{error}</p>
       )}
       {validatorErrors && validatorErrors.length > 0 && (
-        <ul className="text-[11px] text-amber-300/70 leading-snug space-y-0.5">
-          {validatorErrors.slice(0, 5).map((e, i) => (
-            <li key={i} className="font-mono">&middot; {e}</li>
-          ))}
-        </ul>
+        <FriendlyJoinerValidatorErrors errors={validatorErrors} />
       )}
 
       {generated && (

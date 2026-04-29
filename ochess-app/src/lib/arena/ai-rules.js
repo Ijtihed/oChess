@@ -20,6 +20,7 @@
 
 import { supabase } from "../supabase";
 import { validateRules } from "./validator";
+import { checkPromptSanity } from "./error-messages";
 
 /**
  * Generate a rule diff from a natural-language prompt. Returns
@@ -42,8 +43,13 @@ import { validateRules } from "./validator";
  */
 export async function generateArenaRules(prompt) {
   if (!supabase) return { ok: false, error: "Online features not configured." };
-  if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
-    return { ok: false, error: "Type a description of the variant first." };
+  // Pre-flight prompt sanity. Catches obvious bad inputs (empty,
+  // ultra-short, emoji-only, single-word) BEFORE we burn an API
+  // call. Friendly errors surfaced to the user with no rate-
+  // limit cost.
+  const promptError = checkPromptSanity(prompt);
+  if (promptError) {
+    return { ok: false, error: promptError, promptInvalid: true };
   }
 
   // Hard timeout - generationally Gemini is fast (< 5s) but a

@@ -127,7 +127,7 @@ describe("ArenaPage", () => {
     expect(screen.getByText(/Slow down/i)).toBeDefined();
   });
 
-  it("renders validator error feedback when AI returns a malformed rules object", async () => {
+  it("renders friendly validator error feedback (with disclosure for raw details)", async () => {
     mockUser = { id: "user-1", name: "Alice", guest: false };
     mockGenerateArenaRules.mockResolvedValueOnce({
       ok: false,
@@ -142,11 +142,19 @@ describe("ArenaPage", () => {
         <ArenaPage />
       </MemoryRouter>
     );
-    fireEvent.change(screen.getByPlaceholderText(/Both kings start in the middle/i), { target: { value: "x" } });
+    fireEvent.change(screen.getByPlaceholderText(/Both kings start in the middle/i), { target: { value: "test prompt for variants" } });
     fireEvent.click(screen.getByText(/Generate rules/i));
+    // Friendly headline (translateValidatorErrors maps the
+    // zero-legal-moves error to the no-legal-moves category).
     await waitFor(() => {
-      expect(screen.getByText(/zero legal moves/i)).toBeDefined();
+      expect(screen.getByText(/no legal moves/i)).toBeDefined();
     });
+    // Friendly hint text.
+    expect(screen.getByText(/restrictive/i)).toBeDefined();
+    // Raw errors are tucked behind a "Show details" toggle by
+    // default - clicking it surfaces them.
+    expect(screen.queryByText(/race_to_squares squares array is empty/i)).toBeNull();
+    fireEvent.click(screen.getByText(/show details/i));
     expect(screen.getByText(/race_to_squares squares array is empty/i)).toBeDefined();
   });
 

@@ -7,6 +7,7 @@ import { createRoom, listActiveRoomsForUser } from "../lib/arena/service";
 import { generateArenaRules, isAIRulesAvailable } from "../lib/arena/ai-rules";
 import { resolveRules } from "../lib/arena/rules";
 import { describeRules } from "../lib/arena/rule-preview";
+import { translateValidatorErrors } from "../lib/arena/error-messages";
 import ArenaRoom from "./ArenaRoom";
 
 /**
@@ -318,11 +319,7 @@ function CreatePanel({ user, navigate }) {
         <p className="text-[12px] text-error leading-relaxed">{error}</p>
       )}
       {validatorErrors && validatorErrors.length > 0 && (
-        <ul className="text-[11px] text-amber-300/70 leading-snug space-y-0.5">
-          {validatorErrors.slice(0, 5).map((e, i) => (
-            <li key={i} className="font-mono">&middot; {e}</li>
-          ))}
-        </ul>
+        <FriendlyValidatorErrors errors={validatorErrors} />
       )}
 
       {generated && (
@@ -402,6 +399,51 @@ function PromptIdeas({ onPick, disabled }) {
  * concrete changes (piece moves, win conditions, etc.). Same
  * shape used by the lobby + warmup + round-play side panels.
  */
+/**
+ * Friendly translation of raw validator error strings. The
+ * raw diagnostics are great for debugging but useless for a
+ * user whose prompt happened to produce nonsense - they read
+ * like "pieces.n.moves[0]: invalid kind 'jump'" which is
+ * obviously not actionable. We surface a human-readable
+ * headline + suggestion in soft amber, with the raw errors
+ * tucked behind a "Show details" disclosure for power users.
+ */
+function FriendlyValidatorErrors({ errors }) {
+  const [showDetails, setShowDetails] = useState(false);
+  const friendly = useMemo(() => translateValidatorErrors(errors), [errors]);
+  return (
+    <div className="px-3 py-2.5 bg-amber-500/10 border border-amber-500/20 space-y-2">
+      <p className="text-[12px] text-amber-200/85 leading-relaxed font-headline font-bold">
+        {friendly.headline}
+      </p>
+      <p className="text-[11px] text-amber-200/60 leading-snug">
+        {friendly.hint}
+      </p>
+      {friendly.raw.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowDetails((v) => !v)}
+            className="text-[10px] uppercase tracking-widest text-amber-200/45 hover:text-amber-200/80 transition-colors"
+          >
+            {showDetails ? "Hide details" : "Show details"}
+          </button>
+          {showDetails && (
+            <ul className="mt-1.5 text-[10px] text-amber-200/40 leading-snug space-y-0.5 font-mono">
+              {friendly.raw.slice(0, 5).map((e, i) => (
+                <li key={i}>&middot; {e}</li>
+              ))}
+              {friendly.raw.length > 5 && (
+                <li className="italic">&hellip; and {friendly.raw.length - 5} more</li>
+              )}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RulePreview({ description, model }) {
   if (!description) return null;
   return (
