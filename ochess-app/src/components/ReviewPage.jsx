@@ -45,11 +45,23 @@ function uciToMove(uci) {
   };
 }
 
+// Anki-style rating buttons. The `desc` is a one-word recall
+// label that explains *when* to pick this rating - the previous
+// version showed only "Again / Hard / Good / Easy" and an
+// interval ("1m / 10m / 1d / 4d"), which was opaque to anyone
+// who hadn't already used Anki.
+//
+// Memorization-vs-understanding maps onto these the same way
+// Anki advises for any rote material: if you got the move right
+// but didn't actually see why, that's "Hard" (or even "Again"
+// if you can't reconstruct the idea). "Easy" is reserved for
+// "I'd see this instantly forever" - over-using it stretches
+// the interval too far and the card stops teaching you.
 const RATING_BUTTONS = [
-  { label: "Again", value: RATING.AGAIN, key: "AGAIN", color: "bg-error/20 text-error hover:bg-error/30 border border-error/10" },
-  { label: "Hard",  value: RATING.HARD,  key: "HARD",  color: "bg-surface-low border border-white/[0.04] text-on-surface-variant/60 hover:text-primary hover:bg-surface-high" },
-  { label: "Good",  value: RATING.GOOD,  key: "GOOD",  color: "bg-surface-low border border-white/[0.04] text-on-surface-variant/60 hover:text-primary hover:bg-surface-high" },
-  { label: "Easy",  value: RATING.EASY,  key: "EASY",  color: "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/10" },
+  { label: "Again", desc: "Forgot / got it wrong",     value: RATING.AGAIN, key: "AGAIN", color: "bg-error/20 text-error hover:bg-error/30 border border-error/10" },
+  { label: "Hard",  desc: "Right but unsure / slow",   value: RATING.HARD,  key: "HARD",  color: "bg-amber-500/15 text-amber-300 hover:bg-amber-500/20 border border-amber-500/15" },
+  { label: "Good",  desc: "Knew it without effort",    value: RATING.GOOD,  key: "GOOD",  color: "bg-primary/10 text-primary/85 hover:bg-primary/15 border border-primary/15" },
+  { label: "Easy",  desc: "Spotted it instantly",      value: RATING.EASY,  key: "EASY",  color: "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/15" },
 ];
 
 function orientationFor(card) {
@@ -300,6 +312,9 @@ export default function ReviewPage() {
     // mid-line navigation away leaves it true) - reset it here
     // so the new card's first move isn't silently rejected.
     awaitingOpponentRef.current = false;
+    // Drop any "tap again to remove" arming - moving to a new
+    // card means the user implicitly cancelled.
+    setConfirmRemove(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardKey]);
 
@@ -628,8 +643,27 @@ export default function ReviewPage() {
     });
   }, [card, resetCard]);
 
+  // Two-step destructive action. First click flips the button
+  // copy to "Tap again to remove" + a 4 s timeout so the user
+  // can't fire it by accident. Second click within the window
+  // actually removes the card from cards + schedules + AI cache.
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const confirmRemoveTimerRef = useRef(null);
+
+  useEffect(() => () => {
+    if (confirmRemoveTimerRef.current) clearTimeout(confirmRemoveTimerRef.current);
+  }, []);
+
   const removeCurrent = useCallback(() => {
     if (!card) return;
+    if (!confirmRemove) {
+      setConfirmRemove(true);
+      if (confirmRemoveTimerRef.current) clearTimeout(confirmRemoveTimerRef.current);
+      confirmRemoveTimerRef.current = setTimeout(() => setConfirmRemove(false), 4000);
+      return;
+    }
+    if (confirmRemoveTimerRef.current) clearTimeout(confirmRemoveTimerRef.current);
+    setConfirmRemove(false);
     const id = cardId(card);
     setCards((prev) => {
       const next = removeCard(prev, id);
@@ -642,7 +676,7 @@ export default function ReviewPage() {
       return rest;
     });
     resetCard();
-  }, [card, resetCard]);
+  }, [card, resetCard, confirmRemove]);
 
   // ── AI explanation request state ──
   // The "Explain with AI" button below the answer panel kicks off a
@@ -1080,56 +1114,96 @@ export default function ReviewPage() {
                         )}
 
                         {canAskAI && !aiExplanation && (
-                          <div className="pt-3 border-t border-white/[0.05] flex items-center gap-3">
-                            <button
-                              onClick={requestAIExplanation}
-                              disabled={aiExplainLoading || aiCooldownSec > 0}
-                              className="px-3 py-1.5 bg-primary/10 border border-primary/20 font-headline text-[10px] font-bold uppercase tracking-widest text-primary/80 hover:bg-primary/15 hover:text-primary transition-colors active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none"
-                            >
-                              {aiExplainLoading
-                                ? "Asking coach..."
-                                : aiCooldownSec > 0
-                                  ? `Try again in ${aiCooldownSec}s`
-                                  : "Explain with AI"}
-                            </button>
-                            <span className="text-[11px] text-on-surface-variant/40 leading-snug">
-                              {aiExplainError
-                                ? aiExplainError
-                                : "Get a deeper, position-aware take from the coach."}
-                            </span>
+                          <div className="pt-3 border-t border-white/[0.05] space-y-2">
+                            <div className="flex items-center gap-3">
+                              <button
+                                onClick={requestAIExplanation}
+                                disabled={aiExplainLoading || aiCooldownSec > 0}
+                                className="px-3 py-1.5 bg-primary/10 border border-primary/20 font-headline text-[10px] font-bold uppercase tracking-widest text-primary/80 hover:bg-primary/15 hover:text-primary transition-colors active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none shrink-0"
+                              >
+                                {aiExplainLoading
+                                  ? "Asking coach..."
+                                  : aiCooldownSec > 0
+                                    ? `Try again in ${aiCooldownSec}s`
+                                    : "Explain with AI"}
+                              </button>
+                              {!aiExplainError && (
+                                <span className="text-[11px] text-on-surface-variant/40 leading-snug">
+                                  Get a deeper, position-aware take from the coach.
+                                </span>
+                              )}
+                            </div>
+                            {aiExplainError && (
+                              <p className="text-[12px] text-amber-300/80 leading-relaxed bg-amber-500/5 border border-amber-500/15 px-3 py-2">
+                                {aiExplainError}
+                              </p>
+                            )}
                           </div>
                         )}
                       </div>
                     );
                   })()}
+                  {/* Section header for the rating row + a one-
+                      line guidance about how to interpret the
+                      buttons. The previous version showed only
+                      "Again / Hard / Good / Easy", which is
+                      meaningless to anyone who hasn't already
+                      used Anki, and it left the memorization-
+                      vs-understanding nuance unaddressed. The
+                      hint here tells the user to grade *recall*
+                      (did you actually see the idea?) rather
+                      than just whether they got the move. */}
+                  <div className="flex items-baseline justify-between gap-2 mb-2">
+                    <span className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/45">
+                      How was that?
+                    </span>
+                    <span className="text-[10px] text-on-surface-variant/35 leading-snug text-right">
+                      Rate your recall, not just the move. Memorized without
+                      understanding = "Hard".
+                    </span>
+                  </div>
                   <div className="grid grid-cols-4 gap-1.5 mb-2">
                     {RATING_BUTTONS.map((r) => (
                       <button key={r.value} onClick={() => rate(r.value)}
-                        className={`py-3 flex flex-col items-center justify-center font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${r.color}`}>
-                        <span>{r.label}</span>
-                        {/* Real-Anki affordance: tell the user
-                            exactly when each rating will surface
-                            this card again. Shows up right under
-                            the label on its own line. */}
+                        title={r.desc}
+                        className={`py-3 px-2 flex flex-col items-center justify-center text-center font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${r.color}`}>
+                        <span className="leading-none">{r.label}</span>
                         {intervalHints && (
-                          <span className="font-mono text-[9px] opacity-60 mt-0.5 normal-case tracking-normal">
+                          <span className="font-mono text-[9px] opacity-60 mt-1 normal-case tracking-normal leading-none">
                             {intervalHints[r.key] || ""}
                           </span>
                         )}
+                        <span className="mt-1.5 text-[9px] opacity-70 normal-case font-normal tracking-normal leading-tight">
+                          {r.desc}
+                        </span>
                       </button>
                     ))}
                   </div>
                 </>
               )}
 
+              {/* Card-management actions, distinct from the
+                  rating row above. Skip ≠ rating Again - it
+                  defers without penalty (Again would lapse a
+                  review card to relearning + drop ease). Remove
+                  is destructive so the second click is the
+                  confirm; the first click flips the label to
+                  "Tap again to remove" so it can't fire by
+                  accident. */}
               <div className="flex gap-2 mt-3">
                 <button onClick={skip}
+                  title="Defer this card 5 minutes - no penalty"
                   className="flex-1 py-2 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/40 hover:text-primary transition-colors">
-                  Skip
+                  Skip for now
                 </button>
                 <button onClick={removeCurrent}
-                  className="flex-1 py-2 bg-surface-low border border-white/[0.04] font-headline text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/30 hover:text-error hover:border-error/20 transition-colors">
-                  Remove from deck
+                  title={confirmRemove ? "Tap again to permanently remove this card from your collection" : "Permanently remove this card"}
+                  className={`flex-1 py-2 border font-headline text-[10px] font-bold uppercase tracking-wide transition-colors ${
+                    confirmRemove
+                      ? "bg-error/15 border-error/30 text-error animate-pulse"
+                      : "bg-surface-low border-white/[0.04] text-on-surface-variant/30 hover:text-error hover:border-error/20"
+                  }`}>
+                  {confirmRemove ? "Tap again to remove" : "Remove from deck"}
                 </button>
               </div>
             </div>

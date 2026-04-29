@@ -151,6 +151,59 @@ describe("ReviewPage - deck browser (Today tab default view)", () => {
     expect(screen.queryByText(/Eval loss/i)).toBeNull();
   });
 
+  it("rating buttons render their recall descriptors so users know which to pick", () => {
+    // Regression: previously the buttons only showed the label
+    // (Again / Hard / Good / Easy) and an interval like "1m" /
+    // "10m". New users had no way to tell *which* corresponded
+    // to "I memorized but didn't understand" vs "trivially easy".
+    // Each button now carries a one-line desc, and a header above
+    // the row tells the user to grade recall, not just the move.
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "ratecard", type: "puzzle",
+        fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    fireEvent.click(screen.getAllByText(/^Study$/)[0]);
+    // Reveal so the rating row mounts.
+    const reveal = screen.getByText(/Show Answer|Reveal & Rate/i);
+    fireEvent.click(reveal);
+    expect(screen.getByText(/How was that\?/i)).toBeDefined();
+    expect(screen.getByText(/Rate your recall/i)).toBeDefined();
+    expect(screen.getByText(/Forgot/i)).toBeDefined();
+    expect(screen.getByText(/Right but unsure/i)).toBeDefined();
+    expect(screen.getByText(/Knew it without effort/i)).toBeDefined();
+    expect(screen.getByText(/Spotted it instantly/i)).toBeDefined();
+  });
+
+  it("'Remove from deck' is two-step: first click arms, second click confirms", () => {
+    // Regression: a single click was wiping the card. Destructive
+    // actions need a confirm gate. First click flips copy to "Tap
+    // again to remove", second click within the window actually
+    // removes the card from the cards collection.
+    localStorage.setItem("ochess_review_cards", JSON.stringify([
+      { id: "doomed", type: "puzzle",
+        fen: "8/8/8/8/8/8/8/8 w - - 0 1", ts: 1 },
+    ]));
+    render(
+      <MemoryRouter>
+        <ReviewPage />
+      </MemoryRouter>
+    );
+    fireEvent.click(screen.getAllByText(/^Study$/)[0]);
+    const removeBtn = screen.getByText(/Remove from deck/i);
+    fireEvent.click(removeBtn);
+    // Now the button is armed - card must still exist.
+    expect(screen.getByText(/Tap again to remove/i)).toBeDefined();
+    expect(JSON.parse(localStorage.getItem("ochess_review_cards") || "[]")).toHaveLength(1);
+    // Second click commits.
+    fireEvent.click(screen.getByText(/Tap again to remove/i));
+    expect(JSON.parse(localStorage.getItem("ochess_review_cards") || "[]")).toHaveLength(0);
+  });
+
   it("hides spoiler fields (engine line, eval loss, themes) before the user solves or reveals", () => {
     // Regression: the right-hand Card details panel was leaking
     // best_san / eval_loss / themes into view on first render,

@@ -202,8 +202,18 @@ export async function explainCardWithAI(card) {
       return { ok: false, error: "AI took too long. Try again in a moment." };
     }
     const { data, error } = result;
-    const rateData = data && typeof data === "object" && Number.isFinite(data.retry_after_seconds)
-      ? data
+
+    // supabase-js sometimes returns the parsed JSON body in `data`
+    // even when error is set (modern), and sometimes only in
+    // error.context (older). Read the body off both so a 400 like
+    // "Provide at least 1 mistake" surfaces as the actual server
+    // message instead of the cryptic "Edge Function returned a
+    // non-2xx status code".
+    const errBody = await readErrorBody(error);
+    const merged = data && typeof data === "object" ? data : errBody;
+
+    const rateData = merged && typeof merged === "object" && Number.isFinite(merged.retry_after_seconds)
+      ? merged
       : null;
     const isRateLimited = error?.context?.status === 429 || (rateData && rateData.ok === false && rateData.retry_after_seconds);
     if (isRateLimited && rateData) {
@@ -218,29 +228,58 @@ export async function explainCardWithAI(card) {
       };
     }
     if (error) {
-      const msg = data?.error || error.message || "AI unavailable";
-      return { ok: false, error: msg };
+      const serverMsg = merged?.error || error.message || "AI unavailable";
+      // Heuristic: an old, undeployed coach function predates the
+      // explain mode and falls through to the decks-mode validator
+      // which emits "Provide at least 1 mistake". Translate that
+      // into a clearer "needs redeploy" message so the user knows
+      // it's a deploy issue, not a bad request.
+      const looksLikeStaleFunction = /provide at least 1 mistake/i.test(String(serverMsg));
+      return {
+        ok: false,
+        error: looksLikeStaleFunction
+          ? "AI explanation isn't deployed yet (server is on the old version). Run: supabase functions deploy coach"
+          : serverMsg,
+      };
     }
-    if (!data || typeof data !== "object") {
+    if (!merged || typeof merged !== "object") {
       return { ok: false, error: "Empty response from AI." };
     }
-    if (data.ok === false) return { ok: false, error: data.error || "AI failed" };
-    const explanation = typeof data.explanation === "string" ? data.explanation.trim() : "";
+    if (merged.ok === false) return { ok: false, error: merged.error || "AI failed" };
+    const explanation = typeof merged.explanation === "string" ? merged.explanation.trim() : "";
     if (!explanation) return { ok: false, error: "AI returned an empty explanation." };
     return {
       ok: true,
       explanation,
-      model: data.model || null,
-      rateLimit: data.rate_limit && typeof data.rate_limit === "object"
+      model: merged.model || null,
+      rateLimit: merged.rate_limit && typeof merged.rate_limit === "object"
         ? {
-            callsInWindow: Number(data.rate_limit.calls_in_window) || 0,
-            maxCalls: Number(data.rate_limit.max_calls) || 0,
-            windowSeconds: Number(data.rate_limit.window_seconds) || 0,
+            callsInWindow: Number(merged.rate_limit.calls_in_window) || 0,
+            maxCalls: Number(merged.rate_limit.max_calls) || 0,
+            windowSeconds: Number(merged.rate_limit.window_seconds) || 0,
           }
         : null,
     };
   } catch (e) {
     return { ok: false, error: e?.message || "AI unavailable" };
+  }
+}
+
+// Best-effort read of the JSON body from a FunctionsHttpError.
+// supabase-js keeps the original Response in `error.context`; we
+// clone it (the body is single-use) and try to parse JSON. Failure
+// returns null and the caller falls back to error.message.
+async function readErrorBody(error) {
+  if (!error?.context) return null;
+  const ctx = error.context;
+  if (typeof ctx.clone !== "function") return null;
+  try {
+    const cloned = ctx.clone();
+    const text = await cloned.text();
+    if (!text) return null;
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }
 
