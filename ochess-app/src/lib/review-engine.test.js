@@ -100,11 +100,21 @@ describe("review-state intervals (REVIEW)", () => {
     // difference (good = ease, easy = ease * 1.3 + ease delta) to
     // separate after rounding. At 1-day intervals both round to 3
     // days; at 10 days the gap is meaningful.
+    //
+    // We pass {noFuzz: true} on the comparison calls because
+    // applyFuzz adds a uniform [-15%, +15%] randomization above
+    // 7-day intervals. Without disabling it, the easy and good
+    // intervals can occasionally fuzz to the same value (e.g.
+    // both round to 20d after random offsets) and the test
+    // flakes ~1% of runs. Disabling fuzz keeps the comparison
+    // deterministic without changing what we're actually
+    // testing - that the multiplier on EASY is larger than on
+    // GOOD.
     let baseline = maturedCard();
     baseline = computeNextReview(baseline, RATING.GOOD); // ~3d
     baseline = computeNextReview(baseline, RATING.GOOD); // ~7d
-    const baselineGood = computeNextReview(baseline, RATING.GOOD);
-    const easy = computeNextReview(baseline, RATING.EASY);
+    const baselineGood = computeNextReview(baseline, RATING.GOOD, { noFuzz: true });
+    const easy = computeNextReview(baseline, RATING.EASY, { noFuzz: true });
     expect(easy.intervalDays).toBeGreaterThan(baselineGood.intervalDays);
     expect(easy.easeFactor).toBeGreaterThan(baseline.easeFactor);
   });
