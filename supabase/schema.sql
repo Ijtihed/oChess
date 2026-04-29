@@ -253,6 +253,20 @@ create table if not exists coach_calls (
 create index if not exists idx_coach_calls_user_created
   on coach_calls(user_id, created_at desc);
 
+-- ── arena_rules_calls (AI Arena rule-generation rate-limit log) ──
+-- Each successful invocation of the `arena_rules` Edge Function
+-- inserts a row here. A separate budget from coach_calls because
+-- arena rule generation is more expensive (longer prompts +
+-- more retries on validator failure) and we don't want a user
+-- bursting on Anki AI to lock themselves out of arena rooms.
+create table if not exists arena_rules_calls (
+  id bigserial primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_arena_rules_calls_user_created
+  on arena_rules_calls(user_id, created_at desc);
+
 -- ── arena_rooms (AI Arena - prompt-driven variant chess) ──
 -- Each room hosts a 2-player match where each side defines the
 -- rules for one round (Round 1 = creator's rules, Round 2 =
@@ -368,6 +382,9 @@ alter table friendships enable row level security;
 -- which checks auth.uid() internally before writing. RLS-on +
 -- no-policies = nobody reads/writes directly with the anon key.
 alter table coach_calls enable row level security;
+-- arena_rules_calls follows the same lock-down pattern - only
+-- record_arena_rules_call (security definer) may touch it.
+alter table arena_rules_calls enable row level security;
 alter table arena_rooms enable row level security;
 alter table arena_moves enable row level security;
 
@@ -1089,6 +1106,60 @@ end;
 $$;
 revoke all on function record_coach_call(int, int) from public, anon;
 grant execute on function record_coach_call(int, int) to authenticated, service_role;
+
+-- ── record_arena_rules_call: rate limit for AI Arena rule generation ──
+-- Same shape as record_coach_call but a separate table so arena
+-- and coach budgets don't share. Defaults: 3 calls per 600 s
+-- (10 min). The Edge Function is the only sanctioned caller.
+create or replace function record_arena_rules_call(
+  p_window_seconds int default 600,
+  p_max_calls int default 3
+)
+returns table (
+  allowed boolean,
+  retry_after_seconds int,
+  calls_in_window int,
+  window_seconds int,
+  max_calls int
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_count int;
+  v_oldest timestamptz;
+  v_retry int;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    return query select false, p_window_seconds, 0, p_window_seconds, p_max_calls;
+    return;
+  end if;
+
+  -- Trim very old rows so the table doesn't grow unboundedly.
+  delete from arena_rules_calls where created_at < now() - interval '1 day';
+
+  select count(*), min(created_at)
+    into v_count, v_oldest
+    from arena_rules_calls
+   where user_id = v_uid
+     and created_at > now() - (p_window_seconds || ' seconds')::interval;
+
+  if v_count >= p_max_calls then
+    v_retry := greatest(1, ceil(extract(epoch from
+      (v_oldest + (p_window_seconds || ' seconds')::interval - now())))::int);
+    return query select false, v_retry, v_count, p_window_seconds, p_max_calls;
+    return;
+  end if;
+
+  insert into arena_rules_calls(user_id) values (v_uid);
+  return query select true, 0, v_count + 1, p_window_seconds, p_max_calls;
+end;
+$$;
+revoke all on function record_arena_rules_call(int, int) from public, anon;
+grant execute on function record_arena_rules_call(int, int) to authenticated, service_role;
 
 -- ── cleanup_stale_seeks: housekeeping (call from a cron job) ──
 -- Restricted to the service_role so a logged-in user can't grief

@@ -228,13 +228,28 @@ export async function recordRoundGame({
   }
   const whitePlayer = creator.color === "w" ? creator : joiner;
   const blackPlayer = creator.color === "w" ? joiner : creator;
+  // PGN with proper headers so external readers (Lichess /
+  // chess.com analysis boards, downloaded PGN viewers) can
+  // open the file. The `[Variant "arena"]` tag is non-standard
+  // but documents that vanilla rules don't apply.
+  const fullPgn = buildArenaPgn({
+    whiteName: whitePlayer.name,
+    blackName: blackPlayer.name,
+    result,
+    reason: round.reason,
+    endedAt: round.endedAt,
+    timeControl,
+    moves: pgn,
+    arenaRound: String(round.round),
+    rulesName: rulesDiff?.name || rulesDiff?.overrides?.name,
+  });
   try {
     const { error } = await supabase.from("games").insert({
       white_id: whitePlayer.id,
       black_id: blackPlayer.id,
       white_name: whitePlayer.name || null,
       black_name: blackPlayer.name || null,
-      pgn: pgn || "",
+      pgn: fullPgn,
       result,
       result_reason: round.reason || "unknown",
       time_control: timeControl || null,
@@ -279,6 +294,48 @@ export async function loadMoves(roomId, round) {
 }
 
 // ── Realtime ───────────────────────────────────────────────
+
+// ── PGN building ───────────────────────────────────────────
+
+/**
+ * Build a complete PGN with the standard seven-tag roster + a
+ * couple of arena-specific tags. The body comes from caller-
+ * supplied move tokens; we wrap it in headers so viewers /
+ * downloads work outside oChess. Non-standard tags (Variant,
+ * ArenaRound) are still parseable by every PGN reader I've
+ * tested.
+ */
+function buildArenaPgn({ whiteName, blackName, result, reason, endedAt, timeControl, moves, arenaRound, rulesName }) {
+  const dateStamp = (() => {
+    try {
+      const d = endedAt ? new Date(endedAt) : new Date();
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(d.getUTCDate()).padStart(2, "0");
+      return `${yyyy}.${mm}.${dd}`;
+    } catch { return "????.??.??"; }
+  })();
+  const safeResult = result || "*";
+  const headers = [
+    `[Event "oChess Arena"]`,
+    `[Site "oChess"]`,
+    `[Date "${dateStamp}"]`,
+    `[Round "${arenaRound || "?"}"]`,
+    `[White "${escapePgnTag(whiteName || "Anonymous")}"]`,
+    `[Black "${escapePgnTag(blackName || "Anonymous")}"]`,
+    `[Result "${safeResult}"]`,
+    `[Variant "arena${rulesName ? `:${escapePgnTag(rulesName)}` : ""}"]`,
+    timeControl ? `[TimeControl "${escapePgnTag(timeControl)}"]` : null,
+    reason ? `[Termination "${escapePgnTag(reason)}"]` : null,
+  ].filter(Boolean);
+  const body = (moves || "").trim();
+  return `${headers.join("\n")}\n\n${body}${body ? " " : ""}${safeResult}`;
+}
+
+/** Escape characters that would break a PGN tag value. */
+function escapePgnTag(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"").slice(0, 200);
+}
 
 /**
  * Subscribe to UPDATE events on a single room row. Called by

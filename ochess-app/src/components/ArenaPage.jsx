@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import SocialPanel from "./SocialPanel";
 import { isOnline } from "../lib/supabase";
 import { createRoom } from "../lib/arena/service";
-import { PRESETS } from "../lib/arena/presets";
+import { generateArenaRules, isAIRulesAvailable } from "../lib/arena/ai-rules";
+import { resolveRules } from "../lib/arena/rules";
+import { describeRules } from "../lib/arena/rule-preview";
 import ArenaRoom from "./ArenaRoom";
 
 /**
@@ -81,7 +83,7 @@ export default function ArenaPage() {
       <div className="flex-1 min-w-0 max-w-[1200px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10">
         <h1 className="anim-fade-up font-headline text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tighter text-primary mb-1" style={{ "--delay": "0.05s" }}>Arena</h1>
         <p className="anim-fade-up text-sm text-on-surface-variant/40 mb-6" style={{ "--delay": "0.06s" }}>
-          Pick a variant, send the link, both warm up vs an AI, then play 1v1. Rules can be unhinged.
+          Describe a chess variant in your own words. AI builds the rules, you and your opponent each design one round, then 1v1.
         </p>
         <div className="grid gap-6 md:grid-cols-2">
           <CreatePanel user={user} navigate={navigate} />
@@ -96,32 +98,79 @@ export default function ArenaPage() {
 // ── Create flow ────────────────────────────────────────────
 
 function CreatePanel({ user, navigate }) {
-  const [pickedId, setPickedId] = useState("vanilla");
+  const [prompt, setPrompt] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [generated, setGenerated] = useState(null); // { rules, summary, model }
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
+  const [validatorErrors, setValidatorErrors] = useState(null);
+  const [cooldownSec, setCooldownSec] = useState(0);
   const online = isOnline();
+  const aiAvailable = isAIRulesAvailable();
+
+  // Cooldown ticker for the rate-limit countdown.
+  useEffect(() => {
+    if (cooldownSec <= 0) return undefined;
+    const t = setTimeout(() => setCooldownSec((n) => Math.max(0, n - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [cooldownSec]);
+
+  // Resolve the generated rule diff once for the preview
+  // panel. Keeps the heavy resolver out of the per-render
+  // path.
+  const resolvedRules = useMemo(() => {
+    if (!generated?.rules) return null;
+    try { return resolveRules(generated.rules); }
+    catch { return null; }
+  }, [generated]);
+
+  const description = useMemo(() => {
+    if (!resolvedRules) return null;
+    return describeRules(resolvedRules);
+  }, [resolvedRules]);
+
+  const onGenerate = useCallback(async () => {
+    if (!aiAvailable) {
+      setError("AI rule generator isn't configured. Sign in or check your connection.");
+      return;
+    }
+    if (!prompt.trim()) {
+      setError("Type a description first. e.g. 'Pawns can move backward, knights leap twice'.");
+      return;
+    }
+    setGenerating(true);
+    setError(null);
+    setValidatorErrors(null);
+    setGenerated(null);
+    try {
+      const result = await generateArenaRules(prompt);
+      if (!result.ok) {
+        setError(result.error || "AI couldn't produce rules.");
+        if (result.validatorErrors) setValidatorErrors(result.validatorErrors);
+        if (result.rateLimited && result.retryAfterSeconds) {
+          setCooldownSec(Math.ceil(Number(result.retryAfterSeconds)) || 0);
+        }
+        return;
+      }
+      setGenerated({ rules: result.rules, summary: result.summary, model: result.model });
+    } catch (e) {
+      setError(e?.message || "AI request failed.");
+    } finally {
+      setGenerating(false);
+    }
+  }, [aiAvailable, prompt]);
 
   const onCreate = useCallback(async () => {
-    if (!online) {
-      setError("Offline. Connect to create rooms.");
-      return;
-    }
-    if (!user?.id) {
-      setError("Sign in first.");
-      return;
-    }
-    const preset = PRESETS.find((p) => p.id === pickedId);
-    if (!preset) {
-      setError("Pick a variant first.");
-      return;
-    }
+    if (!online) { setError("Offline. Connect to create rooms."); return; }
+    if (!user?.id) { setError("Sign in first."); return; }
+    if (!generated?.rules) { setError("Generate the rules first."); return; }
     setCreating(true);
     setError(null);
     try {
       const result = await createRoom({
         creatorId: user.id,
         creatorName: user.name || null,
-        rulesCreator: { ...preset.diff, presetId: preset.id },
+        rulesCreator: generated.rules,
       });
       if (!result.ok || !result.room) {
         setError(result.error || "Couldn't create the room.");
@@ -133,34 +182,77 @@ function CreatePanel({ user, navigate }) {
     } finally {
       setCreating(false);
     }
-  }, [online, user, pickedId, navigate]);
+  }, [online, user, generated, navigate]);
+
+  if (!aiAvailable) {
+    return (
+      <div className="anim-fade-up p-5 bg-surface-low border border-error/20 space-y-3" style={{ "--delay": "0.08s" }}>
+        <h2 className="font-headline text-base font-bold text-primary mb-1">Create a room</h2>
+        <p className="text-[12px] text-error leading-relaxed">
+          AI rule generation isn&apos;t available right now. The Arena needs the Supabase Edge Function (arena_rules) to be deployed.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="anim-fade-up p-5 bg-surface-low border border-white/[0.04] space-y-4" style={{ "--delay": "0.08s" }}>
       <div>
         <h2 className="font-headline text-base font-bold text-primary mb-1">Create a room</h2>
         <p className="text-[12px] text-on-surface-variant/45 leading-relaxed">
-          Pick the rules for round 1. Your opponent picks the rules for round 2.
+          Describe round 1&apos;s rules. Your opponent designs round 2 once they join.
         </p>
       </div>
-      <div className="space-y-1.5">
-        {PRESETS.map((p) => (
-          <PresetRow
-            key={p.id}
-            preset={p}
-            picked={pickedId === p.id}
-            onPick={() => setPickedId(p.id)}
-          />
-        ))}
+      <div>
+        <label className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block mb-1.5">
+          Variant description
+        </label>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="e.g. Pawns can move backwards. The first to capture 3 pieces wins."
+          rows={3}
+          maxLength={600}
+          disabled={generating}
+          className="w-full bg-surface-container border border-white/[0.06] px-3 py-2 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40 resize-none"
+        />
+        <p className="mt-1 text-[10px] text-on-surface-variant/30">
+          {prompt.length} / 600
+        </p>
       </div>
-      <button onClick={onCreate}
-        disabled={creating || !online}
-        className="btn btn-primary w-full py-3 text-sm">
-        {creating ? "Loading\u2026 creating room" : "Create room"}
+      <button onClick={onGenerate}
+        disabled={generating || cooldownSec > 0 || !online || !prompt.trim()}
+        className="btn btn-secondary w-full py-2.5 text-xs">
+        {generating
+          ? "Loading\u2026 asking AI"
+          : cooldownSec > 0
+            ? `Wait ${cooldownSec}s`
+            : generated ? "Regenerate" : "Generate rules"}
       </button>
+
+      {description && (
+        <RulePreview description={description} model={generated?.model} />
+      )}
+
       {error && (
         <p className="text-[12px] text-error leading-relaxed">{error}</p>
       )}
+      {validatorErrors && validatorErrors.length > 0 && (
+        <ul className="text-[11px] text-amber-300/70 leading-snug space-y-0.5">
+          {validatorErrors.slice(0, 5).map((e, i) => (
+            <li key={i} className="font-mono">&middot; {e}</li>
+          ))}
+        </ul>
+      )}
+
+      {generated && (
+        <button onClick={onCreate}
+          disabled={creating || !online}
+          className="btn btn-primary w-full py-3 text-sm">
+          {creating ? "Loading\u2026 creating room" : "Create room with these rules"}
+        </button>
+      )}
+
       {!online && (
         <p className="text-[11px] text-on-surface-variant/40 leading-relaxed">
           Online features aren&apos;t configured. Arena needs Supabase to share rooms.
@@ -170,32 +262,58 @@ function CreatePanel({ user, navigate }) {
   );
 }
 
-function PresetRow({ preset, picked, onPick }) {
+/**
+ * Compact preview of what the AI rules change vs vanilla.
+ * Shows the variant name + 1-line description + a list of
+ * concrete changes (piece moves, win conditions, etc.). Same
+ * shape used by the lobby + warmup + round-play side panels.
+ */
+function RulePreview({ description, model }) {
+  if (!description) return null;
   return (
-    <button
-      onClick={onPick}
-      className={`w-full text-left px-3 py-2.5 border transition-colors ${
-        picked
-          ? "bg-primary/10 border-primary/30"
-          : "bg-surface-container border-white/[0.04] hover:border-primary/20 hover:bg-surface-high"
-      }`}
-    >
-      <div className="flex items-baseline gap-2 mb-0.5">
-        <span className={`font-headline text-[13px] font-bold ${picked ? "text-primary" : "text-on-surface"}`}>
-          {preset.label}
+    <div className="px-3 py-3 bg-surface-container border border-primary/20 space-y-2">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <span className="font-headline text-[13px] font-bold text-primary">
+          {description.name || "Custom rules"}
         </span>
-        {preset.id === "vanilla" && (
-          <span className="px-1.5 py-0.5 bg-surface-low text-on-surface-variant/45 font-headline text-[9px] font-bold uppercase tracking-widest">
-            Default
+        {model && (
+          <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30">
+            {model}
           </span>
         )}
       </div>
-      <span className="text-[11px] text-on-surface-variant/55 leading-snug">
-        {preset.summary}
-      </span>
-    </button>
+      {description.description && (
+        <p className="text-[12px] text-on-surface-variant/65 leading-relaxed">
+          {description.description}
+        </p>
+      )}
+      {description.changes.length > 0 && (
+        <ul className="text-[11px] text-on-surface-variant/65 leading-snug space-y-0.5">
+          {description.changes.slice(0, 8).map((c, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="text-primary/60 shrink-0">&middot;</span>
+              <span>{c.detail}</span>
+            </li>
+          ))}
+          {description.changes.length > 8 && (
+            <li className="text-on-surface-variant/35">
+              &hellip; and {description.changes.length - 8} more
+            </li>
+          )}
+        </ul>
+      )}
+      {description.changes.length === 0 && (
+        <p className="text-[11px] text-on-surface-variant/40 italic">
+          No changes from standard chess.
+        </p>
+      )}
+    </div>
   );
 }
+
+// Export for use in the room lobby (joiner's prompt panel
+// re-mounts the same UX inside ArenaRoom).
+export { RulePreview };
 
 // ── Join flow ──────────────────────────────────────────────
 

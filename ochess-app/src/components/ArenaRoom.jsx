@@ -21,8 +21,11 @@ import { generateLegalMoves } from "../lib/arena/move-gen";
 import { applyMove } from "../lib/arena/apply-move";
 import { checkGameStatus } from "../lib/arena/win-check";
 import { pickRandomMoveAsync } from "../lib/arena/random-bot";
-import { PRESETS, presetById } from "../lib/arena/presets";
+import { presetById } from "../lib/arena/presets";
 import { VANILLA_FEN } from "../lib/arena/schema";
+import { generateArenaRules, isAIRulesAvailable } from "../lib/arena/ai-rules";
+import { describeRules } from "../lib/arena/rule-preview";
+import { RulePreview } from "./ArenaPage";
 import {
   colorFor,
   colorPairFor,
@@ -221,7 +224,12 @@ function RoomBody({ room, setRoom, role, user, roomId }) {
   // assumes the link recipient is the intended joiner; we
   // gate access to the open seat behind an explicit "Join"
   // click so a stranger who knows the URL can't auto-claim.
+  // If the seat is already filled, the user gets a read-only
+  // spectator view of whatever state the room is in.
   if (!role) {
+    if (room.joiner_id) {
+      return <SpectatorView room={room} setRoom={setRoom} user={user} roomId={roomId} />;
+    }
     return <ClaimJoinerSeat room={room} setRoom={setRoom} user={user} roomId={roomId} />;
   }
 
@@ -354,7 +362,6 @@ function ClaimJoinerSeat({ room, setRoom, user, roomId }) {
 
 function Lobby({ room, setRoom, role, user, roomId }) {
   const navigate = useNavigate();
-  const [picking, setPicking] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
@@ -385,14 +392,12 @@ function Lobby({ room, setRoom, role, user, roomId }) {
     }
   }, [shareUrl]);
 
-  const onPickRules = useCallback(async (preset) => {
-    setPicking(true);
-    const patch = role === "creator"
-      ? { rules_creator: { ...preset.diff, presetId: preset.id } }
-      : { rules_joiner: { ...preset.diff, presetId: preset.id } };
-    // Auto-advance to 'prompting' if creator was waiting for
-    // joiner and creator's rules are now set, or to
-    // 'warmup_round_1' if both rules are stamped.
+  // When the joiner commits AI-generated rules. Mirrors the
+  // creator's commit-on-create flow but happens here in the
+  // lobby because the joiner doesn't pick rules until they've
+  // landed in the room.
+  const onCommitJoinerRules = useCallback(async (rules) => {
+    const patch = { rules_joiner: rules };
     const next = { ...room, ...patch };
     let nextStatus = room.status;
     if (next.rules_creator && next.rules_joiner) nextStatus = "warmup_round_1";
@@ -400,13 +405,9 @@ function Lobby({ room, setRoom, role, user, roomId }) {
     if (nextStatus !== room.status) patch.status = nextStatus;
     const result = await updateRoom(roomId, patch);
     if (result?.ok && result.room) {
-      // Don't wait for realtime - apply the new row to local
-      // state immediately. The realtime subscription will fire
-      // a redundant UPDATE shortly which is a no-op merge.
       setRoom?.((prev) => ({ ...(prev || {}), ...result.room }));
     }
-    setPicking(false);
-  }, [room, role, roomId, setRoom]);
+  }, [room, roomId, setRoom]);
 
   // Creator-only: cancel the room and bounce back to /arena.
   // Only allowed while no joiner has claimed the second seat;
@@ -434,20 +435,28 @@ function Lobby({ room, setRoom, role, user, roomId }) {
   }, [canCancel, confirmCancel, roomId, navigate]);
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_320px] anim-fade-up">
-      <div className="space-y-4">
-        <div className="p-5 bg-surface-low border border-white/[0.04] space-y-3">
+    <div className="grid gap-4 sm:gap-6 xl:grid-cols-[1fr_320px] anim-fade-up">
+      <div className="space-y-3 sm:space-y-4">
+        <div className="p-4 sm:p-5 bg-surface-low border border-white/[0.04] space-y-3">
           <h2 className="font-headline text-sm font-bold uppercase tracking-widest text-on-surface-variant/45">
             Your rules
           </h2>
           {myRules ? (
             <RuleSummary rules={myRules} />
+          ) : role === "joiner" ? (
+            <JoinerRulePrompt onCommit={onCommitJoinerRules} />
           ) : (
-            <RulePicker disabled={picking} onPick={onPickRules} />
+            // Creator's rules are committed at room-creation
+            // time, so this branch only fires if the creator
+            // somehow lands here without rules. Show a stub
+            // with a back link.
+            <p className="text-[12px] text-on-surface-variant/45">
+              Your rules weren&apos;t saved correctly. Cancel the room and create a new one.
+            </p>
           )}
         </div>
 
-        <div className="p-5 bg-surface-low border border-white/[0.04] space-y-3">
+        <div className="p-4 sm:p-5 bg-surface-low border border-white/[0.04] space-y-3">
           <h2 className="font-headline text-sm font-bold uppercase tracking-widest text-on-surface-variant/45">
             Opponent&apos;s rules
           </h2>
@@ -455,7 +464,7 @@ function Lobby({ room, setRoom, role, user, roomId }) {
             <RuleSummary rules={oppRules} />
           ) : (
             <p className="text-[12px] text-on-surface-variant/45">
-              {oppName ? `${oppName} is picking\u2026` : "Waiting for opponent\u2026"}
+              {oppName ? `${oppName} is designing the variant\u2026` : "Waiting for opponent\u2026"}
             </p>
           )}
         </div>
@@ -527,35 +536,199 @@ function Lobby({ room, setRoom, role, user, roomId }) {
   );
 }
 
-function RulePicker({ onPick, disabled }) {
+/**
+ * Joiner's "design my round" panel. Mirrors the creator's
+ * CreatePanel UX from /arena: free-form prompt -> Generate ->
+ * preview -> Commit. One commit per room (per spec) - once
+ * the joiner clicks Commit, no more regeneration.
+ *
+ * Uses the same generateArenaRules() wrapper so rate limiting
+ * and validator errors flow through identically. Keeps the
+ * preview rendering consistent with /arena's CreatePanel via
+ * the shared RulePreview / describeRules pair.
+ */
+function JoinerRulePrompt({ onCommit }) {
+  const [prompt, setPrompt] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [generated, setGenerated] = useState(null);
+  const [committing, setCommitting] = useState(false);
+  const [error, setError] = useState(null);
+  const [validatorErrors, setValidatorErrors] = useState(null);
+  const [cooldownSec, setCooldownSec] = useState(0);
+  const aiAvailable = isAIRulesAvailable();
+
+  useEffect(() => {
+    if (cooldownSec <= 0) return undefined;
+    const t = setTimeout(() => setCooldownSec((n) => Math.max(0, n - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [cooldownSec]);
+
+  const resolvedRules = useMemo(() => {
+    if (!generated?.rules) return null;
+    try { return resolveRules(generated.rules); }
+    catch { return null; }
+  }, [generated]);
+  const description = useMemo(
+    () => resolvedRules ? describeRules(resolvedRules) : null,
+    [resolvedRules],
+  );
+
+  const onGenerate = useCallback(async () => {
+    if (!aiAvailable) {
+      setError("AI rule generator isn't available.");
+      return;
+    }
+    if (!prompt.trim()) {
+      setError("Type a description first.");
+      return;
+    }
+    setGenerating(true);
+    setError(null);
+    setValidatorErrors(null);
+    try {
+      const result = await generateArenaRules(prompt);
+      if (!result.ok) {
+        setError(result.error || "AI couldn't produce rules.");
+        if (result.validatorErrors) setValidatorErrors(result.validatorErrors);
+        if (result.rateLimited && result.retryAfterSeconds) {
+          setCooldownSec(Math.ceil(Number(result.retryAfterSeconds)) || 0);
+        }
+        return;
+      }
+      setGenerated({ rules: result.rules, model: result.model });
+    } catch (e) {
+      setError(e?.message || "AI request failed.");
+    } finally {
+      setGenerating(false);
+    }
+  }, [aiAvailable, prompt]);
+
+  const onCommit_ = useCallback(async () => {
+    if (!generated?.rules) return;
+    setCommitting(true);
+    setError(null);
+    try {
+      await onCommit(generated.rules);
+    } catch (e) {
+      setError(e?.message || "Couldn't save your rules.");
+    } finally {
+      setCommitting(false);
+    }
+  }, [generated, onCommit]);
+
+  if (!aiAvailable) {
+    return (
+      <p className="text-[12px] text-error leading-relaxed">
+        AI rule generation isn&apos;t configured. The Edge Function (arena_rules) needs to be deployed.
+      </p>
+    );
+  }
+
   return (
-    <div className="space-y-1.5">
-      {PRESETS.map((p) => (
-        <button key={p.id}
-          onClick={() => onPick(p)}
-          disabled={disabled}
-          className="w-full text-left px-3 py-2.5 bg-surface-container border border-white/[0.04] hover:border-primary/30 hover:bg-surface-high transition-colors disabled:opacity-50 disabled:pointer-events-none">
-          <span className="font-headline text-[13px] font-bold text-on-surface block mb-0.5">{p.label}</span>
-          <span className="text-[11px] text-on-surface-variant/55 leading-snug block">{p.summary}</span>
+    <div className="space-y-3">
+      <div>
+        <label className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/40 block mb-1.5">
+          Describe your variant
+        </label>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="e.g. Bishops can also leap one square. Knights move twice per turn."
+          rows={3}
+          maxLength={600}
+          disabled={generating || committing}
+          className="w-full bg-surface-container border border-white/[0.06] px-3 py-2 text-[13px] text-on-surface placeholder:text-on-surface-variant/30 outline-none focus:border-primary/40 resize-none"
+        />
+        <p className="mt-1 text-[10px] text-on-surface-variant/30">
+          {prompt.length} / 600
+        </p>
+      </div>
+      <button onClick={onGenerate}
+        disabled={generating || cooldownSec > 0 || committing || !prompt.trim()}
+        className="btn btn-secondary w-full py-2.5 text-xs">
+        {generating
+          ? "Loading\u2026 asking AI"
+          : cooldownSec > 0
+            ? `Wait ${cooldownSec}s`
+            : generated ? "Regenerate" : "Generate rules"}
+      </button>
+
+      {description && (
+        <RulePreview description={description} model={generated?.model} />
+      )}
+
+      {error && (
+        <p className="text-[12px] text-error leading-relaxed">{error}</p>
+      )}
+      {validatorErrors && validatorErrors.length > 0 && (
+        <ul className="text-[11px] text-amber-300/70 leading-snug space-y-0.5">
+          {validatorErrors.slice(0, 5).map((e, i) => (
+            <li key={i} className="font-mono">&middot; {e}</li>
+          ))}
+        </ul>
+      )}
+
+      {generated && (
+        <button onClick={onCommit_}
+          disabled={committing}
+          className="btn btn-primary w-full py-3 text-sm">
+          {committing ? "Loading\u2026 saving" : "Lock in these rules"}
         </button>
-      ))}
+      )}
     </div>
   );
 }
 
-function RuleSummary({ rules }) {
-  // Pull the preset metadata back from the diff. Phase 1 always
-  // attaches `presetId`; Phase 2 will need a richer renderer
-  // that descends into the rule object.
-  const preset = rules.presetId ? presetById(rules.presetId) : null;
+/**
+ * Compact rule summary for an already-committed rule diff.
+ * Tries to surface the preset label first (Phase 1 had hand-
+ * curated presets); falls back to the AI-generated rule's name
+ * + describe-based change list. Used in the lobby +
+ * round-play side panels so both players see what each round
+ * actually changes.
+ */
+function RuleSummary({ rules, compact }) {
+  const preset = rules?.presetId ? presetById(rules.presetId) : null;
+  const resolved = useMemo(() => {
+    if (!rules) return null;
+    try { return resolveRules(rules); }
+    catch { return null; }
+  }, [rules]);
+  const description = useMemo(
+    () => resolved ? describeRules(resolved) : null,
+    [resolved],
+  );
+  const name = preset?.label || rules?.name || description?.name || "Custom rules";
+  const blurb = preset?.summary || description?.description || rules?.description || "Custom variant rules.";
+
+  if (compact) {
+    return (
+      <div className="px-3 py-2.5 bg-surface-container border border-white/[0.04]">
+        <span className="font-headline text-[13px] font-bold text-primary block mb-0.5">{name}</span>
+        <span className="text-[11px] text-on-surface-variant/55 leading-snug">{blurb}</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="px-3 py-2.5 bg-surface-container border border-white/[0.04]">
-      <span className="font-headline text-[13px] font-bold text-primary block mb-0.5">
-        {preset?.label || rules.name || "Custom rules"}
-      </span>
-      <span className="text-[11px] text-on-surface-variant/55 leading-snug">
-        {preset?.summary || rules.description || "Custom variant rules."}
-      </span>
+    <div className="px-3 py-3 bg-surface-container border border-white/[0.04] space-y-2">
+      <div>
+        <span className="font-headline text-[13px] font-bold text-primary block mb-0.5">{name}</span>
+        <span className="text-[11px] text-on-surface-variant/55 leading-snug">{blurb}</span>
+      </div>
+      {description && description.changes.length > 0 && (
+        <ul className="text-[11px] text-on-surface-variant/65 leading-snug space-y-0.5 pt-1 border-t border-white/[0.04]">
+          {description.changes.slice(0, 6).map((c, i) => (
+            <li key={i} className="flex gap-1.5">
+              <span className="text-primary/60 shrink-0">&middot;</span>
+              <span>{c.detail}</span>
+            </li>
+          ))}
+          {description.changes.length > 6 && (
+            <li className="text-on-surface-variant/35 italic">&hellip; and {description.changes.length - 6} more</li>
+          )}
+        </ul>
+      )}
     </div>
   );
 }
@@ -1324,6 +1497,175 @@ function MoveList({ moves, activeIndex, onJump }) {
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Spectator ──────────────────────────────────────────────
+
+/**
+ * Read-only viewer for users who land on a /arena/<roomId>
+ * link after both seats are filled. Renders the current board
+ * + clocks but disables every interactive affordance: no
+ * legal-move highlights, no drag, no resign, no commit. The
+ * realtime subscription is still active so the board ticks
+ * forward as the players move.
+ *
+ * No spectator chat / cursor / arrows yet - if those become
+ * useful we'll add them in a follow-up. Keeping this dumb so
+ * the privacy + perf story stays simple.
+ */
+function SpectatorView({ room }) {
+  const status = room.status;
+  const isLobby = status === "waiting_for_joiner" || status === "prompting";
+  const isWarmup = status === "warmup_round_1" || status === "warmup_round_2";
+  const isRound = status === "round_1" || status === "round_2" || status === "tiebreak";
+  const isDone = status === "done";
+
+  // Lobby / warmup: just show what's happening. No board.
+  if (isLobby || isWarmup) {
+    return (
+      <div className="anim-fade-up p-5 bg-surface-low border border-white/[0.04] space-y-3">
+        <h2 className="font-headline text-base font-bold text-primary">
+          {isWarmup ? "Players are warming up" : "Lobby in progress"}
+        </h2>
+        <p className="text-[12px] text-on-surface-variant/65 leading-relaxed">
+          {isWarmup
+            ? "Both players are getting a feel for the variant against an AI. The 1v1 starts when they're both ready."
+            : "The two players are designing the rules for this match."}
+        </p>
+        <p className="text-[11px] text-on-surface-variant/40">
+          Spectator mode &middot; {room.creator_name || "Host"} vs {room.joiner_name || "Opponent"}
+        </p>
+      </div>
+    );
+  }
+
+  if (isDone) {
+    // Show the final result without the play-again CTA.
+    const result = room.match_result;
+    const winnerRole = result?.winner;
+    const winnerName = winnerRole === "creator" ? room.creator_name : winnerRole === "joiner" ? room.joiner_name : null;
+    return (
+      <div className="anim-fade-up p-5 bg-surface-low border border-primary/20 space-y-3">
+        <h2 className="font-headline text-base font-bold text-primary">Match complete</h2>
+        <p className="text-[13px] text-on-surface-variant/65">
+          {winnerName ? `${winnerName} won.` : "The match was drawn."}
+        </p>
+      </div>
+    );
+  }
+
+  if (!isRound) return null;
+
+  // Round play - read-only board.
+  const roundLabel = roundLabelFor(status);
+  const isTiebreak = status === "tiebreak";
+  const rulesDiff = isTiebreak
+    ? { extends: "vanilla" }
+    : (roundLabel === 1 ? room.rules_creator : room.rules_joiner);
+  let rules;
+  try { rules = resolveRules(rulesDiff || { extends: "vanilla" }); }
+  catch { rules = vanillaRules(); }
+  const fen = room.round_state?.fen || rules.startingFen || VANILLA_FEN;
+  const clock = room.round_state?.clock;
+  const colorPair = colorPairFor(roundLabel === "tiebreak" ? 1 : roundLabel);
+
+  return (
+    <SpectatorRound
+      room={room}
+      rules={rules}
+      rulesDiff={rulesDiff}
+      fen={fen}
+      clock={clock}
+      colorPair={colorPair}
+      isTiebreak={isTiebreak}
+      roundLabel={roundLabel}
+    />
+  );
+}
+
+function SpectatorRound({ room, rules, rulesDiff, fen, clock, colorPair, isTiebreak, roundLabel }) {
+  // Local tick to drive the live clock countdown without
+  // re-rendering the whole parent.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!clock) return undefined;
+    const id = setInterval(() => setTick((t) => t + 1), 250);
+    return () => clearInterval(id);
+  }, [clock]);
+  const snapshot = useMemo(() => clockSnapshot(clock), [clock, tick]);
+
+  // Spectators see the board from White's POV by default.
+  return (
+    <div className="flex flex-col xl:flex-row gap-4 xl:gap-6 anim-fade-up">
+      <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
+        <div className="w-full mb-3">
+          <h2 className="font-headline text-base sm:text-lg font-extrabold tracking-tighter text-primary leading-tight">
+            {isTiebreak ? "Tie-break" : `Round ${roundLabel}`} &middot; {isTiebreak ? "1+0" : "10+0"}
+          </h2>
+          <p className="text-[11px] text-on-surface-variant/55 mt-0.5">
+            Spectator view &middot; {room.creator_name || "Host"} vs {room.joiner_name || "Opponent"}
+          </p>
+        </div>
+        <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
+          <InteractiveBoard
+            fen={fen}
+            orientation="white"
+            playerColor="w"
+            interactive={false}
+            highlightSquares={{}}
+          />
+        </div>
+      </div>
+      <div className="w-full xl:w-[280px] shrink-0 space-y-3">
+        <div className="p-4 bg-surface-low border border-white/[0.04] space-y-3">
+          <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+            Clocks
+          </h3>
+          <div className="space-y-2">
+            <SpectatorClockRow
+              name={room.creator_name || "Host"}
+              color={colorPair.creator === "w" ? "White" : "Black"}
+              snap={snapshot.creator}
+              running={snapshot.running === "creator"}
+            />
+            <SpectatorClockRow
+              name={room.joiner_name || "Opponent"}
+              color={colorPair.joiner === "w" ? "White" : "Black"}
+              snap={snapshot.joiner}
+              running={snapshot.running === "joiner"}
+            />
+          </div>
+        </div>
+        <div className="p-4 bg-surface-low border border-white/[0.04] space-y-2">
+          <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+            Round rules
+          </h3>
+          <RuleSummary rules={rulesDiff || { extends: "vanilla" }} compact />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SpectatorClockRow({ name, color, snap, running }) {
+  if (!snap) return null;
+  const lowTime = snap.remainingMs < 30_000;
+  return (
+    <div className={`px-3 py-2 border ${
+      running ? "bg-primary/10 border-primary/30" : "bg-surface-container border-white/[0.04]"
+    }`}>
+      <div className="flex items-baseline justify-between mb-0.5">
+        <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/45 truncate">{name}</span>
+        {running && <span className="text-[9px] font-bold text-primary">LIVE</span>}
+      </div>
+      <span className={`font-mono text-2xl font-extrabold tabular-nums ${
+        snap.expired ? "text-error" : lowTime ? "text-amber-300" : "text-on-surface"
+      }`}>
+        {formatClock(snap.remainingMs)}
+      </span>
+      <div className="text-[10px] text-on-surface-variant/45 mt-0.5">{color}</div>
     </div>
   );
 }
