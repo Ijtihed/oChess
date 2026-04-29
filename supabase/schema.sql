@@ -386,8 +386,10 @@ drop policy if exists "Players can view their active games" on games;
 drop policy if exists "Players can view own games" on games;
 drop policy if exists "Players can update their active games" on games;
 drop policy if exists "Players can update own games" on games;
+drop policy if exists "Players can update own active games" on games;
 drop policy if exists "Authenticated users can create games" on games;
 drop policy if exists "Auth users can create games" on games;
+drop policy if exists "Players can create own games" on games;
 create policy "Anyone can view completed games" on games
   for select using (status = 'completed');
 create policy "Players can view own games" on games
@@ -416,6 +418,7 @@ drop policy if exists "Seeks are viewable by authenticated" on seeks;
 drop policy if exists "Auth users can view seeks" on seeks;
 drop policy if exists "Users can create seeks" on seeks;
 drop policy if exists "Auth users can create seeks" on seeks;
+drop policy if exists "Auth users can create own seeks" on seeks;
 drop policy if exists "Users can delete own seeks" on seeks;
 drop policy if exists "Auth users can delete own seeks" on seeks;
 drop policy if exists "Auth users can delete matched seeks" on seeks;
@@ -429,6 +432,7 @@ create policy "Auth users can delete own seeks" on seeks
 -- ── challenges ──
 drop policy if exists "Anyone can view challenges" on challenges;
 drop policy if exists "Auth users can create challenges" on challenges;
+drop policy if exists "Auth users can create own challenges" on challenges;
 drop policy if exists "Auth users can update challenges" on challenges;
 drop policy if exists "Auth users can update own or accept challenges" on challenges;
 drop policy if exists "Creator can update own challenge" on challenges;
@@ -475,6 +479,7 @@ create policy "Users can update own puzzle progress" on puzzle_progress
 drop policy if exists "Users can read own attempts" on puzzle_attempts;
 drop policy if exists "Anyone can read attempts" on puzzle_attempts;
 drop policy if exists "Auth users can insert attempts" on puzzle_attempts;
+drop policy if exists "Users can insert own attempts" on puzzle_attempts;
 create policy "Users can read own attempts" on puzzle_attempts
   for select using (auth.uid() = user_id);
 -- Critical: bind user_id to auth.uid() so authenticated clients
