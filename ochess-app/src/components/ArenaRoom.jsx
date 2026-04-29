@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import SocialPanel from "./SocialPanel";
 import InteractiveBoard from "./InteractiveBoard";
+import PlayerBar, { getCaptured } from "./PlayerBar";
 import { playMoveSound, playError } from "../lib/sounds";
 import {
   getRoom,
@@ -41,7 +42,6 @@ import {
   clockSnapshot,
   commitMove as commitClockMove,
   pauseClock,
-  formatClock,
 } from "../lib/arena/clock";
 
 /**
@@ -170,24 +170,38 @@ export default function ArenaRoom({ roomId }) {
     : user.id === room.joiner_id ? "joiner"
     : null;
 
-  // Tighter shell for board-bearing states (warmup / round /
-  // tiebreak / done). Mirrors OnlineGameScreen's padding
-  // (`py-3 sm:py-4`) so the board sits in the same visual
-  // density as a regular Play match. Lobby keeps the relaxed
-  // `py-6 sm:py-10` for breathing room around the rule
-  // pickers + share-link card.
+  // Board-bearing states (warmup / round / tiebreak) render
+  // their own full-bleed game shell that mirrors the Online
+  // play surface (top bar, padded board column, sized
+  // sidebar). For those we skip the page header + outer
+  // padding entirely so RoundPlay / Warmup / SpectatorRound's
+  // shells are flush with the navbar. Lobby + match-results
+  // keep the relaxed page padding for breathing room.
   const isBoardState = room.status === "warmup_round_1"
     || room.status === "warmup_round_2"
     || room.status === "round_1"
     || room.status === "round_2"
     || room.status === "tiebreak";
-  const shellPadding = isBoardState
-    ? "px-4 sm:px-6 md:px-10 xl:px-6 py-3 sm:py-4"
-    : "px-4 sm:px-6 md:px-10 py-6 sm:py-10";
+
+  if (isBoardState || (room.status === "done" && false /* keep done on the relaxed shell */)) {
+    return (
+      <div className="flex">
+        <div className="flex-1 min-w-0">
+          <RoomBody
+            room={room}
+            setRoom={setRoom}
+            role={role}
+            user={user}
+            roomId={roomId}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex">
-      <div className={`flex-1 min-w-0 max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px] mx-auto ${shellPadding} min-h-[calc(100dvh-4rem)]`}>
+      <div className="flex-1 min-w-0 max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10 min-h-[calc(100dvh-4rem)]">
         <header className="anim-fade-up mb-3 sm:mb-5" style={{ "--delay": "0.05s" }}>
           <button onClick={() => navigate("/arena")}
             className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors flex items-center gap-1 mb-1">
@@ -547,6 +561,33 @@ function Lobby({ room, setRoom, role, user, roomId }) {
  * preview rendering consistent with /arena's CreatePanel via
  * the shared RulePreview / describeRules pair.
  */
+const JOINER_PROMPT_IDEAS = [
+  { label: "Kings in middle", prompt: "Both kings start in the middle of the board, surrounded by their pieces." },
+  { label: "Atomic chess", prompt: "Captures explode and destroy adjacent non-pawn pieces. Kings cannot capture." },
+  { label: "Race to back rank", prompt: "First king to reach the opposite back rank wins. No checkmate needed." },
+  { label: "Three captures wins", prompt: "First player to capture three enemy pieces wins immediately." },
+  { label: "Knights leap twice", prompt: "Knights can leap to a normal knight square OR another knight-hop further out." },
+  { label: "Pawns sideways too", prompt: "Pawns can also move sideways one square without capturing." },
+];
+
+function JoinerPromptIdeas({ onPick, disabled }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {JOINER_PROMPT_IDEAS.map((idea) => (
+        <button
+          key={idea.label}
+          type="button"
+          disabled={disabled}
+          onClick={() => onPick(idea.prompt)}
+          className="px-2.5 py-1 text-[10px] font-headline font-bold uppercase tracking-widest border border-white/[0.06] text-on-surface-variant/55 hover:text-primary hover:border-primary/30 disabled:opacity-30 transition-colors"
+        >
+          {idea.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function JoinerRulePrompt({ onCommit }) {
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -642,6 +683,7 @@ function JoinerRulePrompt({ onCommit }) {
         <p className="mt-1 text-[10px] text-on-surface-variant/30">
           {prompt.length} / 600
         </p>
+        <JoinerPromptIdeas onPick={(text) => setPrompt(text)} disabled={generating || committing} />
       </div>
       <button onClick={onGenerate}
         disabled={generating || cooldownSec > 0 || committing || !prompt.trim()}
@@ -689,6 +731,7 @@ function JoinerRulePrompt({ onCommit }) {
  */
 function RuleSummary({ rules, compact }) {
   const preset = rules?.presetId ? presetById(rules.presetId) : null;
+  const [expanded, setExpanded] = useState(false);
   const resolved = useMemo(() => {
     if (!rules) return null;
     try { return resolveRules(rules); }
@@ -710,22 +753,41 @@ function RuleSummary({ rules, compact }) {
     );
   }
 
+  // Default to a tighter 3-change preview so the lobby panels
+  // don't stretch to 8+ lines on rich variants. The full list
+  // is one click away.
+  const changes = description?.changes || [];
+  const visibleCount = expanded ? changes.length : Math.min(3, changes.length);
+
   return (
     <div className="px-3 py-3 bg-surface-container border border-white/[0.04] space-y-2">
       <div>
         <span className="font-headline text-[13px] font-bold text-primary block mb-0.5">{name}</span>
         <span className="text-[11px] text-on-surface-variant/55 leading-snug">{blurb}</span>
       </div>
-      {description && description.changes.length > 0 && (
+      {changes.length > 0 && (
         <ul className="text-[11px] text-on-surface-variant/65 leading-snug space-y-0.5 pt-1 border-t border-white/[0.04]">
-          {description.changes.slice(0, 6).map((c, i) => (
+          {changes.slice(0, visibleCount).map((c, i) => (
             <li key={i} className="flex gap-1.5">
               <span className="text-primary/60 shrink-0">&middot;</span>
               <span>{c.detail}</span>
             </li>
           ))}
-          {description.changes.length > 6 && (
-            <li className="text-on-surface-variant/35 italic">&hellip; and {description.changes.length - 6} more</li>
+          {!expanded && changes.length > 3 && (
+            <li>
+              <button onClick={() => setExpanded(true)}
+                className="text-[10px] uppercase tracking-widest text-primary/65 hover:text-primary transition-colors mt-0.5">
+                +{changes.length - 3} more changes
+              </button>
+            </li>
+          )}
+          {expanded && changes.length > 3 && (
+            <li>
+              <button onClick={() => setExpanded(false)}
+                className="text-[10px] uppercase tracking-widest text-primary/65 hover:text-primary transition-colors mt-0.5">
+                Show less
+              </button>
+            </li>
           )}
         </ul>
       )}
@@ -962,61 +1024,78 @@ function Warmup({ room, setRoom, role, roomId }) {
 
   const orientation = myColor === "b" ? "black" : "white";
 
+  // Same shell as RoundPlay so the warmup -> round transition
+  // doesn't visually jump. Top bar advertises the warmup, the
+  // board has a "Practice bot" PlayerBar above + your bar
+  // below (no clock - warmup uses a session timer instead).
   return (
-    <div className="flex flex-col xl:flex-row gap-4 xl:gap-6 anim-fade-up">
-      <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
-        <div className="w-full mb-3">
-          <h2 className="font-headline text-base sm:text-lg font-extrabold tracking-tighter text-primary leading-tight">
-            Warmup &middot; Round {round}
-          </h2>
-          <p className="text-[11px] text-on-surface-variant/55 mt-0.5">
-            Get a feel for the variant. {WARMUP_DURATION_S}s, then the real round starts.
-            Playing as <span className="font-bold text-on-surface-variant/85">{myColor === "w" ? "White" : "Black"}</span> against a random-move dummy.
-          </p>
-        </div>
-        {/* Height-aware width cap. The board is aspect-square,
-            so without this it can grow taller than the viewport
-            on widescreen monitors and force vertical scrolling.
-            Mirrors the math used by OnlineGameScreen / GameScreen
-            (the chrome above + below the board takes ~11rem). */}
-        <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
-          <InteractiveBoard
-            fen={position.toFen()}
-            onMove={onUserMove}
-            orientation={orientation}
-            playerColor={myColor}
-            interactive={position.turn === myColor && !ready}
-            highlightSquares={highlight}
-            legalMovesProvider={legalMovesProvider}
-          />
+    <div className="min-h-[calc(100dvh-4rem)] bg-surface flex flex-col">
+      <div className="w-full bg-surface-lowest/80 backdrop-blur-xl border-b border-white/[0.04] px-4 sm:px-6 h-12 flex items-center justify-between shrink-0 z-10">
+        <button onClick={() => {/* warmup is uncancellable but back-arrow keeps the visual */}} className="flex items-center gap-2 text-on-surface-variant/50 py-2 pr-3 cursor-default">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
+          <span className="font-headline text-lg font-extrabold tracking-tighter text-primary">oChess</span>
+        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-label uppercase tracking-widest text-on-surface-variant/30">
+            Warmup &middot; Round {round} &middot; {WARMUP_DURATION_S}s prep
+          </span>
+          <span className="text-[10px] font-headline font-bold uppercase tracking-wide px-2 py-0.5 bg-amber-500/15 text-amber-400 tabular-nums">
+            {secondsLeft}s
+          </span>
         </div>
       </div>
 
-      <div className="w-full xl:w-[280px] shrink-0 space-y-3">
-        <div className="p-4 bg-surface-low border border-white/[0.04] space-y-2">
-          <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
-            Round {round} rules
-          </h3>
-          <RuleSummary rules={rulesDiff || { extends: "vanilla" }} />
-        </div>
-
-        <div className="p-4 bg-surface-low border border-white/[0.04] space-y-3">
-          <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
-            Warmup
-          </h3>
-          <div className="text-center">
-            <span className="font-headline text-3xl font-extrabold tabular-nums text-primary">{secondsLeft}</span>
-            <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/40 ml-1">s left</span>
-          </div>
-          {!ready ? (
-            <button onClick={() => setReady(true)} className="btn btn-primary w-full py-2.5 text-xs">
-              I&apos;m ready
-            </button>
-          ) : (
-            <div className="px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 text-center text-[11px] font-bold text-emerald-300">
-              {oppReady ? "Both ready \u2014 starting\u2026" : "You're ready. Waiting on opponent\u2026"}
+      <div className="flex-1 flex">
+        <div className="flex-1 min-w-0 flex flex-col xl:flex-row px-4 sm:px-6 md:px-10 xl:px-6 py-3 sm:py-4 gap-4 xl:gap-6 w-full mx-auto max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px]">
+          <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
+            <PlayerBar
+              name="Practice bot"
+              pieceColor={myColor === "w" ? "b" : "w"}
+              active={position.turn !== myColor && !ready}
+            />
+            <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
+              <InteractiveBoard
+                fen={position.toFen()}
+                onMove={onUserMove}
+                orientation={orientation}
+                playerColor={myColor}
+                interactive={position.turn === myColor && !ready}
+                highlightSquares={highlight}
+                legalMovesProvider={legalMovesProvider}
+              />
             </div>
-          )}
+            <PlayerBar
+              name="You (warmup)"
+              pieceColor={myColor}
+              active={position.turn === myColor && !ready}
+              isPlayer
+            />
+          </div>
+
+          <div className="w-full xl:w-[340px] shrink-0 flex flex-col gap-3">
+            <div className="p-3 bg-surface-low border border-white/[0.04] space-y-2 shrink-0">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+                  Time left
+                </span>
+                <span className="font-mono text-2xl font-extrabold tabular-nums text-primary">{secondsLeft}</span>
+              </div>
+              {!ready ? (
+                <button onClick={() => setReady(true)} className="btn btn-primary w-full py-2.5 text-xs">
+                  I&apos;m ready
+                </button>
+              ) : (
+                <div className="px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 text-center text-[11px] font-bold text-emerald-300">
+                  {oppReady ? "Both ready \u2014 starting\u2026" : "You're ready. Waiting on opponent\u2026"}
+                </div>
+              )}
+              <p className="text-[10px] text-on-surface-variant/40 leading-snug">
+                Move freely against a random-move bot. Once both players are ready (or time runs out) the real round starts.
+              </p>
+            </div>
+
+            <VariantRulesCard rules={rulesDiff} isTiebreak={false} roundLabel={round} />
+          </div>
         </div>
       </div>
     </div>
@@ -1047,6 +1126,7 @@ function Warmup({ room, setRoom, role, roomId }) {
  *   - resign button.
  */
 function RoundPlay({ room, setRoom, role, user, roomId }) {
+  const navigate = useNavigate();
   const status = room.status;
   const roundLabel = roundLabelFor(status);
   const isTiebreak = status === "tiebreak";
@@ -1068,7 +1148,6 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
 
   // My color + whose turn it is.
   const myColor = colorFor(role, status);
-  const oppRole = role === "creator" ? "joiner" : "creator";
   const colorPair = colorPairFor(roundLabel === "tiebreak" ? 1 : roundLabel);
 
   // Board state. Fen comes from the room's round_state so a
@@ -1340,115 +1419,206 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   const orientation = myColor === "b" ? "black" : "white";
   const myTurn = position.turn === myColor && !gameStatus.ended;
 
-  return (
-    <div className="flex flex-col xl:flex-row gap-4 xl:gap-6 anim-fade-up">
-      <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
-        <div className="w-full mb-3 flex items-baseline justify-between gap-3 flex-wrap">
-          <div>
-            <h2 className="font-headline text-base sm:text-lg font-extrabold tracking-tighter text-primary leading-tight">
-              {isTiebreak ? "Tie-break" : `Round ${roundLabel}`} &middot; {isTiebreak ? "1+0" : "10+0"}
-            </h2>
-            <p className="text-[11px] text-on-surface-variant/55 mt-0.5">
-              You are <span className="font-bold text-on-surface-variant/85">{myColor === "w" ? "White" : "Black"}</span>{liveMode ? "" : " · viewing history"}
-            </p>
-          </div>
-          {!liveMode && (
-            <button onClick={() => setHistoryIndex(null)}
-              className="px-3 py-1.5 font-headline text-[10px] font-bold uppercase tracking-widest bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 transition-colors">
-              Back to live
-            </button>
-          )}
-        </div>
-        <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
-          <InteractiveBoard
-            fen={displayFen}
-            onMove={onUserMove}
-            orientation={orientation}
-            playerColor={myColor}
-            interactive={liveMode && myTurn}
-            highlightSquares={highlight}
-            legalMovesProvider={legalMovesProvider}
-          />
-        </div>
-      </div>
+  // Captures math derived from the FEN, identical to the Online
+  // play surface so the +material indicator and captured-piece
+  // strip read the same. For variants that add or duplicate
+  // pieces this becomes approximate, but never wrong-direction.
+  const captured = useMemo(() => getCaptured(displayFen), [displayFen]);
+  const advForMe = myColor === "w" ? captured.advantage : -captured.advantage;
+  const myCapturedPieces = myColor === "w" ? captured.capturedByWhite : captured.capturedByBlack;
+  const oppCapturedPieces = myColor === "w" ? captured.capturedByBlack : captured.capturedByWhite;
 
-      <div className="w-full xl:w-[280px] shrink-0 space-y-3">
-        <ClockPanel
-          snapshot={snapshot}
-          colorPair={colorPair}
-          room={room}
-          role={role}
-        />
-        <MoveList
-          moves={moves}
-          activeIndex={historyIndex}
-          onJump={setHistoryIndex}
-        />
-        <div className="p-4 bg-surface-low border border-white/[0.04] space-y-2">
-          <button onClick={onResign}
-            className={`w-full px-3 py-2 font-headline text-[11px] font-bold uppercase tracking-widest border transition-colors ${
-              confirmResign
-                ? "bg-error/15 border-error/30 text-error animate-pulse"
-                : "bg-surface-container border-white/[0.04] text-on-surface-variant/55 hover:text-error hover:border-error/20"
-            }`}>
-            {confirmResign ? "Tap again to resign" : "Resign"}
-          </button>
-          {resignError && (
-            <p className="text-[11px] text-error">{resignError}</p>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Sub-components: clocks, move list ──────────────────────
-
-function ClockPanel({ snapshot, colorPair, room, role }) {
-  const oppRole = role === "creator" ? "joiner" : "creator";
+  // Identity / clock breakdown for the player bars. PlayerBar
+  // expects ms remaining + an `active` flag, mirroring what
+  // OnlineGameScreen passes; we adapt the arena snapshot shape.
+  const oppRoleId = role === "creator" ? "joiner" : "creator";
   const myName = role === "creator" ? room.creator_name : room.joiner_name;
   const oppName = role === "creator" ? room.joiner_name : room.creator_name;
+  const myColorLabel = colorPair[role];
+  const oppColorLabel = colorPair[oppRoleId];
+  const myTime = snapshot[role]?.remainingMs ?? 0;
+  const oppTime = snapshot[oppRoleId]?.remainingMs ?? 0;
+  const myActive = snapshot.running === role;
+  const oppActive = snapshot.running === oppRoleId;
+
+  // Header status pill - matches OnlineGameScreen's chrome:
+  // "Your turn" / "Opponent's turn" / "Game over" with the
+  // round label tucked alongside.
+  const turnLabel = gameStatus.ended
+    ? "Round over"
+    : myTurn ? "Your move" : `${oppName || "opponent"} to move`;
+  const tcLabel = isTiebreak ? "1+0" : "10+0";
+
   return (
-    <div className="p-4 bg-surface-low border border-white/[0.04] space-y-3">
-      <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
-        Clocks
-      </h3>
-      <ClockRow
-        label="You"
-        sub={`${myName || "you"} \u00b7 ${colorPair[role] === "w" ? "White" : "Black"}`}
-        snap={snapshot[role]}
-        running={snapshot.running === role}
-      />
-      <ClockRow
-        label="Opponent"
-        sub={`${oppName || "opponent"} \u00b7 ${colorPair[oppRole] === "w" ? "White" : "Black"}`}
-        snap={snapshot[oppRole]}
-        running={snapshot.running === oppRole}
-      />
+    <div className="min-h-[calc(100dvh-4rem)] bg-surface flex flex-col">
+      <div className="w-full bg-surface-lowest/80 backdrop-blur-xl border-b border-white/[0.04] px-4 sm:px-6 h-12 flex items-center justify-between shrink-0 z-10">
+        <button onClick={() => navigate("/arena")} className="flex items-center gap-2 text-on-surface-variant/50 hover:text-primary transition-colors py-2 pr-3">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
+          <span className="font-headline text-lg font-extrabold tracking-tighter text-primary">oChess</span>
+        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-label uppercase tracking-widest text-on-surface-variant/30">
+            {isTiebreak ? "Tie-break" : `Round ${roundLabel}`} &middot; vs {oppName || "opponent"} &middot; {tcLabel}
+          </span>
+          <span className={`text-[10px] font-headline font-bold uppercase tracking-wide px-2 py-0.5 ${
+            gameStatus.ended
+              ? "bg-surface-high text-on-surface-variant/50"
+              : myTurn ? "bg-primary/10 text-primary" : "bg-surface-high text-on-surface-variant/40"
+          }`}>{turnLabel}</span>
+        </div>
+      </div>
+
+      <div className="flex-1 flex">
+        <div className="flex-1 min-w-0 flex flex-col xl:flex-row px-4 sm:px-6 md:px-10 xl:px-6 py-3 sm:py-4 gap-4 xl:gap-6 w-full mx-auto max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px]">
+          <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
+            <PlayerBar
+              name={oppName || "Opponent"}
+              pieceColor={oppColorLabel}
+              captured={oppCapturedPieces}
+              advantage={advForMe < 0 ? Math.abs(advForMe) : 0}
+              time={oppTime}
+              active={oppActive && !gameStatus.ended}
+            />
+            <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
+              <InteractiveBoard
+                fen={displayFen}
+                onMove={onUserMove}
+                orientation={orientation}
+                playerColor={myColor}
+                interactive={liveMode && myTurn}
+                highlightSquares={highlight}
+                legalMovesProvider={legalMovesProvider}
+              />
+            </div>
+            {!liveMode && (
+              <button onClick={() => setHistoryIndex(null)}
+                className="w-full mt-1 py-2 bg-blue-900/30 border border-blue-500/20 font-headline text-xs font-bold uppercase tracking-wide text-blue-400/80 hover:bg-blue-900/50 transition-colors active:scale-[0.97]">
+                Back to live position
+              </button>
+            )}
+            <PlayerBar
+              name={myName || user.name || "you"}
+              pieceColor={myColorLabel}
+              captured={myCapturedPieces}
+              advantage={advForMe > 0 ? advForMe : 0}
+              time={myTime}
+              active={myActive && !gameStatus.ended}
+              isPlayer
+            />
+          </div>
+
+          <div className="w-full xl:w-[340px] shrink-0 flex flex-col gap-3">
+            {!gameStatus.ended && (
+              <div className="flex gap-2 shrink-0 flex-wrap">
+                <button onClick={onResign}
+                  className={`flex-1 py-2.5 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
+                    confirmResign
+                      ? "bg-error/20 text-error border border-error/20"
+                      : "bg-surface-low border border-white/[0.04] text-on-surface-variant/35 hover:text-error hover:border-error/15"
+                  }`}>
+                  {confirmResign ? "Tap to confirm" : "Resign"}
+                </button>
+                <button onClick={() => navigate("/arena")} className="py-2.5 px-3 bg-surface-low border border-white/[0.04] font-headline text-xs font-bold uppercase tracking-wide text-on-surface-variant/35 hover:text-primary transition-colors active:scale-[0.96]">Menu</button>
+              </div>
+            )}
+            {resignError && (
+              <p className="text-[11px] text-error">{resignError}</p>
+            )}
+
+            <VariantRulesCard rules={rulesDiff} isTiebreak={isTiebreak} roundLabel={roundLabel} />
+
+            <MoveList
+              moves={moves}
+              activeIndex={historyIndex}
+              onJump={setHistoryIndex}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function ClockRow({ label, sub, snap, running }) {
-  if (!snap) return null;
-  const lowTime = snap.remainingMs < 30_000;
-  return (
-    <div className={`px-3 py-2 border ${
-      running ? "bg-primary/10 border-primary/30" : "bg-surface-container border-white/[0.04]"
-    }`}>
-      <div className="flex items-baseline justify-between mb-0.5">
-        <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/45">{label}</span>
-        {running && <span className="text-[9px] font-bold text-primary">LIVE</span>}
+// ── VariantRulesCard ──────────────────────────────────────
+//
+// Compact "what's different this round" card that lives in
+// the round-play sidebar so players can glance at the variant
+// rules without leaving the board. The full rule preview
+// already exists (RulePreview / RuleSummary); this is a
+// trimmed always-visible version that shows up to 4 changes
+// by default and reveals the rest on click.
+function VariantRulesCard({ rules, isTiebreak, roundLabel }) {
+  const [expanded, setExpanded] = useState(false);
+  const resolved = useMemo(() => {
+    try { return resolveRules(rules || { extends: "vanilla" }); }
+    catch { return null; }
+  }, [rules]);
+  const description = useMemo(
+    () => resolved ? describeRules(resolved) : null,
+    [resolved],
+  );
+  if (!description) return null;
+
+  // Tie-break is always vanilla, so there's nothing to surface.
+  // Show a one-line confirmation instead.
+  if (isTiebreak) {
+    return (
+      <div className="bg-surface-container border border-white/[0.04] p-3 shrink-0">
+        <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-1">
+          Tie-break rules
+        </h3>
+        <p className="text-[11px] text-on-surface-variant/55 leading-snug">
+          Standard chess. 1 minute on the clock. First to win takes the match.
+        </p>
       </div>
-      <span className={`font-mono text-2xl font-extrabold tabular-nums ${
-        snap.expired ? "text-error" : lowTime ? "text-amber-300" : "text-on-surface"
-      }`}>
-        {formatClock(snap.remainingMs)}
+    );
+  }
+
+  const changes = description.changes || [];
+  const visibleCount = expanded ? changes.length : Math.min(4, changes.length);
+  const visibleChanges = changes.slice(0, visibleCount);
+
+  return (
+    <div className="bg-surface-container border border-white/[0.04] p-3 shrink-0">
+      <div className="flex items-baseline justify-between gap-2 mb-1.5">
+        <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+          Round {roundLabel} rules
+        </h3>
+        {changes.length > 4 && (
+          <button onClick={() => setExpanded((e) => !e)}
+            className="text-[10px] uppercase tracking-widest text-primary/70 hover:text-primary transition-colors">
+            {expanded ? "Less" : `+${changes.length - 4} more`}
+          </button>
+        )}
+      </div>
+      <span className="font-headline text-[12px] font-bold text-primary block leading-tight">
+        {description.name || "Custom rules"}
       </span>
-      <div className="text-[10px] text-on-surface-variant/45 mt-0.5 truncate">{sub}</div>
+      {description.description && (
+        <p className="text-[11px] text-on-surface-variant/55 leading-snug mt-1">
+          {description.description}
+        </p>
+      )}
+      {visibleChanges.length > 0 && (
+        <ul className="text-[11px] text-on-surface-variant/65 leading-snug space-y-0.5 mt-2 pt-2 border-t border-white/[0.04]">
+          {visibleChanges.map((c, i) => (
+            <li key={i} className="flex gap-1.5">
+              <span className="text-primary/60 shrink-0">&middot;</span>
+              <span>{c.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
+
+// ── Sub-components: move list ──────────────────────────────
+//
+// Clocks now live inline in PlayerBar so the arena play
+// surface matches the regular online game UI. The dedicated
+// ClockPanel + ClockRow components were removed - their job
+// is fully covered by PlayerBar's embedded ClockDisplay.
 
 function MoveList({ moves, activeIndex, onJump }) {
   if (!moves || moves.length === 0) {
@@ -1585,7 +1755,7 @@ function SpectatorView({ room }) {
   );
 }
 
-function SpectatorRound({ room, rules, rulesDiff, fen, clock, colorPair, isTiebreak, roundLabel }) {
+function SpectatorRound({ room, rulesDiff, fen, clock, colorPair, isTiebreak, roundLabel }) {
   // Local tick to drive the live clock countdown without
   // re-rendering the whole parent.
   const [tick, setTick] = useState(0);
@@ -1595,77 +1765,78 @@ function SpectatorRound({ room, rules, rulesDiff, fen, clock, colorPair, isTiebr
     return () => clearInterval(id);
   }, [clock]);
   const snapshot = useMemo(() => clockSnapshot(clock), [clock, tick]);
+  const navigate = useNavigate();
+
+  // Captures math from FEN matches the live game surface so
+  // both player bars get accurate +material indicators.
+  const captured = useMemo(() => getCaptured(fen), [fen]);
+  const whiteCaptured = captured.capturedByWhite;
+  const blackCaptured = captured.capturedByBlack;
+
+  const tcLabel = isTiebreak ? "1+0" : "10+0";
+  const whiteRole = colorPair.creator === "w" ? "creator" : "joiner";
+  const blackRole = whiteRole === "creator" ? "joiner" : "creator";
+  const whiteName = whiteRole === "creator" ? room.creator_name : room.joiner_name;
+  const blackName = blackRole === "creator" ? room.creator_name : room.joiner_name;
 
   // Spectators see the board from White's POV by default.
   return (
-    <div className="flex flex-col xl:flex-row gap-4 xl:gap-6 anim-fade-up">
-      <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
-        <div className="w-full mb-3">
-          <h2 className="font-headline text-base sm:text-lg font-extrabold tracking-tighter text-primary leading-tight">
-            {isTiebreak ? "Tie-break" : `Round ${roundLabel}`} &middot; {isTiebreak ? "1+0" : "10+0"}
-          </h2>
-          <p className="text-[11px] text-on-surface-variant/55 mt-0.5">
-            Spectator view &middot; {room.creator_name || "Host"} vs {room.joiner_name || "Opponent"}
-          </p>
-        </div>
-        <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
-          <InteractiveBoard
-            fen={fen}
-            orientation="white"
-            playerColor="w"
-            interactive={false}
-            highlightSquares={{}}
-          />
+    <div className="min-h-[calc(100dvh-4rem)] bg-surface flex flex-col">
+      <div className="w-full bg-surface-lowest/80 backdrop-blur-xl border-b border-white/[0.04] px-4 sm:px-6 h-12 flex items-center justify-between shrink-0 z-10">
+        <button onClick={() => navigate("/arena")} className="flex items-center gap-2 text-on-surface-variant/50 hover:text-primary transition-colors py-2 pr-3">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
+          <span className="font-headline text-lg font-extrabold tracking-tighter text-primary">oChess</span>
+        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-label uppercase tracking-widest text-on-surface-variant/30">
+            Spectating &middot; {isTiebreak ? "Tie-break" : `Round ${roundLabel}`} &middot; {tcLabel}
+          </span>
         </div>
       </div>
-      <div className="w-full xl:w-[280px] shrink-0 space-y-3">
-        <div className="p-4 bg-surface-low border border-white/[0.04] space-y-3">
-          <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
-            Clocks
-          </h3>
-          <div className="space-y-2">
-            <SpectatorClockRow
-              name={room.creator_name || "Host"}
-              color={colorPair.creator === "w" ? "White" : "Black"}
-              snap={snapshot.creator}
-              running={snapshot.running === "creator"}
-            />
-            <SpectatorClockRow
-              name={room.joiner_name || "Opponent"}
-              color={colorPair.joiner === "w" ? "White" : "Black"}
-              snap={snapshot.joiner}
-              running={snapshot.running === "joiner"}
-            />
-          </div>
-        </div>
-        <div className="p-4 bg-surface-low border border-white/[0.04] space-y-2">
-          <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
-            Round rules
-          </h3>
-          <RuleSummary rules={rulesDiff || { extends: "vanilla" }} compact />
-        </div>
-      </div>
-    </div>
-  );
-}
 
-function SpectatorClockRow({ name, color, snap, running }) {
-  if (!snap) return null;
-  const lowTime = snap.remainingMs < 30_000;
-  return (
-    <div className={`px-3 py-2 border ${
-      running ? "bg-primary/10 border-primary/30" : "bg-surface-container border-white/[0.04]"
-    }`}>
-      <div className="flex items-baseline justify-between mb-0.5">
-        <span className="text-[10px] uppercase tracking-widest text-on-surface-variant/45 truncate">{name}</span>
-        {running && <span className="text-[9px] font-bold text-primary">LIVE</span>}
+      <div className="flex-1 flex">
+        <div className="flex-1 min-w-0 flex flex-col xl:flex-row px-4 sm:px-6 md:px-10 xl:px-6 py-3 sm:py-4 gap-4 xl:gap-6 w-full mx-auto max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px]">
+            <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
+              <PlayerBar
+                name={blackName || "Black"}
+                pieceColor="b"
+                captured={blackCaptured}
+                advantage={captured.advantage < 0 ? Math.abs(captured.advantage) : 0}
+                time={snapshot[blackRole]?.remainingMs ?? 0}
+                active={snapshot.running === blackRole}
+              />
+              <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
+                <InteractiveBoard
+                  fen={fen}
+                  orientation="white"
+                  playerColor="w"
+                  interactive={false}
+                  highlightSquares={{}}
+                />
+              </div>
+              <PlayerBar
+                name={whiteName || "White"}
+                pieceColor="w"
+                captured={whiteCaptured}
+                advantage={captured.advantage > 0 ? captured.advantage : 0}
+                time={snapshot[whiteRole]?.remainingMs ?? 0}
+                active={snapshot.running === whiteRole}
+              />
+            </div>
+
+            <div className="w-full xl:w-[340px] shrink-0 flex flex-col gap-3">
+              <VariantRulesCard rules={rulesDiff} isTiebreak={isTiebreak} roundLabel={roundLabel} />
+              <div className="bg-surface-container border border-white/[0.04] p-3 shrink-0">
+                <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-1">
+                  Spectator
+                </h3>
+                <p className="text-[11px] text-on-surface-variant/55 leading-snug">
+                  Read-only view of a live arena match. Refresh to bail.
+                </p>
+              </div>
+            </div>
+        </div>
       </div>
-      <span className={`font-mono text-2xl font-extrabold tabular-nums ${
-        snap.expired ? "text-error" : lowTime ? "text-amber-300" : "text-on-surface"
-      }`}>
-        {formatClock(snap.remainingMs)}
-      </span>
-      <div className="text-[10px] text-on-surface-variant/45 mt-0.5">{color}</div>
     </div>
   );
 }

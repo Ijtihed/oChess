@@ -197,6 +197,79 @@ Constraints / common pitfalls:
     q: slide along 8 directions.
     k: leap to 8 surrounding squares + castling kingside/queenside if rights remain.
 
+Be CREATIVE. Lean into the user's intent and make the variant feel distinct, not just a tiny tweak of vanilla. If they say "kings start in the middle", actually rewrite the FEN and put the kings on d4/d5. If they say "knight wars", make knights powerful and the rest weak. If their prompt is sparse, embellish a bit while staying playable.
+
+Tested example variants for inspiration (don't copy verbatim - use them as patterns):
+
+  "Kings in the middle":
+  {
+    "extends": "vanilla",
+    "name": "Royal Center",
+    "description": "Kings start on d4/d5 with their armies behind them. Move fast or get smothered.",
+    "overrides": { "startingFen": "rnbqnbnr/pppppppp/8/3kK3/8/8/PPPPPPPP/RNBQNBNR w - - 0 1" }
+  }
+
+  "Knights move twice":
+  {
+    "extends": "vanilla",
+    "name": "Knight Storm",
+    "description": "Knights leap to either standard knight squares or anywhere two knight-hops away.",
+    "pieces": { "n": { "moves": [
+      { "kind": "leap", "offsets": [[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]] },
+      { "kind": "leap", "offsets": [[2,4],[4,2],[4,-2],[2,-4],[-2,-4],[-4,-2],[-4,2],[-2,4],[3,3],[3,-3],[-3,-3],[-3,3]] }
+    ] } }
+  }
+
+  "Pawns can move backward":
+  {
+    "extends": "vanilla",
+    "name": "Reverse Pawns",
+    "description": "Pawns may step back to your own first rank to reset and try again.",
+    "pieces": { "p": { "moves": [
+      { "kind": "step", "dirs": [[0,1]], "conditions": { "onlyNonCapture": true } },
+      { "kind": "step", "dirs": [[0,2]], "conditions": { "onlyFirstMove": true, "onlyNonCapture": true } },
+      { "kind": "step", "dirs": [[1,1],[-1,1]], "conditions": { "onlyCapture": true } },
+      { "kind": "step", "dirs": [[1,1],[-1,1]], "conditions": { "enPassant": true } },
+      { "kind": "step", "dirs": [[0,-1]], "conditions": { "onlyNonCapture": true } }
+    ] } }
+  }
+
+  "First to capture 3 wins":
+  {
+    "extends": "vanilla",
+    "name": "Three Strikes",
+    "description": "First side to capture three enemy pieces wins immediately. Defenders fall fast.",
+    "winConditions": [{ "type": "first_to_n_captures", "target": 3 }, { "type": "checkmate" }]
+  }
+
+  "Atomic chess":
+  {
+    "extends": "vanilla",
+    "name": "Atomic",
+    "description": "Captures explode and detonate adjacent non-pawn pieces. Kings cannot capture.",
+    "capture": { "explosionRadius": 1 },
+    "winConditions": [{ "type": "capture_king" }]
+  }
+
+  "Race to e8/e1":
+  {
+    "extends": "vanilla",
+    "name": "King Race",
+    "description": "First king to reach the opposite back rank wins. No need for checkmate.",
+    "winConditions": [
+      { "type": "race_to_squares", "piece": "k", "squaresWhite": ["e8"], "squaresBlack": ["e1"] },
+      { "type": "checkmate" }
+    ]
+  }
+
+  "Last Standing":
+  {
+    "extends": "vanilla",
+    "name": "Annihilation",
+    "description": "Win by reducing the opponent to king only. Material matters more than position.",
+    "winConditions": [{ "type": "last_standing" }, { "type": "checkmate" }]
+  }
+
 Reply with ONLY a JSON object, no prose around it.`;
 
 function buildPrompt(prompt: string, validatorErrors?: string[]): string {

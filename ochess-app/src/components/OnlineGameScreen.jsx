@@ -2,18 +2,16 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
+import PlayerBar, { getCaptured } from "./PlayerBar";
 import SocialPanel from "./SocialPanel";
 import { useAuth } from "./AuthProvider";
 import { joinGameChannel, completeGame, saveGameStateToDB, createRematchGame, subscribeToGameRow } from "../lib/online-game";
 import { getOpeningName, resetOpeningCache } from "../lib/openings";
-import useClock, { formatTime } from "../hooks/useClock";
+import useClock from "../hooks/useClock";
 import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, playLowTime, playChatNotify, playOfferNotify, preloadAll } from "../lib/sounds";
 import { supabase } from "../lib/supabase";
 import { createVariantGame } from "../lib/variants";
 
-const STARTING = { p: 8, n: 2, b: 2, r: 2, q: 1 };
-const PIECE_VAL = { p: 1, n: 3, b: 3, r: 5, q: 9 };
-const PIECE_ORDER = ["q", "r", "b", "n", "p"];
 
 const BAD_WORDS = new Set(["fuck","shit","bitch","nigger","nigga","faggot","retard","cunt","dick","pussy","asshole","bastard","whore","slut","cock","kys","kill yourself","stfu"]);
 function moderateChat(text) {
@@ -87,23 +85,8 @@ export function computeGameOver(result, playerColor, reason) {
   return { result, reason, won };
 }
 
-function getCaptured(fen) {
-  const board = fen.split(" ")[0];
-  const w = { p: 0, n: 0, b: 0, r: 0, q: 0 };
-  const b = { p: 0, n: 0, b: 0, r: 0, q: 0 };
-  for (const ch of board) {
-    if (ch >= "A" && ch <= "Z") { const k = ch.toLowerCase(); if (k in w) w[k]++; }
-    else if (ch >= "a" && ch <= "z") { if (ch in b) b[ch]++; }
-  }
-  const capturedByWhite = [], capturedByBlack = [];
-  let whiteMat = 0, blackMat = 0;
-  for (const p of PIECE_ORDER) {
-    whiteMat += w[p] * PIECE_VAL[p]; blackMat += b[p] * PIECE_VAL[p];
-    for (let i = 0; i < STARTING[p] - b[p]; i++) capturedByWhite.push(p);
-    for (let i = 0; i < STARTING[p] - w[p]; i++) capturedByBlack.push(p);
-  }
-  return { capturedByWhite, capturedByBlack, advantage: whiteMat - blackMat };
-}
+// getCaptured + STARTING/PIECE_VAL/PIECE_ORDER live in
+// ./PlayerBar.jsx so the AI Arena board can reuse them.
 
 export default function OnlineGameScreen({ gameData, playerColor }) {
   const navigate = useNavigate();
@@ -1243,63 +1226,6 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   );
 }
 
-function PlayerBar({ name, rating, avatar, captured = [], advantage = 0, pieceColor, time, active, isPlayer, online }) {
-  return (
-    <div className={`w-full flex items-center justify-between py-2 px-2 rounded ${isPlayer ? "mt-2 bg-surface-low/50" : "mb-2 bg-surface-low/50"}`}>
-      <div className="flex items-center gap-3 min-w-0">
-        <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 relative overflow-hidden ${
-          isPlayer ? "bg-primary/25" : "bg-surface-high"
-        }`}>
-          {avatar ? (
-            <img src={avatar} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-          ) : (
-            <span className={`font-headline text-sm font-bold uppercase ${isPlayer ? "text-primary" : "text-on-surface-variant/70"}`}>
-              {name[0]}
-            </span>
-          )}
-          {online != null && (
-            <>
-              <span aria-hidden="true"
-                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-surface ${online ? "bg-emerald-500" : "bg-on-surface-variant/20"}`} />
-              <span className="sr-only">{online ? "online" : "offline"}</span>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className={`font-headline text-sm font-bold truncate ${isPlayer ? "text-primary" : "text-on-surface-variant/80"}`}>
-            {name}
-          </span>
-          {rating && <span className="text-xs text-on-surface-variant/35 tabular-nums shrink-0">{rating}</span>}
-        </div>
-        {captured.length > 0 && (
-          <div className="flex items-center gap-px ml-1 shrink-0">
-            {captured.map((p, i) => {
-              const capturedColor = pieceColor === "w" ? "b" : "w";
-              const needsBrighten = capturedColor === "b";
-              return (
-                <img key={i} src={`/piece/cburnett/${capturedColor}${p.toUpperCase()}.svg`} alt={p} className="w-4 h-4"
-                  style={needsBrighten ? { filter: "brightness(2.5) grayscale(0.6)", opacity: 0.7 } : { opacity: 0.6 }} draggable={false} />
-              );
-            })}
-            {advantage > 0 && <span className="text-[10px] font-bold text-on-surface-variant/30 ml-1 tabular-nums">+{advantage}</span>}
-          </div>
-        )}
-      </div>
-      {time != null && <ClockDisplay time={time} active={active} />}
-    </div>
-  );
-}
-
-function ClockDisplay({ time, active }) {
-  const low = time < 30000;
-  const critical = time < 10000;
-  return (
-    <div className={`px-3 py-1 font-mono text-base font-bold tabular-nums transition-colors shrink-0 ${
-      active
-        ? critical ? "bg-error/20 text-error" : low ? "bg-primary/10 text-primary" : "bg-surface-high text-primary"
-        : "bg-surface-low/80 text-on-surface-variant/35"
-    }`}>
-      {formatTime(time)}
-    </div>
-  );
-}
+// PlayerBar + ClockDisplay are extracted to ./PlayerBar.jsx
+// so the AI Arena shell can reuse the exact same components
+// without copy-paste drift.

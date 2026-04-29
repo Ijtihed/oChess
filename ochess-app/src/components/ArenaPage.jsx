@@ -210,7 +210,7 @@ function CreatePanel({ user, navigate }) {
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="e.g. Pawns can move backwards. The first to capture 3 pieces wins."
+          placeholder="e.g. Both kings start in the middle. Pawns move sideways too."
           rows={3}
           maxLength={600}
           disabled={generating}
@@ -219,6 +219,7 @@ function CreatePanel({ user, navigate }) {
         <p className="mt-1 text-[10px] text-on-surface-variant/30">
           {prompt.length} / 600
         </p>
+        <PromptIdeas onPick={(text) => setPrompt(text)} disabled={generating} />
       </div>
       <button onClick={onGenerate}
         disabled={generating || cooldownSec > 0 || !online || !prompt.trim()}
@@ -258,6 +259,60 @@ function CreatePanel({ user, navigate }) {
           Online features aren&apos;t configured. Arena needs Supabase to share rooms.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * Idea chips below the prompt textarea. Each chip is a short
+ * label that drops a longer concrete prompt into the
+ * textarea. Helps users get past the blank-input freeze
+ * without committing to one of those hand-crafted ideas - the
+ * AI is then free to interpret / extend the prompt as it
+ * likes. Picked variants are quirky-but-tested rather than
+ * "knight wars" or other overpowered wishes.
+ */
+const PROMPT_IDEAS = [
+  {
+    label: "Kings in middle",
+    prompt: "Both kings start in the middle of the board, surrounded by their pieces.",
+  },
+  {
+    label: "Atomic chess",
+    prompt: "Captures explode and destroy adjacent non-pawn pieces. Kings cannot capture.",
+  },
+  {
+    label: "Race to the back rank",
+    prompt: "First king to reach the opposite back rank wins. No checkmate needed.",
+  },
+  {
+    label: "Three captures wins",
+    prompt: "First player to capture three enemy pieces wins immediately.",
+  },
+  {
+    label: "Knights leap twice",
+    prompt: "Knights can leap to a normal knight square OR another knight-hop further out.",
+  },
+  {
+    label: "Pawns are dual-axis",
+    prompt: "Pawns can also move sideways one square (no capture). They still can only capture diagonally forward.",
+  },
+];
+
+function PromptIdeas({ onPick, disabled }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {PROMPT_IDEAS.map((idea) => (
+        <button
+          key={idea.label}
+          type="button"
+          disabled={disabled}
+          onClick={() => onPick(idea.prompt)}
+          className="px-2.5 py-1 text-[10px] font-headline font-bold uppercase tracking-widest border border-white/[0.06] text-on-surface-variant/55 hover:text-primary hover:border-primary/30 disabled:opacity-30 transition-colors"
+        >
+          {idea.label}
+        </button>
+      ))}
     </div>
   );
 }
