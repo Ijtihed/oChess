@@ -1142,11 +1142,11 @@ grant execute on function record_coach_call(int, int) to authenticated, service_
 
 -- ── record_arena_rules_call: rate limit for AI Arena rule generation ──
 -- Same shape as record_coach_call but a separate table so arena
--- and coach budgets don't share. Defaults: 3 calls per 600 s
+-- and coach budgets don't share. Defaults: 10 calls per 600 s
 -- (10 min). The Edge Function is the only sanctioned caller.
 create or replace function record_arena_rules_call(
   p_window_seconds int default 600,
-  p_max_calls int default 3
+  p_max_calls int default 10
 )
 returns table (
   allowed boolean,

@@ -23,7 +23,7 @@ AI rule generator for AI Arena. Takes a free-form prompt and returns a structure
 
 Two layers:
 
-1. **Per-user rolling-window rate limit**: 3 calls / 10 min per user. Enforced server-side by the `record_arena_rules_call` RPC. The client receives a 429 with `retry_after_seconds` when the user hits the cap.
+1. **Per-user rolling-window rate limit**: 10 calls / 10 min per user. Enforced server-side by the `record_arena_rules_call` RPC. The client receives a 429 with `retry_after_seconds` when the user hits the cap.
 2. **Global monthly $-cap**: 50 USD per calendar month, shared with the `coach` function. Enforced by the `record_ai_spend_or_block` RPC. Once hit, every call returns 503 until the next month rolls over.
 
 The $-cap is the only line of defense against a runaway bill — Google AI Studio's per-key budget cap is NOT configured separately. To inspect current monthly spend:

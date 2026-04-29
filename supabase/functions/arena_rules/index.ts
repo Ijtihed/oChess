@@ -40,7 +40,7 @@ const DEFAULT_MODEL = "gemini-2.5-flash";
 
 // ── Rate limit defaults (must match the SQL RPC defaults) ──
 const RATE_LIMIT_WINDOW_SECONDS = 600; // 10 min
-const RATE_LIMIT_MAX_CALLS = 3;
+const RATE_LIMIT_MAX_CALLS = 10;
 
 // ── Types ──
 
