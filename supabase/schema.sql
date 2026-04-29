@@ -1107,6 +1107,16 @@ do $$ begin
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'friendships') then
     alter publication supabase_realtime add table friendships;
   end if;
+  -- arena_rooms / arena_moves: lobby + warmup + 1v1 sync depend
+  -- on UPDATE / INSERT events flowing to the OTHER player. Without
+  -- these, postgres_changes subscriptions silently never fire and
+  -- both sides stare at a frozen lobby waiting for each other.
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'arena_rooms') then
+    alter publication supabase_realtime add table arena_rooms;
+  end if;
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'arena_moves') then
+    alter publication supabase_realtime add table arena_moves;
+  end if;
 end $$;
 
 -- ────────────────────────────────────────────────────────────────

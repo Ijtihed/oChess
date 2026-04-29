@@ -103,10 +103,25 @@ export default function ArenaRoom({ roomId }) {
     : user.id === room.joiner_id ? "joiner"
     : null;
 
+  // Tighter shell for board-bearing states (warmup / round /
+  // tiebreak / done). Mirrors OnlineGameScreen's padding
+  // (`py-3 sm:py-4`) so the board sits in the same visual
+  // density as a regular Play match. Lobby keeps the relaxed
+  // `py-6 sm:py-10` for breathing room around the rule
+  // pickers + share-link card.
+  const isBoardState = room.status === "warmup_round_1"
+    || room.status === "warmup_round_2"
+    || room.status === "round_1"
+    || room.status === "round_2"
+    || room.status === "tiebreak";
+  const shellPadding = isBoardState
+    ? "px-4 sm:px-6 md:px-10 xl:px-6 py-3 sm:py-4"
+    : "px-4 sm:px-6 md:px-10 py-6 sm:py-10";
+
   return (
     <div className="flex">
-      <div className="flex-1 min-w-0 max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10 min-h-[calc(100dvh-4rem)]">
-        <header className="anim-fade-up mb-5" style={{ "--delay": "0.05s" }}>
+      <div className={`flex-1 min-w-0 max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px] mx-auto ${shellPadding} min-h-[calc(100dvh-4rem)]`}>
+        <header className="anim-fade-up mb-3 sm:mb-5" style={{ "--delay": "0.05s" }}>
           <button onClick={() => navigate("/arena")}
             className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors flex items-center gap-1 mb-1">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -452,7 +467,11 @@ function RuleSummary({ rules }) {
 
 // ── Warmup ─────────────────────────────────────────────────
 
-const WARMUP_DURATION_S = 30;
+// 30s wasn't long enough for users to feel out a brand-new
+// variant - they'd still be processing the rule modifier when
+// the timer expired. 60s gives time to actually try a couple
+// of moves, see how the variant changes things, and react.
+const WARMUP_DURATION_S = 60;
 
 function Warmup({ room, setRoom, role, roomId }) {
   const round = room.status === "warmup_round_1" ? 1 : 2;
@@ -464,10 +483,23 @@ function Warmup({ room, setRoom, role, roomId }) {
     ? (role === "creator" ? "b" : "w")
     : (role === "creator" ? "w" : "b");
 
+  // Stable key for the rules so we re-resolve only when the
+  // ACTUAL rules change. Without this, every realtime UPDATE
+  // produces a fresh `rulesDiff` object reference (Postgres
+  // re-parses jsonb on each row replay), the useMemo dep
+  // changes, `rules` becomes a new identity, and the
+  // rules-effect below resets the warmup timer back to the
+  // full duration. Symptom: warmup loops at 30s forever.
+  const rulesKey = useMemo(() => {
+    try { return JSON.stringify(rulesDiff || { extends: "vanilla" }); }
+    catch { return "vanilla"; }
+  }, [rulesDiff]);
+
   const rules = useMemo(() => {
     try { return resolveRules(rulesDiff || { extends: "vanilla" }); }
     catch { return resolveRules({ extends: "vanilla" }); }
-  }, [rulesDiff]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rulesKey]);
 
   const [position, setPosition] = useState(() => Position.fromFen(rules.startingFen || VANILLA_FEN));
   const [highlight, setHighlight] = useState({});
@@ -479,15 +511,17 @@ function Warmup({ room, setRoom, role, roomId }) {
   // update.
   const readinessSyncedRef = useRef(false);
 
-  // Reset board if rules change (e.g. transitioning from round
-  // 1 warmup to round 2 warmup mid-mount).
+  // Reset board if rules CHANGE (round 1 -> round 2). Keys off
+  // the JSON of the rules diff so a no-op realtime echo of the
+  // same rules doesn't wipe the timer.
   useEffect(() => {
     setPosition(Position.fromFen(rules.startingFen || VANILLA_FEN));
     setHighlight({});
     setSecondsLeft(WARMUP_DURATION_S);
     setReady(false);
     readinessSyncedRef.current = false;
-  }, [rules]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rulesKey]);
 
   // Tick the warmup timer once a second.
   useEffect(() => {
@@ -610,14 +644,14 @@ function Warmup({ room, setRoom, role, roomId }) {
   const orientation = myColor === "b" ? "black" : "white";
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_320px] anim-fade-up">
-      <div className="flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
-        <div className="w-full mb-4">
-          <h2 className="font-headline text-lg sm:text-xl font-extrabold tracking-tighter text-primary leading-tight">
+    <div className="flex flex-col xl:flex-row gap-4 xl:gap-6 anim-fade-up">
+      <div className="flex-1 flex flex-col items-center xl:items-start max-w-[760px] xl:max-w-[920px] 2xl:max-w-[1040px]">
+        <div className="w-full mb-3">
+          <h2 className="font-headline text-base sm:text-lg font-extrabold tracking-tighter text-primary leading-tight">
             Warmup &middot; Round {round}
           </h2>
-          <p className="text-[12px] text-on-surface-variant/55 mt-1">
-            Get a feel for the variant. {WARMUP_DURATION_S} seconds, then the real round starts.
+          <p className="text-[11px] text-on-surface-variant/55 mt-0.5">
+            Get a feel for the variant. {WARMUP_DURATION_S}s, then the real round starts.
             Playing as <span className="font-bold text-on-surface-variant/85">{myColor === "w" ? "White" : "Black"}</span> against a random-move dummy.
           </p>
         </div>
@@ -631,7 +665,7 @@ function Warmup({ room, setRoom, role, roomId }) {
         />
       </div>
 
-      <div className="space-y-4">
+      <div className="w-full xl:w-[280px] shrink-0 space-y-3">
         <div className="p-4 bg-surface-low border border-white/[0.04] space-y-2">
           <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
             Round {round} rules
