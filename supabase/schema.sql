@@ -267,6 +267,35 @@ create table if not exists arena_rules_calls (
 create index if not exists idx_arena_rules_calls_user_created
   on arena_rules_calls(user_id, created_at desc);
 
+-- ── ai_spend_log (global AI spending ledger) ──
+-- Every successful AI call (arena_rules / coach modes) writes a
+-- row here with the provider, feature, token counts, and a
+-- micro-USD cost estimate. The `record_ai_spend_or_block` RPC
+-- enforces a calendar-month hard cap by summing this table; once
+-- the cap is hit, every subsequent call is blocked until the
+-- next month. This is the ONE line of defense against runaway
+-- costs - the per-key budget on Google AI Studio is NOT
+-- configured separately, so this table is what stops a $5K
+-- bill.
+--
+-- micro_usd is cost in millionths of a dollar so an int64
+-- can hold years of spend without floating-point math.
+create table if not exists ai_spend_log (
+  id bigserial primary key,
+  user_id uuid references auth.users(id) on delete set null,
+  feature text not null,                    -- 'arena_rules' / 'coach_decks' / 'coach_explain'
+  provider text not null default 'gemini',
+  model text,
+  input_tokens int,
+  output_tokens int,
+  micro_usd bigint not null,                -- estimated cost in 1/1,000,000 USD
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_ai_spend_log_created
+  on ai_spend_log(created_at desc);
+create index if not exists idx_ai_spend_log_user
+  on ai_spend_log(user_id, created_at desc);
+
 -- ── arena_rooms (AI Arena - prompt-driven variant chess) ──
 -- Each room hosts a 2-player match where each side defines the
 -- rules for one round (Round 1 = creator's rules, Round 2 =
@@ -385,6 +414,10 @@ alter table coach_calls enable row level security;
 -- arena_rules_calls follows the same lock-down pattern - only
 -- record_arena_rules_call (security definer) may touch it.
 alter table arena_rules_calls enable row level security;
+-- ai_spend_log: same lock-down. Only record_ai_spend_or_block
+-- (security definer) may insert; reads are restricted to the
+-- service role for ad-hoc admin queries via the dashboard.
+alter table ai_spend_log enable row level security;
 alter table arena_rooms enable row level security;
 alter table arena_moves enable row level security;
 
@@ -1160,6 +1193,80 @@ end;
 $$;
 revoke all on function record_arena_rules_call(int, int) from public, anon;
 grant execute on function record_arena_rules_call(int, int) to authenticated, service_role;
+
+-- ── record_ai_spend_or_block: monthly $-cap enforcement ──
+-- Every AI Edge Function calls this AFTER its own per-user
+-- rate limit, with the cost it's ABOUT to incur (estimated
+-- from prompt length pre-call) or just incurred (post-call,
+-- with actual token counts). Strategy:
+--
+--   1. Sum current calendar-month spend (in micro-USD).
+--   2. If sum + this call's cost > monthly_cap, return
+--      allowed=false. Caller must NOT make the API call.
+--   3. Otherwise, insert the row and return allowed=true.
+--
+-- Pre-call usage: pass a conservative ESTIMATE; if denied, the
+-- function returns the cap-exceeded error to the client.
+-- Post-call usage: pass the ACTUAL cost; this is informational
+-- only because the call already happened, but it keeps the
+-- ledger accurate.
+--
+-- Cap is configurable via parameter so tests can set a tiny
+-- cap; production callers always pass the constant defined on
+-- the Edge Function side. Defaults to 50 USD = 50_000_000
+-- micro-USD per calendar month.
+create or replace function record_ai_spend_or_block(
+  p_feature text,
+  p_provider text,
+  p_model text,
+  p_input_tokens int,
+  p_output_tokens int,
+  p_micro_usd bigint,
+  p_monthly_cap_micro_usd bigint default 50000000
+)
+returns table (
+  allowed boolean,
+  used_micro_usd bigint,
+  cap_micro_usd bigint,
+  remaining_micro_usd bigint
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_used bigint;
+  v_remaining bigint;
+begin
+  -- We accept anonymous calls (e.g. an Edge Function with
+  -- just the service role) but tag user_id when present.
+  v_uid := auth.uid();
+
+  -- Sum spend in the current calendar month UTC.
+  select coalesce(sum(micro_usd), 0)
+    into v_used
+    from ai_spend_log
+   where created_at >= date_trunc('month', now() at time zone 'UTC');
+
+  v_remaining := p_monthly_cap_micro_usd - v_used;
+
+  -- Reject if this call would push over the cap.
+  if v_used + p_micro_usd > p_monthly_cap_micro_usd then
+    return query select false, v_used, p_monthly_cap_micro_usd, greatest(0::bigint, v_remaining);
+    return;
+  end if;
+
+  insert into ai_spend_log(user_id, feature, provider, model, input_tokens, output_tokens, micro_usd)
+    values (v_uid, p_feature, p_provider, p_model, p_input_tokens, p_output_tokens, p_micro_usd);
+
+  return query select true, v_used + p_micro_usd, p_monthly_cap_micro_usd, p_monthly_cap_micro_usd - v_used - p_micro_usd;
+end;
+$$;
+revoke all on function record_ai_spend_or_block(text, text, text, int, int, bigint, bigint)
+  from public, anon;
+grant execute on function record_ai_spend_or_block(text, text, text, int, int, bigint, bigint)
+  to authenticated, service_role;
 
 -- ── cleanup_stale_seeks: housekeeping (call from a cron job) ──
 -- Restricted to the service_role so a logged-in user can't grief

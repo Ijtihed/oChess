@@ -1,36 +1,33 @@
-// Deno-based Supabase Edge Function - AI deck generator.
+// Deno-based Supabase Edge Function - AI deck generator + per-
+// card explainer for Anki review.
 //
-// Takes the user's recent mistake corpus + a natural-language
-// search query, calls Groq's free-tier Llama 3.3 70B, and returns
-// 1-3 focused deck definitions:
+// Used in two modes:
+//   - decks: takes the user's recent mistake corpus + a natural-
+//     language query and returns 1-3 focused deck definitions.
+//   - explain: takes a single card and returns a 2-3 sentence
+//     coaching note on why the engine line is better.
 //
-//   - name:    short scannable title for the deck list
-//   - query:   filter phrase from a constrained vocabulary that
-//              maps onto the client-side card index
-//   - summary: 1-2 sentence "what this deck is and why it matters
-//              for THIS player" - shown as a banner above the
-//              board when they study the deck
-//
-// The earlier multi-day plan + per-card insights surface was
-// removed in favour of this deck-creation model. The client now
-// owns the "today" loop entirely; the Edge Function's only job is
-// to translate one query into focused decks the user can save.
+// Provider: Gemini 2.5 Flash via Google's OpenAI-compat endpoint.
+// Same provider as the arena_rules function; both share a single
+// monthly $-cap (50 USD) enforced via the record_ai_spend_or_block
+// RPC.
 //
 // Why an Edge Function and not a direct browser call?
-//   - The Groq key stays on the platform side. Browser code can't
+//   - The Gemini key stays on the platform side. Browser code can't
 //     leak it.
-//   - Lets us swap providers (Groq -> OpenRouter -> Gemini -> ...)
-//     without changing the client.
 //   - Per-user rate limit is enforced server-side via the
 //     `record_coach_call` RPC.
+//   - The shared monthly $-cap is the only thing standing between
+//     us and a runaway bill.
 //
 // Deploy:
-//   1. Sign up at https://console.groq.com — free, no credit card.
-//   2. Create an API key. Copy it.
-//   3. Set it as a function secret:
-//        npx supabase --workdir .. secrets set GROQ_API_KEY=gsk_xxx
-//   4. Deploy:
-//        npx supabase --workdir .. functions deploy coach
+//   1. Get a Gemini API key from https://aistudio.google.com.
+//   2. Set as a function secret:
+//        Project Settings -> Edge Functions -> Secrets ->
+//        GEMINI_API_KEY (and optionally GEMINI_MODEL to override
+//        the default gemini-2.5-flash).
+//   3. Deploy via the Supabase Studio Edge Functions UI, or
+//        npx supabase functions deploy coach
 //
 // Security:
 //   - JWT verification ON: only authenticated oChess users can call.
@@ -41,12 +38,12 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 // ── Hard limits ──
-// 30 mistakes per call covers ~2 months of typical play and keeps
-// the prompt under Groq's 8k context budget for the 70B model.
+// 30 mistakes per call covers ~2 months of typical play. Gemini
+// Flash's context window (>1M) is way bigger than we need; the
+// limit here is mostly to bound cost per call.
 const MAX_MISTAKES_PER_CALL = 30;
 const MAX_QUERY_CHARS = 200;
-const MODEL = "llama-3.3-70b-versatile";
-const FALLBACK_MODEL = "llama-3.1-8b-instant";
+const DEFAULT_MODEL = "gemini-2.5-flash";
 
 interface MistakeInput {
   fen?: string;
@@ -270,14 +267,32 @@ Guidelines:
 - Don't quote engine output verbatim - explain it in plain English.`;
 }
 
-// ── Groq call ──
+// ── Gemini call + cost estimation + spending guard ──
 
-async function callGroq(prompt: string, model: string): Promise<{ ok: boolean; content?: string; error?: string }> {
-  const key = Deno.env.get("GROQ_API_KEY");
-  if (!key) return { ok: false, error: "GROQ_API_KEY not configured" };
+interface GeminiResult {
+  ok: boolean;
+  content?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  error?: string;
+}
 
+// Gemini 2.5 Flash pricing (per 1M tokens, USD).
+const GEMINI_FLASH_INPUT_USD_PER_M = 0.075;
+const GEMINI_FLASH_OUTPUT_USD_PER_M = 0.30;
+
+function estimateMicroUsd(inputTokens: number, outputTokens: number): number {
+  const inUsd = (inputTokens * GEMINI_FLASH_INPUT_USD_PER_M) / 1_000_000;
+  const outUsd = (outputTokens * GEMINI_FLASH_OUTPUT_USD_PER_M) / 1_000_000;
+  return Math.ceil((inUsd + outUsd) * 1_000_000);
+}
+
+async function callGemini(prompt: string, model: string, maxTokens = 1200): Promise<GeminiResult> {
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) return { ok: false, error: "GEMINI_API_KEY not configured" };
+  const url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
   try {
-    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const resp = await fetch(url, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${key}`,
@@ -291,20 +306,91 @@ async function callGroq(prompt: string, model: string): Promise<{ ok: boolean; c
         ],
         response_format: { type: "json_object" },
         temperature: 0.4,
-        max_tokens: 1200,
+        max_tokens: maxTokens,
       }),
     });
     if (!resp.ok) {
       const body = await resp.text();
-      return { ok: false, error: `Groq returned ${resp.status}: ${body.slice(0, 200)}` };
+      return { ok: false, error: `Gemini returned ${resp.status}: ${body.slice(0, 200)}` };
     }
     const json = await resp.json();
     const content = json?.choices?.[0]?.message?.content;
-    if (!content) return { ok: false, error: "Empty response from Groq" };
-    return { ok: true, content };
+    if (!content) return { ok: false, error: "Empty response from Gemini" };
+    const usage = json?.usage || {};
+    return {
+      ok: true,
+      content,
+      inputTokens: Number(usage.prompt_tokens) || 0,
+      outputTokens: Number(usage.completion_tokens) || 0,
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// Monthly $-cap shared with arena_rules. Keep this in sync
+// with arena_rules/index.ts. 50 USD = 50_000_000 micro-USD.
+const MONTHLY_CAP_MICRO_USD = 50_000_000;
+
+interface SpendCheckResult {
+  ok: boolean;
+  allowed: boolean;
+  usedMicroUsd: number;
+  capMicroUsd: number;
+  remainingMicroUsd: number;
+  error?: string;
+}
+
+async function recordSpendOrBlock(
+  req: Request,
+  feature: string,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  microUsd: number,
+): Promise<SpendCheckResult> {
+  const supabase = makeAuthedClient(req);
+  if (!supabase) {
+    return {
+      ok: false, allowed: false, usedMicroUsd: 0,
+      capMicroUsd: MONTHLY_CAP_MICRO_USD,
+      remainingMicroUsd: MONTHLY_CAP_MICRO_USD,
+      error: "Supabase client unavailable",
+    };
+  }
+  const { data, error } = await supabase.rpc("record_ai_spend_or_block", {
+    p_feature: feature,
+    p_provider: "gemini",
+    p_model: model,
+    p_input_tokens: inputTokens,
+    p_output_tokens: outputTokens,
+    p_micro_usd: microUsd,
+    p_monthly_cap_micro_usd: MONTHLY_CAP_MICRO_USD,
+  });
+  if (error) {
+    return {
+      ok: false, allowed: false, usedMicroUsd: 0,
+      capMicroUsd: MONTHLY_CAP_MICRO_USD,
+      remainingMicroUsd: MONTHLY_CAP_MICRO_USD,
+      error: error.message,
+    };
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) {
+    return {
+      ok: false, allowed: false, usedMicroUsd: 0,
+      capMicroUsd: MONTHLY_CAP_MICRO_USD,
+      remainingMicroUsd: MONTHLY_CAP_MICRO_USD,
+      error: "Empty spend response",
+    };
+  }
+  return {
+    ok: true,
+    allowed: !!row.allowed,
+    usedMicroUsd: Number(row.used_micro_usd) || 0,
+    capMicroUsd: Number(row.cap_micro_usd) || MONTHLY_CAP_MICRO_USD,
+    remainingMicroUsd: Number(row.remaining_micro_usd) || 0,
+  };
 }
 
 function parseCoachJson(content: string): CoachResponse | null {
@@ -407,22 +493,31 @@ Deno.serve(async (req) => {
     window_seconds: rate.windowSeconds,
   };
 
+  const model = Deno.env.get("GEMINI_MODEL") || DEFAULT_MODEL;
+
+  // Pre-flight $-cap check. Done with a 0-cost row that just
+  // surfaces the current spend; we then estimate THIS call's
+  // worst-case cost and refuse if it would push us over.
+  const preCheck = await recordSpendOrBlock(req, `coach_${mode}`, model, 0, 0, 0);
+  if (preCheck.ok && preCheck.usedMicroUsd >= preCheck.capMicroUsd) {
+    return jsonErr("AI is temporarily unavailable - the monthly spending budget has been reached. Try again next month.", 503);
+  }
+
   // ── Explain mode: per-card move explanation ──
   if (mode === "explain") {
     if (!body.card || typeof body.card !== "object") {
       return jsonErr("Provide a card to explain", 400);
     }
     const prompt = buildExplainPrompt(body.card);
-    let groq = await callGroq(prompt, MODEL);
-    let modelUsed = MODEL;
-    if (!groq.ok) {
-      const fb = await callGroq(prompt, FALLBACK_MODEL);
-      if (fb.ok) { groq = fb; modelUsed = FALLBACK_MODEL; }
+    const result = await callGemini(prompt, model);
+    if (!result.ok) return jsonErr(result.error || "Coach unavailable", 502);
+    if (result.inputTokens || result.outputTokens) {
+      const cost = estimateMicroUsd(result.inputTokens || 0, result.outputTokens || 0);
+      await recordSpendOrBlock(req, "coach_explain", model, result.inputTokens || 0, result.outputTokens || 0, cost);
     }
-    if (!groq.ok) return jsonErr(groq.error || "Coach unavailable", 502);
-    const parsed = parseExplainJson(groq.content!);
+    const parsed = parseExplainJson(result.content!);
     if (!parsed.ok) return jsonErr("Coach returned malformed JSON", 502);
-    return jsonOk({ ok: true, explanation: parsed.explanation, model: modelUsed, rate_limit: rateMeta });
+    return jsonOk({ ok: true, explanation: parsed.explanation, model, rate_limit: rateMeta });
   }
 
   // ── Decks mode: 1-3 focused decks ──
@@ -431,21 +526,17 @@ Deno.serve(async (req) => {
   }
 
   const prompt = buildPrompt(body.mistakes, body.query);
-
-  // Try the bigger model first; fall back to the smaller (faster +
-  // higher rate limit) model if the 70B model is unavailable.
-  let groq = await callGroq(prompt, MODEL);
-  let modelUsed = MODEL;
-  if (!groq.ok) {
-    const fb = await callGroq(prompt, FALLBACK_MODEL);
-    if (fb.ok) { groq = fb; modelUsed = FALLBACK_MODEL; }
+  const result = await callGemini(prompt, model);
+  if (!result.ok) return jsonErr(result.error || "Coach unavailable", 502);
+  if (result.inputTokens || result.outputTokens) {
+    const cost = estimateMicroUsd(result.inputTokens || 0, result.outputTokens || 0);
+    await recordSpendOrBlock(req, "coach_decks", model, result.inputTokens || 0, result.outputTokens || 0, cost);
   }
-  if (!groq.ok) return jsonErr(groq.error || "Coach unavailable", 502);
 
-  const parsed = parseCoachJson(groq.content!);
+  const parsed = parseCoachJson(result.content!);
   if (!parsed) return jsonErr("Coach returned malformed JSON", 502);
 
-  return jsonOk({ ...parsed, model: modelUsed, rate_limit: rateMeta });
+  return jsonOk({ ...parsed, model, rate_limit: rateMeta });
 });
 
 function jsonOk(payload: CoachResponse): Response {

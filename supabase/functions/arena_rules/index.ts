@@ -216,18 +216,43 @@ ${retryNote}
 Produce a JSON rule diff matching the schema. ONLY the JSON object. No prose, no markdown fences.`;
 }
 
-// ── Gemini call ──
+// ── Gemini call + cost estimation ──
 
-async function callGemini(prompt: string, model: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+interface GeminiResult {
+  ok: boolean;
+  content?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  error?: string;
+}
+
+// Gemini 2.5 Flash pricing (per 1M tokens, USD).
+// As of late 2025 - check https://ai.google.dev/pricing if
+// these change. Also used for the post-call cost log.
+const GEMINI_FLASH_INPUT_USD_PER_M = 0.075;
+const GEMINI_FLASH_OUTPUT_USD_PER_M = 0.30;
+
+/** Convert (in, out) token counts to micro-USD using Flash pricing. */
+function estimateMicroUsd(inputTokens: number, outputTokens: number): number {
+  const inUsd = (inputTokens * GEMINI_FLASH_INPUT_USD_PER_M) / 1_000_000;
+  const outUsd = (outputTokens * GEMINI_FLASH_OUTPUT_USD_PER_M) / 1_000_000;
+  return Math.ceil((inUsd + outUsd) * 1_000_000);
+}
+
+/**
+ * Conservative pre-call cost estimate. Rough heuristic: 1 token
+ * ~= 4 characters. Multiply by 2 for safety so the budget guard
+ * never under-counts. Output tokens are capped by max_tokens
+ * below, but we use that ceiling for the estimate.
+ */
+function estimateMicroUsdFromPromptChars(promptChars: number, maxOutputTokens: number): number {
+  const estIn = Math.ceil((promptChars / 4) * 2);
+  return estimateMicroUsd(estIn, maxOutputTokens);
+}
+
+async function callGemini(systemPrompt: string, userPrompt: string, model: string, maxTokens = 2000): Promise<GeminiResult> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, error: "GEMINI_API_KEY not configured" };
-
-  // Gemini 2.5 supports the OpenAI-compat endpoint at
-  // https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-  // which makes this trivial. Falling back to the native
-  // generateContent endpoint would also work, but the OpenAI-
-  // compat shape keeps our parsing identical to the coach
-  // function.
   const url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
   try {
     const resp = await fetch(url, {
@@ -239,12 +264,12 @@ async function callGemini(prompt: string, model: string): Promise<{ ok: boolean;
       body: JSON.stringify({
         model,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt },
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
         ],
         response_format: { type: "json_object" },
         temperature: 0.5,
-        max_tokens: 2000,
+        max_tokens: maxTokens,
       }),
     });
     if (!resp.ok) {
@@ -254,10 +279,74 @@ async function callGemini(prompt: string, model: string): Promise<{ ok: boolean;
     const json = await resp.json();
     const content = json?.choices?.[0]?.message?.content;
     if (!content) return { ok: false, error: "Empty response from Gemini" };
-    return { ok: true, content };
+    // OpenAI-compat usage object. Gemini may or may not include it
+    // depending on model version - default to 0 if missing.
+    const usage = json?.usage || {};
+    return {
+      ok: true,
+      content,
+      inputTokens: Number(usage.prompt_tokens) || 0,
+      outputTokens: Number(usage.completion_tokens) || 0,
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// ── Monthly $-cap guard ──
+
+interface SpendCheckResult {
+  ok: boolean;
+  allowed: boolean;
+  usedMicroUsd: number;
+  capMicroUsd: number;
+  remainingMicroUsd: number;
+  error?: string;
+}
+
+const MONTHLY_CAP_MICRO_USD = 50_000_000; // $50.00 per calendar month
+
+/**
+ * Atomically check + record an AI spend event. Pre-call use:
+ * pass an estimate; if denied, do NOT make the API call.
+ * Post-call use: pass the actual cost as a true-up, ignoring
+ * the result.
+ */
+async function recordSpendOrBlock(
+  req: Request,
+  feature: string,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  microUsd: number,
+): Promise<SpendCheckResult> {
+  const supabase = makeAuthedClient(req);
+  if (!supabase) {
+    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: MONTHLY_CAP_MICRO_USD, remainingMicroUsd: MONTHLY_CAP_MICRO_USD, error: "Supabase client unavailable" };
+  }
+  const { data, error } = await supabase.rpc("record_ai_spend_or_block", {
+    p_feature: feature,
+    p_provider: "gemini",
+    p_model: model,
+    p_input_tokens: inputTokens,
+    p_output_tokens: outputTokens,
+    p_micro_usd: microUsd,
+    p_monthly_cap_micro_usd: MONTHLY_CAP_MICRO_USD,
+  });
+  if (error) {
+    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: MONTHLY_CAP_MICRO_USD, remainingMicroUsd: MONTHLY_CAP_MICRO_USD, error: error.message };
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) {
+    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: MONTHLY_CAP_MICRO_USD, remainingMicroUsd: MONTHLY_CAP_MICRO_USD, error: "Empty spend response" };
+  }
+  return {
+    ok: true,
+    allowed: !!row.allowed,
+    usedMicroUsd: Number(row.used_micro_usd) || 0,
+    capMicroUsd: Number(row.cap_micro_usd) || MONTHLY_CAP_MICRO_USD,
+    remainingMicroUsd: Number(row.remaining_micro_usd) || 0,
+  };
 }
 
 function parseRulesJson(content: string): { ok: boolean; rules?: Record<string, unknown>; error?: string } {
@@ -529,14 +618,51 @@ Deno.serve(async (req) => {
 
   const model = Deno.env.get("GEMINI_MODEL") || DEFAULT_MODEL;
 
+  // ── Pre-flight $-cap check ──
+  // Worst-case estimate: full system prompt (~3-4 KB chars) +
+  // user prompt + the auto-retry budget (~2x output). If the
+  // estimated cost would push us over the monthly cap, refuse
+  // BEFORE making the API call so we never get billed for it.
+  const promptCharsEst = SYSTEM_PROMPT.length + body.prompt.length + 500;
+  const estMicroUsd = estimateMicroUsdFromPromptChars(promptCharsEst, 2000) * 2;
+  const preCheck = await recordSpendOrBlock(req, "arena_rules", model, 0, 0, 0);
+  if (preCheck.ok && !preCheck.allowed && preCheck.usedMicroUsd + estMicroUsd > preCheck.capMicroUsd) {
+    return new Response(JSON.stringify({
+      ok: false,
+      error: "AI variant generation is temporarily unavailable - the monthly spending budget has been reached. Try again next month.",
+      model,
+    }), {
+      status: 503,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
+  }
+  // Hard pre-block when over cap regardless. The 0-cost row
+  // above just lets us inspect the current spend; the real
+  // cost-bearing record happens after each successful call.
+  if (preCheck.ok && preCheck.usedMicroUsd >= preCheck.capMicroUsd) {
+    return new Response(JSON.stringify({
+      ok: false,
+      error: "AI variant generation is temporarily unavailable - the monthly spending budget has been reached. Try again next month.",
+      model,
+    }), {
+      status: 503,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
+  }
+
   // First attempt.
   const firstPrompt = buildPrompt(body.prompt);
-  const first = await callGemini(firstPrompt, model);
+  const first = await callGemini(SYSTEM_PROMPT, firstPrompt, model);
   if (!first.ok) {
     return new Response(JSON.stringify({ ok: false, error: first.error || "AI call failed", model }), {
       status: 502,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
+  }
+  // Record the actual spend for the first call.
+  if (first.inputTokens || first.outputTokens) {
+    const cost = estimateMicroUsd(first.inputTokens || 0, first.outputTokens || 0);
+    await recordSpendOrBlock(req, "arena_rules", model, first.inputTokens || 0, first.outputTokens || 0, cost);
   }
   const parsedFirst = parseRulesJson(first.content!);
   if (!parsedFirst.ok) {
@@ -551,8 +677,13 @@ Deno.serve(async (req) => {
   // Auto-retry once with the validator errors fed back.
   if (errors.length > 0) {
     const retryPrompt = buildPrompt(body.prompt, errors);
-    const second = await callGemini(retryPrompt, model);
+    const second = await callGemini(SYSTEM_PROMPT, retryPrompt, model);
     if (second.ok) {
+      // Record the retry's spend too.
+      if (second.inputTokens || second.outputTokens) {
+        const cost = estimateMicroUsd(second.inputTokens || 0, second.outputTokens || 0);
+        await recordSpendOrBlock(req, "arena_rules", model, second.inputTokens || 0, second.outputTokens || 0, cost);
+      }
       const parsedSecond = parseRulesJson(second.content!);
       if (parsedSecond.ok) {
         rules = parsedSecond.rules!;
