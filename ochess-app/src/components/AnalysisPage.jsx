@@ -123,7 +123,29 @@ export default function AnalysisPage() {
   const [pvSan, setPvSan] = useState([]);
   const [pvLines, setPvLines] = useState([]);
   const [showBestMove, setShowBestMove] = useState(true);
-  const evalCacheRef = useRef({});
+  // Precomputed evaluations keyed by ply for the currently loaded
+  // mainline. Each entry stores enough state to render the eval bar,
+  // multi-PV panel, arrows, and move-list annotations without making
+  // a fresh Stockfish call when the user navigates ply-by-ply.
+  // Shape: {
+  //   signature: string,                // invalidates on depth/numPV/startFen/history change
+  //   byPly: { [ply]: {
+  //     fen,
+  //     posEval: { eval_cp, eval_mate, bestMove, pv, depth },
+  //     pvLines: [{ eval_cp, eval_mate, depth, bestMove, pv }],
+  //     whiteRel: { cp, mate, bestMove },
+  //   } }
+  // }
+  const analysisCacheRef = useRef({ signature: "", byPly: {} });
+  const [precomputeProgress, setPrecomputeProgress] = useState(0);
+  const [precomputeTotal, setPrecomputeTotal] = useState(0);
+  const [precomputeRunning, setPrecomputeRunning] = useState(false);
+  // Bumped to cancel any in-flight precomputation pass.
+  const precomputeIdRef = useRef(0);
+  // Closure-friendly mirror of precomputeRunning so the per-FEN
+  // effect can decide whether to wait on precompute or fall through
+  // to a direct engine call without re-running.
+  const precomputeRunningRef = useRef(false);
   const [boardAnnotation, setBoardAnnotation] = useState(null);
 
   const [openingName, setOpeningName] = useState(null);
@@ -157,70 +179,291 @@ export default function AnalysisPage() {
     } catch { return []; }
   }, []);
 
+  // Build a white-relative summary used by the eval bar and move
+  // classification, regardless of whose turn it is in `posFen`.
+  const toWhiteRel = useCallback((top, posFen) => {
+    if (!top) return null;
+    const sideToMove = (posFen.split(" ")[1] || "w");
+    const sign = sideToMove === "w" ? 1 : -1;
+    return {
+      cp: top.eval_cp !== null ? sign * top.eval_cp : null,
+      mate: top.eval_mate !== null ? sign * top.eval_mate : null,
+      bestMove: top.bestMove || null,
+    };
+  }, []);
+
+  // Translate a multi-PV / single-PV engine response into the cached
+  // shape we re-render from when navigating ply-by-ply.
+  const buildCacheEntry = useCallback((result, posFen) => {
+    let top = null;
+    let lines = [];
+    if (Array.isArray(result)) {
+      top = result[0] || null;
+      lines = result.map((line) => ({
+        eval_cp: line.eval_cp,
+        eval_mate: line.eval_mate,
+        depth: line.depth,
+        bestMove: line.bestMove,
+        pv: line.pv || [],
+      }));
+    } else if (result) {
+      top = result;
+      lines = [{
+        eval_cp: result.eval_cp,
+        eval_mate: result.eval_mate,
+        depth: result.depth,
+        bestMove: result.bestMove,
+        pv: result.pv || [],
+      }];
+    }
+    return {
+      fen: posFen,
+      posEval: top,
+      pvLines: lines,
+      whiteRel: toWhiteRel(top, posFen),
+    };
+  }, [toWhiteRel]);
+
+  // Render a precomputed entry into the visible engine state.
+  const applyCacheEntry = useCallback((entry) => {
+    if (!entry) return;
+    setPosEval(entry.posEval);
+    setEvalLoading(false);
+    setPvLines(entry.pvLines.map((line) => ({
+      eval_cp: line.eval_cp,
+      eval_mate: line.eval_mate,
+      depth: line.depth,
+      bestMove: line.bestMove,
+      san: uciToSanList(line.pv || [], entry.fen),
+    })));
+    setPvSan(entry.posEval?.pv ? uciToSanList(entry.posEval.pv, entry.fen) : []);
+  }, [uciToSanList]);
+
   useEffect(() => {
     if (!fen || !engineOn) { setPosEval(null); setEvalLoading(false); setPvSan([]); setPvLines([]); setBoardAnnotation(null); return; }
+
     const id = ++evalAbort.current;
-    setEvalLoading(true);
-    setPosEval(null);
-    setPvSan([]);
-    setPvLines([]);
+    const snapPly = currentPlyRef.current;
+    const snapHist = historyRef.current;
+    const cache = analysisCacheRef.current;
+
+    // Cache hit: serve from the precomputed table without touching
+    // the worker. The byPly entry is keyed by ply but we still verify
+    // the FEN matches because the user might be viewing an off-line
+    // position that happens to share a ply index.
+    const cached = cache.byPly[snapPly];
+    const hit = cached && cached.fen === fen && cached.posEval;
+    if (hit) {
+      applyCacheEntry(cached);
+    } else {
+      setEvalLoading(true);
+      setPosEval(null);
+      setPvSan([]);
+      setPvLines([]);
+    }
+
     (async () => {
-      try {
-        await initEngine();
-        const result = await evaluate(fen, engineDepth, numPV);
-        if (evalAbort.current !== id) return;
+      let entry = hit ? cached : null;
 
-        let topResult = null;
-        if (numPV > 1 && Array.isArray(result)) {
-          topResult = result[0] || null;
-          setPosEval(topResult);
-          setEvalLoading(false);
-          if (topResult?.pv) setPvSan(uciToSanList(topResult.pv, fen));
-          const lines = result.map((line) => ({
-            eval_cp: line.eval_cp,
-            eval_mate: line.eval_mate,
-            depth: line.depth,
-            bestMove: line.bestMove,
-            san: uciToSanList(line.pv || [], fen),
-          }));
-          setPvLines(lines);
-        } else {
-          topResult = result;
-          setPosEval(result);
-          setEvalLoading(false);
-          if (result?.pv) setPvSan(uciToSanList(result.pv, fen));
-          setPvLines(result ? [{ eval_cp: result.eval_cp, eval_mate: result.eval_mate, depth: result.depth, bestMove: result.bestMove, san: uciToSanList(result.pv || [], fen) }] : []);
-        }
-
-        const snapPly = currentPlyRef.current;
-        const snapHist = historyRef.current;
-        if (topResult && snapPly > 0) {
-          const sideToMove = fen.split(" ")[1];
-          const whiteRelCp = topResult.eval_cp !== null ? (sideToMove === "w" ? topResult.eval_cp : -topResult.eval_cp) : null;
-          const whiteRelMate = topResult.eval_mate !== null ? (sideToMove === "w" ? topResult.eval_mate : -topResult.eval_mate) : null;
-          evalCacheRef.current[snapPly] = { cp: whiteRelCp, mate: whiteRelMate, bestMove: topResult.bestMove };
-
-          const move = snapHist[snapPly - 1];
-          const movingColor = snapPly % 2 === 1 ? "w" : "b";
-          const prevEval = evalCacheRef.current[snapPly - 1];
-          const curEval = evalCacheRef.current[snapPly];
-          const book = await isBookMove(snapHist, snapPly);
-          if (evalAbort.current !== id) return;
-          const isBest = prevEval?.bestMove && move && (prevEval.bestMove.slice(0, 2) === move.from && prevEval.bestMove.slice(2, 4) === move.to);
-          const annot = classifyMove(prevEval, curEval, movingColor, { isBook: book, isBestMove: isBest });
-          setBoardAnnotation(move && annot && annot.glyph !== "Book" ? { square: move.to, ...annot } : null);
-        } else {
-          const sideToMove = fen.split(" ")[1];
-          if (topResult) {
-            const whiteRelCp = topResult.eval_cp !== null ? (sideToMove === "w" ? topResult.eval_cp : -topResult.eval_cp) : null;
-            const whiteRelMate = topResult.eval_mate !== null ? (sideToMove === "w" ? topResult.eval_mate : -topResult.eval_mate) : null;
-            evalCacheRef.current[0] = { cp: whiteRelCp, mate: whiteRelMate, bestMove: topResult.bestMove };
+      // When there is a loaded mainline, the precompute pass owns
+      // the engine — wait for it to fill this ply rather than racing
+      // it with our own search (which would just preempt itself).
+      // We bail out of the wait when (a) the user navigated away
+      // (`evalAbort` bumped), or (b) precompute finished without
+      // populating this ply (e.g. it gave up after retry exhaustion),
+      // in which case we fall through and evaluate directly.
+      const hasMainline = snapHist.length > 0;
+      if (!entry && hasMainline) {
+        while (evalAbort.current === id) {
+          const updated = cache.byPly[snapPly];
+          if (updated?.fen === fen && updated.posEval) {
+            entry = updated;
+            applyCacheEntry(entry);
+            break;
           }
-          setBoardAnnotation(null);
+          if (!precomputeRunningRef.current) break;
+          await new Promise((r) => setTimeout(r, 100));
         }
-      } catch { if (evalAbort.current === id) setEvalLoading(false); }
+        if (evalAbort.current !== id) return;
+      }
+
+      if (!entry) {
+        try {
+          await initEngine();
+          const result = await evaluate(fen, engineDepth, numPV);
+          if (evalAbort.current !== id) return;
+          if (!result) { setEvalLoading(false); return; }
+          entry = buildCacheEntry(result, fen);
+          cache.byPly[snapPly] = entry;
+          applyCacheEntry(entry);
+        } catch {
+          if (evalAbort.current === id) setEvalLoading(false);
+          return;
+        }
+      }
+
+      if (!entry?.whiteRel) { setBoardAnnotation(null); return; }
+
+      if (snapPly > 0) {
+        const move = snapHist[snapPly - 1];
+        const movingColor = snapPly % 2 === 1 ? "w" : "b";
+        const prevEntry = cache.byPly[snapPly - 1];
+        const prevEval = prevEntry?.whiteRel || null;
+        const curEval = entry.whiteRel;
+        const book = await isBookMove(snapHist, snapPly);
+        if (evalAbort.current !== id) return;
+        const isBest = prevEval?.bestMove && move && (prevEval.bestMove.slice(0, 2) === move.from && prevEval.bestMove.slice(2, 4) === move.to);
+        const annot = classifyMove(prevEval, curEval, movingColor, { isBook: book, isBestMove: isBest });
+        setBoardAnnotation(move && annot && annot.glyph !== "Book" ? { square: move.to, ...annot } : null);
+      } else {
+        setBoardAnnotation(null);
+      }
     })();
-  }, [fen, engineOn, engineDepth, numPV, uciToSanList]);
+  }, [fen, engineOn, engineDepth, numPV, applyCacheEntry, buildCacheEntry]);
+
+  // Precompute Stockfish evaluations for every ply of the loaded
+  // mainline. Replaces the previous "evaluate only the FEN you're
+  // looking at, on demand" behavior so navigating back and forth
+  // through a reviewed game doesn't repeatedly burn the engine.
+  //
+  // Runs sequentially through the shared engine worker, starting at
+  // the user's current ply and expanding outward. The per-FEN effect
+  // above defers to us while we're running; if anything else
+  // preempts our search the loop retries a few times before moving
+  // on so the cache stays dense.
+  useEffect(() => {
+    if (!engineOn) {
+      setPrecomputeRunning(false);
+      precomputeRunningRef.current = false;
+      setPrecomputeProgress(0);
+      setPrecomputeTotal(0);
+      return;
+    }
+    const moveSig = history.map((m) => m.san).join(" ");
+    const settingsSig = `${startFen}|${engineDepth}|${numPV}`;
+    const signature = `${settingsSig}|${moveSig}`;
+    const cache = analysisCacheRef.current;
+    if (cache.signature !== signature) {
+      // The signature changed. If only the move list changed (same
+      // settings + start FEN), we can carry forward any cached plies
+      // whose FENs still match the new mainline — that lets a
+      // user's mid-line edit reuse evals up to the divergence point.
+      // If depth or multi-PV changed, throw the whole cache away
+      // because the stored evals are at the wrong setting.
+      const prevSettingsSig = (cache.signature || "").split("|").slice(0, 3).join("|");
+      const survived = {};
+      if (prevSettingsSig === settingsSig) {
+        const g = new Chess(startFen);
+        const root = cache.byPly[0];
+        if (root?.fen === g.fen()) survived[0] = root;
+        for (let i = 0; i < history.length; i++) {
+          try { g.move(history[i].san); } catch { break; }
+          const ply = i + 1;
+          const prev = cache.byPly[ply];
+          if (prev?.fen === g.fen()) survived[ply] = prev;
+        }
+      }
+      analysisCacheRef.current = { signature, byPly: survived };
+    }
+    if (history.length === 0) {
+      setPrecomputeRunning(false);
+      precomputeRunningRef.current = false;
+      setPrecomputeProgress(0);
+      setPrecomputeTotal(0);
+      return;
+    }
+
+    const myId = ++precomputeIdRef.current;
+    const positions = [];
+    {
+      const g = new Chess(startFen);
+      positions.push({ ply: 0, fen: g.fen() });
+      for (let i = 0; i < history.length; i++) {
+        try { g.move(history[i].san); } catch { break; }
+        positions.push({ ply: i + 1, fen: g.fen() });
+      }
+    }
+    // Walk outward from the current ply so the position the user is
+    // actually looking at gets evaluated first, then neighbors fill
+    // in. Without this, jumping to the end of a long game would show
+    // a blank eval until the engine slogged through every prior ply.
+    {
+      const start = Math.max(0, Math.min(currentPlyRef.current, positions.length - 1));
+      const ordered = [];
+      for (let off = 0; off < positions.length; off++) {
+        const fwd = start + off;
+        const back = start - off;
+        if (off === 0) ordered.push(positions[start]);
+        else {
+          if (fwd < positions.length) ordered.push(positions[fwd]);
+          if (back >= 0) ordered.push(positions[back]);
+        }
+      }
+      positions.length = 0;
+      positions.push(...ordered);
+    }
+    setPrecomputeTotal(positions.length);
+    // Mark as running synchronously so the per-FEN effect (which
+    // mounts in the same render) sees us as active and waits on the
+    // cache instead of issuing a redundant direct evaluation.
+    precomputeRunningRef.current = true;
+
+    (async () => {
+      try { await initEngine(); } catch {
+        precomputeRunningRef.current = false;
+        return;
+      }
+      if (precomputeIdRef.current !== myId) {
+        precomputeRunningRef.current = false;
+        return;
+      }
+
+      setPrecomputeRunning(true);
+      const c = analysisCacheRef.current;
+      let done = 0;
+      const MAX_RETRIES_PER_PLY = 3;
+      const cancelled = () => precomputeIdRef.current !== myId;
+      for (const entry of positions) {
+        if (cancelled()) { precomputeRunningRef.current = false; return; }
+        if (c.byPly[entry.ply]?.posEval) {
+          done++;
+          setPrecomputeProgress(done);
+          continue;
+        }
+
+        // The on-demand effect can preempt our search by issuing a
+        // fresh `position fen ...` to the same worker, in which case
+        // `evaluate` resolves with `null`. Retry a few times before
+        // giving up so the timeline of cached evals stays dense.
+        for (let attempt = 0; attempt < MAX_RETRIES_PER_PLY; attempt++) {
+          if (cancelled()) { precomputeRunningRef.current = false; return; }
+          if (c.byPly[entry.ply]?.posEval) break;
+          let result = null;
+          try {
+            result = await evaluate(entry.fen, engineDepth, numPV);
+          } catch { result = null; }
+          if (cancelled()) { precomputeRunningRef.current = false; return; }
+          if (result) {
+            c.byPly[entry.ply] = buildCacheEntry(result, entry.fen);
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+
+        done++;
+        setPrecomputeProgress(done);
+      }
+      if (cancelled()) { precomputeRunningRef.current = false; return; }
+      setPrecomputeRunning(false);
+      precomputeRunningRef.current = false;
+    })();
+
+    return () => {
+      // Bumping the id stops the loop on its next iteration.
+      precomputeIdRef.current++;
+      precomputeRunningRef.current = false;
+    };
+  }, [history, startFen, engineOn, engineDepth, numPV, buildCacheEntry]);
 
   useEffect(() => {
     resetOpeningCache();
@@ -264,7 +507,14 @@ export default function AnalysisPage() {
     }
     const hist = g.history({ verbose: true });
     baseRef.current = g;
-    evalCacheRef.current = {};
+    // New game → drop any precomputed evaluations from the previous
+    // game so we don't index into stale plies. The signature-based
+    // useEffect would clear this on its next run too, but doing it
+    // synchronously avoids a flash of wrong annotations.
+    analysisCacheRef.current = { signature: "", byPly: {} };
+    setPrecomputeProgress(0);
+    setPrecomputeTotal(0);
+    setPrecomputeRunning(false);
     analysisIdRef.current = Date.now().toString(36);
     setHistory(hist);
     setCurrentPly(hist.length);
@@ -488,9 +738,15 @@ export default function AnalysisPage() {
   const deleteMove = useCallback(() => {
     if (currentPly === 0) return;
     const newHist = history.slice(0, currentPly - 1);
-    const cache = evalCacheRef.current;
-    for (const key of Object.keys(cache)) {
-      if (Number(key) >= currentPly) delete cache[key];
+    // The new history changes the precomputation signature so the
+    // background pass would rebuild from scratch anyway. Trim our
+    // existing cache eagerly so move-list annotations past the cut
+    // don't render stale glyphs in the meantime.
+    const cache = analysisCacheRef.current;
+    if (cache?.byPly) {
+      for (const key of Object.keys(cache.byPly)) {
+        if (Number(key) >= currentPly) delete cache.byPly[key];
+      }
     }
     setHistory(newHist);
     const temp = new Chess(startFen);
@@ -1013,6 +1269,24 @@ export default function AnalysisPage() {
                 </button>
               </div>
 
+              {engineOn && precomputeRunning && precomputeTotal > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-on-surface-variant/55">
+                    <span className="flex items-center gap-1.5">
+                      <div className="w-2.5 h-2.5 border border-primary/30 border-t-primary rounded-full animate-spin shrink-0" />
+                      Analyzing {precomputeProgress}/{precomputeTotal}
+                    </span>
+                    <span className="tabular-nums">{Math.round((precomputeProgress / precomputeTotal) * 100)}%</span>
+                  </div>
+                  <div className="h-0.5 bg-surface-low overflow-hidden">
+                    <div
+                      className="h-full bg-primary/40 transition-all duration-300"
+                      style={{ width: `${(precomputeProgress / precomputeTotal) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {engineOn && (
                 <>
                   {/* Depth selector */}
@@ -1215,9 +1489,13 @@ export default function AnalysisPage() {
                   </div>
                 )}
                 {movePairs.map((m, i) => {
-                  const ec = evalCacheRef.current;
-                  const wAnnot = (ec[m.wPly] && ec[m.wPly - 1]) ? classifyMove(ec[m.wPly - 1], ec[m.wPly], "w") : null;
-                  const bAnnot = (m.black && ec[m.bPly] && ec[m.bPly - 1]) ? classifyMove(ec[m.bPly - 1], ec[m.bPly], "b") : null;
+                  const byPly = analysisCacheRef.current.byPly;
+                  const wPrev = byPly[m.wPly - 1]?.whiteRel || null;
+                  const wCur = byPly[m.wPly]?.whiteRel || null;
+                  const bPrev = byPly[m.bPly - 1]?.whiteRel || null;
+                  const bCur = byPly[m.bPly]?.whiteRel || null;
+                  const wAnnot = (wPrev && wCur) ? classifyMove(wPrev, wCur, "w") : null;
+                  const bAnnot = (m.black && bPrev && bCur) ? classifyMove(bPrev, bCur, "b") : null;
                   return (
                     <div key={m.num} className={`grid text-[12px] ${i % 2 === 0 ? "bg-surface-lowest/40" : ""}`} style={{ gridTemplateColumns: "1.8rem 1fr 1fr" }}>
                       <span className="text-[10px] text-on-surface-variant/20 self-center px-1 py-1.5">{m.num}.</span>
