@@ -1588,9 +1588,20 @@ begin
     return;
   end if;
 
+  -- Crazy Arena Ship #2: ability charges, cooldowns, and per-square
+  -- status effects all live in `crazy_state` outside the FEN. They
+  -- are scoped to a single round (a queen's "fireball used this
+  -- turn" charge is meaningless across rounds; a frozen square
+  -- shouldn't leak into round 2 or the tiebreak). Wipe the column
+  -- atomically with the round transition so the new round always
+  -- starts with empty marks / fresh charges. The engine treats
+  -- crazy_state = null as "no marks, no effects" - it'll re-seed
+  -- from the rules' startingAbilities the moment a player triggers
+  -- something.
   update arena_rooms
     set match_result = p_match_result,
         round_state = p_round_state,
+        crazy_state = null,
         status = p_next_status,
         updated_at = now()
     where id = p_room_id

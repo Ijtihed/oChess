@@ -1198,6 +1198,13 @@ function Warmup({ room, setRoom, role, roomId }) {
       // number, starting fen, ply counter, fresh clock,
       // started-at timestamp - nothing else from the warmup
       // phase is meaningful here.
+      //
+      // Also wipe crazy_state in the same write. Whatever the
+      // user did during the bot-vs-bot warmup (used a fireball,
+      // burnt a square) lives in crazy_state and would otherwise
+      // carry into the real round - so we hand the user a board
+      // with full ability charges, no cooldowns, no marks. The
+      // engine treats crazy_state = null as "fresh".
       const startingFen = rules.startingFen || VANILLA_FEN;
       const startingPos = Position.fromFen(startingFen);
       const colorPair = colorPairFor(round);
@@ -1209,7 +1216,11 @@ function Warmup({ room, setRoom, role, roomId }) {
         clock: initRoundClock(firstMover),
         startedAt: new Date().toISOString(),
       };
-      const result = await updateRoom(roomId, { status: nextStatus, round_state });
+      const result = await updateRoom(roomId, {
+        status: nextStatus,
+        round_state,
+        crazy_state: null,
+      });
       if (result?.ok && result.room && setRoom) {
         setRoom((prev) => ({ ...(prev || {}), ...result.room }));
       }
