@@ -364,8 +364,8 @@ function validatePieceAbilities(pathPrefix, abilities, errors, warnings) {
     } else if (tgt.kind === "ranged" || tgt.kind === "leap") {
       if (!Array.isArray(tgt.offsets) || tgt.offsets.length === 0) {
         errors.push(`${path}.target.offsets must be a non-empty array for kind=${tgt.kind}`);
-      } else if (tgt.offsets.length > 64) {
-        errors.push(`${path}.target.offsets caps at 64 entries (got ${tgt.offsets.length})`);
+      } else if (tgt.offsets.length > 128) {
+        errors.push(`${path}.target.offsets caps at 128 entries (got ${tgt.offsets.length})`);
       } else {
         for (let j = 0; j < tgt.offsets.length; j++) {
           const off = tgt.offsets[j];

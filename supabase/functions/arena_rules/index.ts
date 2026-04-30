@@ -292,32 +292,65 @@ PRIMITIVE COMPOSITION RULES:
 
 ABILITY TARGETING DESIGN (CRITICAL - this is what makes abilities feel good):
 
-An ability is only INTERESTING if it can do something the piece's normal moves can't. Otherwise the user spends a charge on something they could've done for free by just moving.
+An ability is only INTERESTING if it can do something the piece's normal moves can't. The user spends a charge to do something different - not the same.
 
-THE GOLDEN RULE: an ability's target shape MUST differ meaningfully from the caster's movement shape. A queen that already slides 8 directions should NOT have a "ranged capture" ability with queen-fan offsets - all those squares are already reachable by a regular move. Pick targeting that EXTENDS the piece's reach into squares it can't normally touch.
+What "different" actually means in chess:
+- Hit a piece BEHIND a blocker (the queen freezes the enemy queen even though there's a pawn in the way - kind:"ranged"/"leap" ignores blockers; kind:"slide" doesn't).
+- Hit a piece CASTER COULDN'T REACH IN ONE MOVE (a bishop charms a knight on an orthogonal square; a knight bolts something on an adjacent square).
+- Apply an effect a normal capture can't (freeze, transform, displace, spawn, mark - all of these are different from "remove the piece").
+- Hit MULTIPLE pieces (aoe_wrap).
 
-Concretely:
-- For a QUEEN (already moves in 8 directions): ability offsets should include knight-jumps (1,2 / 2,1), longer leaps (3,1 / 1,3), or "through" patterns that ignore blockers between caster and target. NOT a queen-shaped fan.
-- For a BISHOP (diagonals only): orthogonal leaps and knight-jumps make abilities useful. NOT diagonal squares.
-- For a ROOK (orthogonals only): diagonal leaps and knight-jumps. NOT orthogonal rays.
-- For a KNIGHT (knight-jumps only): adjacent squares and 2-3 square orthogonals/diagonals. NOT knight-jumps again.
-- For a PAWN: anything beyond one square forward.
+OFFSET DENSITY IS WHAT MAKES ABILITIES PLAYABLE.
 
-NON-CAPTURE ABILITIES are MORE valuable than capture abilities for slide pieces (queens, rooks, bishops) because the slide piece can already capture via a normal move. Prefer mark/displace/transform/spawn for those. Capture abilities make sense for KNIGHTS and PAWNS (whose captures are constrained).
+The most common failure: the AI emits offsets at ONLY the maximum range (e.g. only [±4, ±N] for a "4-square fireball"). That ability is INVISIBLE at game start because there are no enemy pieces 4 squares from the queen on the starting board. The user clicks the queen, sees no red crosshairs, and the variant feels broken.
+
+ALWAYS include short-range AND medium-range offsets, not just the maximum. For a "4-square fireball": include offsets at distance 1, 2, 3, AND 4. Like this for orthogonals only:
+  [[1,0],[-1,0],[0,1],[0,-1],
+   [2,0],[-2,0],[0,2],[0,-2],
+   [3,0],[-3,0],[0,3],[0,-3],
+   [4,0],[-4,0],[0,4],[0,-4]]
+That's 16 offsets. Add diagonals (4 distances × 4 directions) and knight-jumps and you're at 20-32 offsets. THAT's a normal density. Anything under 12 offsets is suspicious - go denser.
+
+Rule of thumb: a ranged ability that says "X squares away" means "ANY square within X squares," not "exactly X squares." Emit a fan that fills the zone densely. Density is more important than which exact directions.
+
+DIFFERENTIATING FROM NORMAL MOVES (avoid pointless redundancy):
+- For a QUEEN: include knight-jump offsets ([1,2], [2,1], etc) since the queen can't make those normally. But ALSO include the slide directions at all distances - the value of an ability isn't "different shape" but "different EFFECT" (capture without moving, freeze, push, etc).
+- For a BISHOP: include orthogonal AND knight-jump offsets in addition to diagonals.
+- For a ROOK: include diagonal AND knight-jump offsets in addition to orthogonals.
+- For a KNIGHT: include adjacent squares (1-step orthogonals/diagonals).
+- For a PAWN: anywhere beyond a 1-step diagonal capture.
+
+NON-CAPTURE ABILITIES are MORE valuable than capture abilities for slide pieces (queens, rooks, bishops) because the slide piece can already capture via a normal move. Prefer mark/displace/transform/spawn for those. Capture abilities make sense for KNIGHTS and PAWNS (whose captures are constrained), AND for slide pieces when paired with AOE (so the ability hits MULTIPLE targets at once).
 
 Use kind:"ranged" or kind:"leap" with explicit offsets when you want to reach THROUGH friendly/enemy pieces (a frost mage freezes the king behind a pawn wall - that's the magic). Use kind:"slide" only when blocking lines of sight is part of the fantasy (a sniper shooting down a corridor).
 
 PROMPT INTERPRETATION GUIDE - translate verbs into primitives + targeting:
-- "Frost mage" / "freeze X" → mark with skipTurns. Target offsets should reach BEYOND normal move range so freezing a piece feels like a real spell. Range 3-5 in many directions is good. Often paired with aoe_wrap radius 1 for area-freeze.
+- "Frost mage" / "freeze X" → mark with skipTurns. Target offsets should DENSELY cover squares within the stated range, NOT just the maximum range. Often paired with aoe_wrap radius 1 for area-freeze.
 - "Knight bowls pawns" → knight ability targeting a friendly pawn (requireEnemy:false), effect: displace with onCollision:"destroy_collider".
-- "Mind-control wizard" / "charm X" → bishop ability, effect: transform with color:"caster" and duration. Offsets should include knight-jumps so the charmed piece is ONE you can't already reach.
+- "Mind-control wizard" / "charm X" → bishop ability, effect: transform with color:"caster" and duration. Dense offset coverage so something is in range turn 1.
 - "Necromancer raises pawns" → bishop ability targeting empty squares, effect: spawn with pieceType:"p".
 - "Yeet X" / "knockback" → ability targeting an enemy, effect: displace with direction:"from_caster", distance:3..7.
 - "Black hole" → ability targeting an empty square, effect: aoe_wrap with inner displace toward_caster.
 - "Sniper" / "ranged kill" → kind:"slide" with destroy effect. Slide IS the right shape here because line-of-sight is part of the sniper fantasy.
 - "Burn / curse / doom" → mark with destroyOnExpire and a 3-5 ply duration. Let the target see their fate and try to remove the caster.
 
-If the user prompts something the piece could already do via normal movement, ESCALATE the ability: extend the range, ignore blockers, hit multiple squares with aoe_wrap, or stack multiple primitives so it feels distinctly more powerful than just "another capture."
+REACHABILITY CHECK BEFORE YOU FINALIZE:
+
+Starting board geometry: white pieces sit on ranks 1-2, black on 7-8. The middle ranks 3-6 are EMPTY. A back-rank piece like the queen on d1 needs offsets with dr=5..7 to reach an enemy on turn 1. Anything with dr ≤ 4 (or |df+dr| < 5) cannot fire from the opening.
+
+This means:
+- "Fireball at 4 squares away" sounds reasonable but on a chess starting board it's almost useless - the queen can't reach a black piece 4 squares ahead. Either escalate the range to 5-7 OR use kind:"slide" with maxRange undefined (slide-shaped abilities that reach the back rank like a normal queen does).
+- For a back-rank piece (king/queen/rook/bishop on rank 1 or 8), prefer kind:"slide" with the full set of directions, OR explicit offsets with dr up to 7.
+- For a knight or pawn that starts closer to the middle, ranges of 2-4 are fine.
+- For long-range "spell" abilities, use kind:"slide" so the offsets are computed implicitly and reach the entire board within line-of-sight - this is the simplest way to guarantee reachability.
+
+When in doubt about reachability: prefer kind:"slide" for queens/rooks/bishops, kind:"leap" or kind:"ranged" with offsets covering up to 7 squares for all other pieces. Density of offsets matters but RANGE matters more - 12 offsets that reach rank 7 beat 32 offsets that stop at rank 4.
+
+If the user prompt says "any enemy" with NO explicit range cap, do NOT invent one. Default to kind:"slide" with all 8 directions (queen-shaped fan), or kind:"ranged" with offsets covering up to 7 squares in every direction. The user wanted broad reach; respect that.
+
+If the user does specify a range, like "4 squares away", interpret it as "anywhere within 4 squares" - but ALSO recognize that on a chess starting board, range ≤ 4 reaches into the empty middle ranks, not enemy pieces. If the user's prompt asks for a low range, you may extend it to 5-6 anyway with a note in the description ("...within 5 squares so the spell can reach the back rank") - playability beats literal compliance.
+
+After writing offsets, mentally trace from the piece's starting square: does ANY offset land on an enemy piece on the starting board? If no, the ability is invisible at game start - rewrite with longer reach.
 
 Win condition objects (used inside "winConditions" array):
 - { "type": "checkmate" }
@@ -419,11 +452,11 @@ Tested example variants for inspiration (do not copy verbatim - use them as patt
 
 Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
 
-  "Fireball mage queen" (destroy + AOE):
+  "Fireball mage queen" (destroy + AOE - kind:"slide" so the fireball reaches the back rank from move 1; AOE makes the cast meaningfully different from a normal queen capture):
   {
     "extends": "vanilla",
     "name": "Fireball Queen",
-    "description": "The queen casts fireballs in 8 directions up to 4 squares away. Each blast detonates with a small AOE.",
+    "description": "The queen casts fireballs along any direction. The blast detonates on the first enemy in line, with a small AOE.",
     "pieces": {
       "q": {
         "abilities": [
@@ -431,13 +464,9 @@ Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
             "id": "fireball",
             "label": "Fireball",
             "target": {
-              "kind": "ranged",
-              "offsets": [
-                [1,0],[2,0],[3,0],[4,0],[-1,0],[-2,0],[-3,0],[-4,0],
-                [0,1],[0,2],[0,3],[0,4],[0,-1],[0,-2],[0,-3],[0,-4],
-                [1,1],[2,2],[3,3],[4,4],[-1,-1],[-2,-2],[-3,-3],[-4,-4],
-                [1,-1],[2,-2],[3,-3],[4,-4],[-1,1],[-2,2],[-3,3],[-4,4]
-              ]
+              "kind": "slide",
+              "dirs": [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]],
+              "blockedByPieces": true
             },
             "effect": { "kind": "destroy", "aoe": { "radius": 1 } },
             "gating": { "charges": 3, "cooldownPlies": 4 },
@@ -531,11 +560,11 @@ Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
     }
   }
 
-  "Frost mage" (aoe_wrap + mark with skipTurns - note offsets are KNIGHT-JUMPS and far leaps so freezing a piece reaches squares the queen can't simply slide to):
+  "Frost mage" (aoe_wrap + mark with skipTurns - kind:"ranged" with offsets covering up to 7 squares so the queen can freeze a back-rank piece on turn 1 even though pieces are 6+ ranks apart at the start; ranged also bypasses blockers, which is the whole point of "spell" abilities):
   {
     "extends": "vanilla",
     "name": "Frost Mage",
-    "description": "Queens cast a frost burst at any enemy a knight-jump or two squares away. Everyone in a 1-tile radius around the target gets frozen for 2 turns.",
+    "description": "Queens cast a frost burst at any enemy on a rank, file, or diagonal. Everyone in a 1-tile radius around the target gets frozen for 2 turns. Reaches through pieces.",
     "pieces": {
       "q": {
         "abilities": [
@@ -545,9 +574,14 @@ Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
             "target": {
               "kind": "ranged",
               "offsets": [
-                [1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2],
-                [3,1],[1,3],[3,-1],[1,-3],[-1,-3],[-3,-1],[-3,1],[-1,3],
-                [3,2],[2,3],[3,-2],[2,-3],[-2,-3],[-3,-2],[-3,2],[-2,3]
+                [1,0],[2,0],[3,0],[4,0],[5,0],[6,0],[7,0],
+                [-1,0],[-2,0],[-3,0],[-4,0],[-5,0],[-6,0],[-7,0],
+                [0,1],[0,2],[0,3],[0,4],[0,5],[0,6],[0,7],
+                [0,-1],[0,-2],[0,-3],[0,-4],[0,-5],[0,-6],[0,-7],
+                [1,1],[2,2],[3,3],[4,4],[5,5],[6,6],[7,7],
+                [-1,1],[-2,2],[-3,3],[-4,4],[-5,5],[-6,6],[-7,7],
+                [1,-1],[2,-2],[3,-3],[4,-4],[5,-5],[6,-6],[7,-7],
+                [-1,-1],[-2,-2],[-3,-3],[-4,-4],[-5,-5],[-6,-6],[-7,-7]
               ]
             },
             "effect": {
@@ -1291,8 +1325,8 @@ function validateAbilities(path: string, abilities: unknown, errors: string[], l
     } else if (tgt.kind === "ranged" || tgt.kind === "leap") {
       if (!Array.isArray(tgt.offsets) || (tgt.offsets as unknown[]).length === 0) {
         errors.push(`${sub}.target.offsets must be a non-empty array for kind=${tgt.kind}`);
-      } else if ((tgt.offsets as unknown[]).length > 64) {
-        errors.push(`${sub}.target.offsets caps at 64 entries`);
+      } else if ((tgt.offsets as unknown[]).length > 128) {
+        errors.push(`${sub}.target.offsets caps at 128 entries`);
       } else {
         for (let j = 0; j < (tgt.offsets as unknown[]).length; j++) {
           const off = (tgt.offsets as unknown[])[j];

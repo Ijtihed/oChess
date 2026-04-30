@@ -32,3 +32,6 @@ ochess-app/test-results/
 ochess-app/playwright-report/
 ochess-app/blob-report/
 ochess-app/playwright/.cache/
+
+# Local debug artifacts (live-AI test-harness output, etc.)
+tmp/
