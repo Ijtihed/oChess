@@ -28,6 +28,14 @@ create table if not exists profiles (
   updated_at timestamptz default now()
 );
 alter table profiles add column if not exists board_prefs jsonb default '{}'::jsonb;
+-- Crazy Arena Ship #2 lab flag. When TRUE, this user's arena_rules
+-- generations are allowed to emit composable-primitive abilities
+-- (displace/relocate_self/spawn/transform/mark/aoe_wrap). When FALSE
+-- or null, the AI prompt and validator stay restricted to the Ship #1
+-- subset (basic moves + destroy/capture). Lets us internally exercise
+-- the full primitive set without exposing it to all users until the
+-- visuals layer (Ship #3) lands.
+alter table profiles add column if not exists crazy_arena_lab boolean not null default false;
 
 -- ── ratings (Glicko-2 per time control) ──
 create table if not exists ratings (
@@ -342,6 +350,27 @@ create table if not exists arena_rooms (
 -- a fresh link.
 alter table arena_rooms add column if not exists next_room_id uuid references arena_rooms(id) on delete set null;
 
+-- ── crazy_state sidecar (Crazy Arena Ship #2) ──
+-- Per-room JSONB carrying the AI-Arena composable-effect engine's
+-- non-FEN state: ability charges, cooldowns, and per-square status
+-- effect marks. Vanilla FEN remains the canonical board state in
+-- arena_rooms.round_state - crazy_state lives alongside it for
+-- mechanics like freeze, burn, shield, summon-lifespan, transform-
+-- revert, etc.
+--
+-- Shape (loose JSON, validated by the engine):
+--   {
+--     "charges":   { "<square>": { "<abilityId>": int } },
+--     "cooldowns": { "<square>": { "<abilityId>": int } },
+--     "effects":   { "<square>": [ { "tag": "frost", "duration": 2,
+--                                     "skipTurns": true, ... }, ... ] }
+--   }
+--
+-- Mirrored over the existing realtime channel via the room row;
+-- both clients pick it up automatically. Null until the first
+-- ability fires.
+alter table arena_rooms add column if not exists crazy_state jsonb;
+
 -- ── arena_moves (move log per round) ──
 -- Append-only ledger of every move played in a room, scoped by
 -- round so the orchestrator can replay round 1 history when
@@ -359,6 +388,16 @@ create table if not exists arena_moves (
   ts timestamptz default now(),
   primary key (room_id, round, ply)
 );
+
+-- crazy_state snapshot per ply (Crazy Arena Ship #2). Optional;
+-- when null, replays re-run the resolver from the prior ply's
+-- snapshot. Stored alongside the move so the replay viewer can
+-- scrub backwards through marks/charges history without recomputing.
+alter table arena_moves add column if not exists state_after jsonb;
+-- Ability metadata for ability-cast moves. Regular moves leave
+-- these null.
+alter table arena_moves add column if not exists ability_id text;
+alter table arena_moves add column if not exists move_kind text; -- "ability" | null
 
 -- ────────────────────────────────────────────────────────────────
 -- INDEXES
@@ -1194,6 +1233,25 @@ $$;
 revoke all on function record_arena_rules_call(int, int) from public, anon;
 grant execute on function record_arena_rules_call(int, int) to authenticated, service_role;
 
+-- ── crazy_arena_lab flag accessor (Ship #2) ──
+-- Lightweight helper the arena_rules Edge Function calls to check
+-- whether the caller is opted into the composable-primitive lab.
+-- Returns false for unauthenticated callers and any user without
+-- the flag explicitly set. Cheap (single indexed row read) so we
+-- can call it on every variant generation without bothering the
+-- existing rate-limit RPC.
+create or replace function get_crazy_arena_lab()
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select coalesce((select crazy_arena_lab from profiles where id = auth.uid()), false);
+$$;
+revoke all on function get_crazy_arena_lab() from public, anon;
+grant execute on function get_crazy_arena_lab() to authenticated, service_role;
+
 -- ── record_ai_spend_or_block: monthly $-cap enforcement ──
 -- Every AI Edge Function calls this AFTER its own per-user
 -- rate limit, with the cost it's ABOUT to incur (estimated
@@ -1363,6 +1421,91 @@ $$;
 revoke all on function arena_apply_move(uuid, int, int, text, text, text, text, text, jsonb)
   from public, anon;
 grant execute on function arena_apply_move(uuid, int, int, text, text, text, text, text, jsonb)
+  to authenticated;
+
+-- ── arena_apply_move_v2: same as v1 plus Crazy Arena Ship #2 fields ──
+-- Adds three new params that v1 doesn't accept:
+--   p_move_kind   - "ability" for ability-cast moves, null for regular
+--   p_ability_id  - the ability id when p_move_kind="ability"
+--   p_state_after - per-ply snapshot of arena_rooms.crazy_state for replay
+--   p_crazy_state - the new authoritative crazy_state to write onto the room
+--
+-- Both v1 and v2 coexist so an old client deploy keeps working during
+-- the rollout. The client wrapper prefers v2 when crazy_state or
+-- ability metadata is in scope.
+create or replace function arena_apply_move_v2(
+  p_room_id uuid,
+  p_round int,
+  p_ply int,
+  p_fen text,
+  p_move_from text,
+  p_move_to text,
+  p_promotion text,
+  p_san text,
+  p_round_state jsonb,
+  p_move_kind text default null,
+  p_ability_id text default null,
+  p_state_after jsonb default null,
+  p_crazy_state jsonb default null
+)
+returns table (
+  ok boolean,
+  room arena_rooms,
+  error text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_room arena_rooms;
+  v_existing_ply int;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    return query select false, null::arena_rooms, 'unauthenticated';
+    return;
+  end if;
+
+  select * into v_room from arena_rooms where id = p_room_id for update;
+  if not found then
+    return query select false, null::arena_rooms, 'room not found';
+    return;
+  end if;
+  if v_uid <> v_room.creator_id and v_uid <> v_room.joiner_id then
+    return query select false, null::arena_rooms, 'not a participant';
+    return;
+  end if;
+  if v_room.status not in ('round_1','round_2','tiebreak') then
+    return query select false, null::arena_rooms, 'room is not in a playable state';
+    return;
+  end if;
+
+  select ply into v_existing_ply
+    from arena_moves
+    where room_id = p_room_id and round = p_round and ply = p_ply;
+  if found then
+    return query select true, v_room, null::text;
+    return;
+  end if;
+
+  insert into arena_moves(room_id, round, ply, fen, move_from, move_to, promotion, san, move_kind, ability_id, state_after)
+    values (p_room_id, p_round, p_ply, p_fen, p_move_from, p_move_to, p_promotion, p_san, p_move_kind, p_ability_id, p_state_after);
+
+  update arena_rooms
+    set round_state = p_round_state,
+        crazy_state = p_crazy_state,
+        updated_at = now()
+    where id = p_room_id
+    returning * into v_room;
+
+  return query select true, v_room, null::text;
+end;
+$$;
+revoke all on function arena_apply_move_v2(uuid, int, int, text, text, text, text, text, jsonb, text, text, jsonb, jsonb)
+  from public, anon;
+grant execute on function arena_apply_move_v2(uuid, int, int, text, text, text, text, text, jsonb, text, text, jsonb, jsonb)
   to authenticated;
 
 -- ── arena_advance_round: atomic round-end resolution ──

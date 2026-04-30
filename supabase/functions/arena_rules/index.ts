@@ -7,22 +7,41 @@
 // `record_arena_rules_call` RPC, and the structural validator
 // runs server-side BEFORE any AI output reaches a client.
 //
+// CRAZY ARENA SHIP #1 (this revision):
+// Variant generation is a 3-step pipeline matching the warrior
+// architecture pattern.
+//
+//   STEP 1 - Behaviour Planner (prose):
+//     Gemini Flash, temp 0.9, ~500 output tokens. Three short
+//     prose fields describing the variant's vibe (fighting
+//     style, signature mechanic, pressure response). No JSON
+//     schema, no code. Output feeds into the factory step's
+//     prompt as creative context.
+//
+//   STEP 2 - Variant Factory (structured JSON):
+//     Gemini Flash, temp 0.95, up to 16K output tokens, JSON
+//     schema mode. Emits the full rule diff including the new
+//     `abilities` field on each piece. Auto-retries once if
+//     the structural validator rejects.
+//
+//   STEP 3 - Critic (deterministic, no Gemini call):
+//     Hand-coded structural + simulation critic. Runs a
+//     100-game random-walk simulation server-side and rejects
+//     variants whose win rate is > 80% one-sided or which
+//     terminate < 30% of the time. Catches the obviously broken
+//     variants without burning another AI call.
+//
 // Flow per request:
 //   1. JWT-auth the caller (handled by Supabase platform).
 //   2. Burn one rate-limit token via record_arena_rules_call.
 //      If the user is over the cap, return 429 with retry
 //      countdown.
-//   3. Build the prompt from the user's natural-language
-//      description + the schema spec the client engine
-//      consumes.
-//   4. Call Gemini. Parse JSON.
-//   5. Run the structural validator. If it passes, return
-//      the rules. If it fails, do ONE auto-retry with the
-//      validator errors appended to the system prompt, and
-//      validate again. If that fails too, return a hard error.
-//   6. The client does a second-pass full validation
-//      (including 50-game simulation) on receipt - defense
-//      in depth.
+//   3. Pre-flight $-cap guard via record_ai_spend_or_block.
+//   4. STEP 1 (planner) - get prose vibe.
+//   5. STEP 2 (factory) - get structured rule JSON.
+//   6. STEP 3 (critic) - structural + 100-game simulation.
+//   7. The client does a second-pass full validation on
+//      receipt - defense in depth.
 //
 // Deploy:
 //   1. Get a Gemini API key from https://aistudio.google.com.
@@ -55,6 +74,17 @@ interface ArenaRulesResponse {
   rules?: Record<string, unknown>;
   /** Brief human-readable summary the model returned alongside the diff. */
   summary?: string;
+  /**
+   * Three short prose fields produced by the planner step (Ship #1+).
+   * Optional - if the planner errored we skip it and the field is
+   * undefined. Useful for the lobby UI to surface "design brief"
+   * context to both players.
+   */
+  planner?: {
+    fighting_style: string;
+    signature_mechanic: string;
+    under_pressure: string;
+  };
   /** Validator errors when ok=false and we couldn't recover. */
   validatorErrors?: string[];
   error?: string;
@@ -89,6 +119,20 @@ function makeAuthedClient(req: Request) {
     global: { headers: { Authorization: auth } },
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+/**
+ * Look up the caller's `crazy_arena_lab` flag (Ship #2). Returns
+ * false on any error, including unauthenticated callers - the flag
+ * gates an internal-testbed-only feature so failing closed is the
+ * safe default.
+ */
+async function getCrazyArenaLabFlag(req: Request): Promise<boolean> {
+  const supabase = makeAuthedClient(req);
+  if (!supabase) return false;
+  const { data, error } = await supabase.rpc("get_crazy_arena_lab");
+  if (error) return false;
+  return data === true;
 }
 
 async function recordRateLimitedCall(req: Request): Promise<RateLimitResult> {
@@ -155,6 +199,7 @@ Each piece spec is an object with these optional fields:
 - "moves": array of move primitives (see below).
 - "castling": object with optional booleans "kingside", "queenside", "requireUnmoved" and optional arrays "requireEmpty" and "requireSafe".
 - "promotion": object with array "type", each entry being one of "n", "b", "r", "q".
+- "abilities": array of active-cast abilities (see "Active abilities" section below). NEW.
 
 Move primitives (used inside "moves" arrays). Coordinates are [file_delta, rank_delta] pairs from White's POV; the engine flips rank for Black.
 
@@ -169,6 +214,88 @@ Move primitives (used inside "moves" arrays). Coordinates are [file_delta, rank_
 3. Step primitive:
    { "kind": "step", "dirs": [[df,dr], ...], "conditions": { ... } }
    Single-square step. The "conditions" field is optional and may contain any of these booleans: "onlyFirstMove", "onlyCapture", "onlyNonCapture", "enPassant".
+
+ACTIVE ABILITIES (the headline feature for crazy arena):
+A piece can have any number of active-cast abilities. On a player's turn they choose between MOVING the piece OR casting one of that piece's abilities. An ability spends a charge / starts a cooldown to apply an effect at a target square within range. The caster does NOT move when casting (it's a turn-replacing action, not a move) - UNLESS the effect is "relocate_self".
+
+Ability shape:
+{
+  "id": "fireball",                              // lowercase, alpha+digits+underscore, unique within a piece
+  "label": "Fireball",                           // optional, UI label
+  "target": {
+    "kind": "ranged" | "leap" | "slide",         // "ranged" = leap with requireEnemy default true; "leap" = same shape but works on empty squares too (use for summon/teleport); "slide" = ray-cast in dirs.
+    "offsets": [[df,dr], ...],                   // required for "ranged" or "leap"
+    "dirs": [[df,dr], ...],                      // required for "slide"
+    "maxRange": 1..8,                            // optional for "slide"
+    "requireEnemy": true,                        // default true; set false for self-effects/teleports/spawns
+    "requireEmpty": false,                       // default false; set true for spawn/teleport
+    "blockedByPieces": true                      // default true for slide; set false to fire through pieces
+  },
+  "effect": <EFFECT_PRIMITIVE>,                  // see EFFECT PRIMITIVES below
+  "gating": {
+    "charges": 1..99,                            // total uses per match. Strongly recommended.
+    "cooldownPlies": 1..20,                      // plies between casts. Recommended.
+    "startsOnCooldown": false                    // optional
+  },
+  "intensity": "brief" | "medium" | "dramatic"   // animation tier; default "medium"
+}
+
+EFFECT PRIMITIVES (composable - the AI's vocabulary for crazy mechanics):
+
+The user can prompt anything physical - bowling pawns, throwing pieces, summoning walls, mind-controlling enemies, freezing, burning, shielding, teleporting. Translate the prompt into a composition of these seven primitives. NEVER invent new effect kinds; the engine only knows these seven.
+
+1. { "kind": "destroy", "aoe": { "radius": 0..3, "hitsPawns": bool, "hitsFriendly": bool } }
+   Remove the target piece. Optional AOE explodes around the target.
+   Use for: fireball, ranged kill, sniper, atomic.
+
+2. { "kind": "displace", "delta": [df, dr] | undefined,
+     "direction": "from_caster" | "toward_caster" | "toward_target_from_origin" | undefined,
+     "distance": 1..7 | undefined,
+     "onCollision": "stop" | "destroy_target" | "destroy_collider" | "destroy_both",
+     "bounceOffEdge": bool }
+   Move the target piece without removing it. Pick EITHER `delta` (fixed offset) OR `direction`+`distance` (computed). With "destroy_collider" you get bowling/yeet semantics: the target travels along the line and destroys whatever it slams into.
+   Use for: throwing pawns, bowling, knockback, gravitational pull, push, yeet.
+
+3. { "kind": "relocate_self", "destination": "target" | "adjacent_to_target" | "caster_origin" }
+   Move the caster as part of the cast. Use this with target.requireEmpty=true to avoid running over your own pieces.
+   Use for: teleport, blink, charge attack, swap-with-empty.
+
+4. { "kind": "spawn", "pieceType": "p"|"n"|"b"|"r"|"q", "color": "caster"|"enemy", "lifespan": 1..30 }
+   Create a new piece on an empty target square. Kings cannot be spawned. Set target.requireEmpty=true for sane move-gen filtering.
+   Use for: summon, conjure wall, raise the dead, necromancer.
+
+5. { "kind": "transform", "pieceType": "p"|"n"|"b"|"r"|"q"|"k", "color": "flip"|"caster"|"enemy", "duration": 1..30, "revertOnCapture": bool }
+   Change the target piece's type or color. With duration set, reverts after N plies.
+   Use for: charm, mind control, polymorph, possess.
+
+6. { "kind": "mark", "tag": "lowercase_id", "duration": 1..30,
+     "skipTurns": bool, "silenceAbilities": bool,
+     "absorbCaptures": 1..9, "extraMoves": 1..2,
+     "destroyOnExpire": bool, "expireOnCapture": bool }
+   Apply a tagged status effect. The "tag" is your free-form label (use thematic names like "frost", "burning", "blessed", "hexed", "berserker"). The behavioral fields control what the engine actually does:
+   - skipTurns:        target emits zero moves while active (freeze, stun, root)
+   - silenceAbilities: target can move but not cast (silence)
+   - absorbCaptures:   shield: blocks N incoming captures, then expires
+   - extraMoves:       owner gets N extra moves on this piece this turn (haste)
+   - destroyOnExpire:  target dies when timer hits 0 (burn, doom, hex)
+   - expireOnCapture:  mark drops if the marked piece captures (one-shot effects)
+
+7. { "kind": "aoe_wrap", "radius": 1..3, "hitsPawns": bool, "hitsFriendly": bool, "inner": <PRIMITIVE> }
+   Apply any of the above to every piece in a radius around the target square. Cannot nest aoe_wrap inside another aoe_wrap. Caster's own square is always immune.
+   Use for: AOE freeze, splash damage, chain effects, area summons.
+
+PRIMITIVE COMPOSITION RULES:
+- Always include gating (charges OR cooldownPlies). Ungated abilities lead to one-shot games.
+- target.offsets must NEVER include [0,0].
+- spawn requires target.requireEmpty=true; relocate_self typically does too (or requireEnemy=false to allow capturing-on-arrival).
+- aoe_wrap.inner must be one of the other six primitives.
+- Translate user prompts literally:
+  - "Knight bowls pawns" → knight ability targeting a friendly pawn (requireEnemy:false), effect: displace with onCollision:"destroy_collider".
+  - "Mind-control wizard" → bishop ability, effect: transform with color:"caster" and duration.
+  - "Frost mage" → queen ability, effect: aoe_wrap with inner mark{tag:"frost", skipTurns, duration}.
+  - "Necromancer raises pawns" → bishop ability targeting empty squares, effect: spawn with pieceType:"p".
+  - "Yeet the king" → any ability targeting enemy king, effect: displace with direction:"from_caster", distance:N.
+  - "Black hole queen" → queen ability targeting self, effect: aoe_wrap with inner displace toward_caster.
 
 Win condition objects (used inside "winConditions" array):
 - { "type": "checkmate" }
@@ -268,9 +395,209 @@ Tested example variants for inspiration (do not copy verbatim - use them as patt
     "winConditions": [{ "type": "last_standing" }, { "type": "checkmate" }]
   }
 
+Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
+
+  "Fireball mage queen" (destroy + AOE):
+  {
+    "extends": "vanilla",
+    "name": "Fireball Queen",
+    "description": "The queen casts fireballs in 8 directions up to 4 squares away. Each blast detonates with a small AOE.",
+    "pieces": {
+      "q": {
+        "abilities": [
+          {
+            "id": "fireball",
+            "label": "Fireball",
+            "target": {
+              "kind": "ranged",
+              "offsets": [
+                [1,0],[2,0],[3,0],[4,0],[-1,0],[-2,0],[-3,0],[-4,0],
+                [0,1],[0,2],[0,3],[0,4],[0,-1],[0,-2],[0,-3],[0,-4],
+                [1,1],[2,2],[3,3],[4,4],[-1,-1],[-2,-2],[-3,-3],[-4,-4],
+                [1,-1],[2,-2],[3,-3],[4,-4],[-1,1],[-2,2],[-3,3],[-4,4]
+              ]
+            },
+            "effect": { "kind": "destroy", "aoe": { "radius": 1 } },
+            "gating": { "charges": 3, "cooldownPlies": 4 },
+            "intensity": "dramatic"
+          }
+        ]
+      }
+    }
+  }
+
+  "Bowling knights" (displace with collision):
+  {
+    "extends": "vanilla",
+    "name": "Bowling Knights",
+    "description": "Knights can shove a friendly pawn forward, knocking out any pieces in its path until it stops or runs off the board.",
+    "pieces": {
+      "n": {
+        "abilities": [
+          {
+            "id": "shove",
+            "label": "Bowling Shove",
+            "target": {
+              "kind": "leap",
+              "offsets": [[0,1]],
+              "requireEnemy": false
+            },
+            "effect": {
+              "kind": "displace",
+              "delta": [0, 6],
+              "onCollision": "destroy_collider"
+            },
+            "gating": { "charges": 1, "cooldownPlies": 5 },
+            "intensity": "dramatic"
+          }
+        ]
+      }
+    }
+  }
+
+  "Necromancer bishops" (spawn):
+  {
+    "extends": "vanilla",
+    "name": "Necromancer Bishops",
+    "description": "Bishops can raise a friendly pawn from any empty square within 3 squares. The summons last 8 plies.",
+    "pieces": {
+      "b": {
+        "abilities": [
+          {
+            "id": "raise",
+            "label": "Raise the Dead",
+            "target": {
+              "kind": "ranged",
+              "offsets": [
+                [1,0],[2,0],[3,0],[-1,0],[-2,0],[-3,0],
+                [0,1],[0,2],[0,3],[0,-1],[0,-2],[0,-3],
+                [1,1],[2,2],[3,3],[-1,-1],[-2,-2],[-3,-3]
+              ],
+              "requireEnemy": false,
+              "requireEmpty": true
+            },
+            "effect": { "kind": "spawn", "pieceType": "p", "color": "caster", "lifespan": 8 },
+            "gating": { "charges": 2, "cooldownPlies": 6 },
+            "intensity": "medium"
+          }
+        ]
+      }
+    }
+  }
+
+  "Mind-control wizard" (transform color):
+  {
+    "extends": "vanilla",
+    "name": "Mind Wizard",
+    "description": "Bishops can charm an enemy piece for 4 plies, making it fight on their side until the spell breaks.",
+    "pieces": {
+      "b": {
+        "abilities": [
+          {
+            "id": "charm",
+            "label": "Charm",
+            "target": {
+              "kind": "ranged",
+              "offsets": [[1,1],[2,2],[1,-1],[2,-2],[-1,1],[-2,2],[-1,-1],[-2,-2]]
+            },
+            "effect": { "kind": "transform", "color": "caster", "duration": 4, "revertOnCapture": true },
+            "gating": { "charges": 1, "cooldownPlies": 8 },
+            "intensity": "dramatic"
+          }
+        ]
+      }
+    }
+  }
+
+  "Frost mage" (aoe_wrap + mark with skipTurns):
+  {
+    "extends": "vanilla",
+    "name": "Frost Mage",
+    "description": "Queens cast a frost burst that freezes everyone in a 1-tile radius for 2 turns. Frozen pieces skip their owner's turns.",
+    "pieces": {
+      "q": {
+        "abilities": [
+          {
+            "id": "frost_burst",
+            "label": "Frost Burst",
+            "target": {
+              "kind": "ranged",
+              "offsets": [
+                [1,0],[2,0],[3,0],[-1,0],[-2,0],[-3,0],
+                [0,1],[0,2],[0,3],[0,-1],[0,-2],[0,-3],
+                [1,1],[2,2],[1,-1],[2,-2],[-1,1],[-2,2],[-1,-1],[-2,-2]
+              ]
+            },
+            "effect": {
+              "kind": "aoe_wrap",
+              "radius": 1,
+              "hitsPawns": true,
+              "inner": { "kind": "mark", "tag": "frost", "duration": 2, "skipTurns": true }
+            },
+            "gating": { "charges": 2, "cooldownPlies": 5 },
+            "intensity": "dramatic"
+          }
+        ]
+      }
+    }
+  }
+
+  "Blink rook" (relocate_self):
+  {
+    "extends": "vanilla",
+    "name": "Blink Rook",
+    "description": "Rooks can teleport to any empty square within 4 squares. Once per match per rook.",
+    "pieces": {
+      "r": {
+        "abilities": [
+          {
+            "id": "blink",
+            "label": "Blink",
+            "target": {
+              "kind": "leap",
+              "offsets": [
+                [1,0],[2,0],[3,0],[4,0],[-1,0],[-2,0],[-3,0],[-4,0],
+                [0,1],[0,2],[0,3],[0,4],[0,-1],[0,-2],[0,-3],[0,-4]
+              ],
+              "requireEnemy": false,
+              "requireEmpty": true
+            },
+            "effect": { "kind": "relocate_self", "destination": "target" },
+            "gating": { "charges": 1 },
+            "intensity": "medium"
+          }
+        ]
+      }
+    }
+  }
+
+  "Burning fingers" (mark with destroyOnExpire):
+  {
+    "extends": "vanilla",
+    "name": "Burning Fingers",
+    "description": "Bishops can curse an enemy piece. The cursed piece dies in 3 turns unless something captures the bishop first.",
+    "pieces": {
+      "b": {
+        "abilities": [
+          {
+            "id": "doom",
+            "label": "Mark of Doom",
+            "target": {
+              "kind": "ranged",
+              "offsets": [[1,1],[2,2],[3,3],[1,-1],[2,-2],[3,-3],[-1,1],[-2,2],[-3,3],[-1,-1],[-2,-2],[-3,-3]]
+            },
+            "effect": { "kind": "mark", "tag": "burning", "duration": 3, "destroyOnExpire": true },
+            "gating": { "charges": 2, "cooldownPlies": 6 },
+            "intensity": "dramatic"
+          }
+        ]
+      }
+    }
+  }
+
 Reply with ONLY a JSON object, no prose around it.`;
 
-function buildPrompt(prompt: string, validatorErrors?: string[]): string {
+function buildPrompt(prompt: string, validatorErrors?: string[], plannerVibe?: PlannerVibe, labMode: boolean = true): string {
   const trimmed = (prompt || "").trim().slice(0, MAX_PROMPT_CHARS);
   let retryNote = "";
   if (validatorErrors?.length) {
@@ -279,12 +606,94 @@ ${validatorErrors.map((e) => `  - ${e}`).join("\n")}
 
 Fix the errors and try again. Stay within the schema above; do not invent new fields.\n`;
   }
+  let plannerNote = "";
+  if (plannerVibe) {
+    plannerNote = `\nDesign brief from the planner (use as creative context; the user's prompt above is still primary):
+- Fighting style: ${plannerVibe.fighting_style}
+- Signature mechanic: ${plannerVibe.signature_mechanic}
+- Under pressure: ${plannerVibe.under_pressure}
+`;
+  }
+  // Lab gate: outside the crazy-arena lab, only "destroy"/"capture"
+  // effects are available. The system prompt documents the full
+  // primitive set, but the user-context here tells Gemini to ignore
+  // everything except the basic shape so we don't waste retry
+  // budget on rejected responses.
+  let labNote = "";
+  if (!labMode) {
+    labNote = `\n\nIMPORTANT (Ship #1 lobby mode): the composable primitives (displace, relocate_self, spawn, transform, mark, aoe_wrap) are NOT available to this user. Use ONLY effect.kind = "destroy" (or its alias "capture"). Status effects, summons, displacement, charm, etc. are not selectable - if the user prompts for them, translate the intent into a thematically-named "destroy" ability with optional AOE. This is enforced by the server validator; ignoring it will fail the response.\n`;
+  }
   return `User's variant description:
 """
 ${trimmed}
 """
-${retryNote}
+${plannerNote}${retryNote}${labNote}
 Produce a JSON rule diff matching the schema. ONLY the JSON object. No prose, no markdown fences.`;
+}
+
+// ── Step 1: Behaviour Planner ──
+//
+// Cheap prose-only call. We give Gemini the user's variant
+// description and ask for three short prose fields describing
+// the variant's vibe. Output feeds into the factory step's
+// prompt as "design brief" context.
+//
+// Failure mode: if the planner errors or the response is
+// malformed, we skip it entirely and the factory just runs on
+// the user's prompt. The factory works fine without the
+// planner - it just produces less-cohesive variants.
+
+interface PlannerVibe {
+  fighting_style: string;
+  signature_mechanic: string;
+  under_pressure: string;
+}
+
+const PLANNER_SYSTEM_PROMPT = `You are a chess-variant choreographer. The user describes a chess variant they want to play. Your job is to translate their request into THREE short prose fields that capture how the variant FEELS in play.
+
+Reply with ONLY a JSON object of this exact shape:
+{
+  "fighting_style":     "1-2 sentences. How does this army feel to play? Aggressive, defensive, sneaky, raw firepower, etc.",
+  "signature_mechanic": "1-2 sentences. What's the headline ability or rule that makes this variant memorable? Be concrete (e.g. 'queens cast fireballs that deal AOE damage every 4 turns', not 'unique magic system').",
+  "under_pressure":     "1-2 sentences. What does the army do when losing? Do pieces panic, rally, scatter, suicide-charge?"
+}
+
+No markdown, no fences, no extra prose. Each field is plain English, 1-2 sentences max. Stay focused on the user's request - do NOT introduce mechanics they didn't ask for.`;
+
+const PLANNER_MAX_TOKENS = 500;
+
+async function callPlanner(userPrompt: string, model: string): Promise<{ ok: boolean; vibe?: PlannerVibe; inputTokens?: number; outputTokens?: number; error?: string }> {
+  const trimmed = (userPrompt || "").trim().slice(0, MAX_PROMPT_CHARS);
+  const result = await callGemini(
+    PLANNER_SYSTEM_PROMPT,
+    `User's variant description:\n"""\n${trimmed}\n"""\n\nReply with the JSON object described in the system prompt.`,
+    model,
+    PLANNER_MAX_TOKENS,
+  );
+  if (!result.ok || !result.content) {
+    return { ok: false, error: result.error };
+  }
+  const parsed = tolerantParseJson(result.content);
+  if (!parsed.ok || !parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return { ok: false, error: "planner response not parseable" };
+  }
+  const v = parsed.value as Record<string, unknown>;
+  const vibe: PlannerVibe = {
+    fighting_style: typeof v.fighting_style === "string" ? v.fighting_style : "",
+    signature_mechanic: typeof v.signature_mechanic === "string" ? v.signature_mechanic : "",
+    under_pressure: typeof v.under_pressure === "string" ? v.under_pressure : "",
+  };
+  // Reject empty fields - if any one is missing, the planner
+  // didn't actually plan, so don't pass garbage to the factory.
+  if (!vibe.fighting_style || !vibe.signature_mechanic || !vibe.under_pressure) {
+    return { ok: false, error: "planner missing required fields" };
+  }
+  return {
+    ok: true,
+    vibe,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+  };
 }
 
 // ── Gemini call + cost estimation ──
@@ -625,8 +1034,21 @@ const KNOWN_WIN_CONDITIONS = new Set([
   "checkmate", "capture_king", "first_to_n_captures", "race_to_squares", "last_standing",
 ]);
 const PIECE_TYPES = new Set(["p", "n", "b", "r", "q", "k"]);
+// Active-ability vocabulary. Mirror of `validatePieceAbilities` and
+// `validateEffectPrimitive` in ochess-app/src/lib/arena/validator.js -
+// kept in sync by hand. Ship #2: composable primitives.
+const KNOWN_ABILITY_TARGET_KINDS = new Set(["ranged", "leap", "slide"]);
+const KNOWN_ABILITY_EFFECT_KINDS = new Set([
+  "capture", "destroy", "displace", "relocate_self",
+  "spawn", "transform", "mark", "aoe_wrap",
+]);
+const KNOWN_INTENSITIES = new Set(["brief", "medium", "dramatic"]);
+const ABILITY_ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const TAG_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const SPAWNABLE_PIECE_TYPES = new Set(["p", "n", "b", "r", "q"]);
+const ALL_PIECE_TYPES = new Set(["p", "n", "b", "r", "q", "k"]);
 
-function validateStructure(rules: Record<string, unknown>): string[] {
+function validateStructure(rules: Record<string, unknown>, labMode: boolean = true): string[] {
   const errors: string[] = [];
 
   if (rules.extends !== "vanilla") {
@@ -643,7 +1065,7 @@ function validateStructure(rules: Record<string, unknown>): string[] {
           errors.push(`pieces.${pt}: unknown piece type (must be one of p/n/b/r/q/k)`);
           continue;
         }
-        validatePieceSpec(`pieces.${pt}`, spec, errors);
+        validatePieceSpec(`pieces.${pt}`, spec, errors, labMode);
       }
     }
   }
@@ -664,7 +1086,7 @@ function validateStructure(rules: Record<string, unknown>): string[] {
             errors.push(`byColor.${color}.${pt}: unknown piece type`);
             continue;
           }
-          validatePieceSpec(`byColor.${color}.${pt}`, spec, errors);
+          validatePieceSpec(`byColor.${color}.${pt}`, spec, errors, labMode);
         }
       }
     }
@@ -742,12 +1164,15 @@ function validateStructure(rules: Record<string, unknown>): string[] {
   return errors;
 }
 
-function validatePieceSpec(path: string, spec: unknown, errors: string[]): void {
+function validatePieceSpec(path: string, spec: unknown, errors: string[], labMode: boolean = true): void {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
     errors.push(`${path}: must be an object`);
     return;
   }
   const s = spec as Record<string, unknown>;
+  if (s.abilities !== undefined) {
+    validateAbilities(`${path}.abilities`, s.abilities, errors, labMode);
+  }
   if (s.moves !== undefined) {
     if (!Array.isArray(s.moves)) {
       errors.push(`${path}.moves must be an array`);
@@ -796,6 +1221,312 @@ function validatePieceSpec(path: string, spec: unknown, errors: string[]): void 
         }
       }
     }
+  }
+}
+
+/**
+ * Validate the `abilities` array on a piece spec. Mirrors
+ * `validatePieceAbilities` in
+ * ochess-app/src/lib/arena/validator.js - any rule we add
+ * here MUST also land there (the client validator is the
+ * authoritative defense against a stale Edge Function deploy).
+ */
+function validateAbilities(path: string, abilities: unknown, errors: string[], labMode: boolean = true): void {
+  if (!Array.isArray(abilities)) {
+    errors.push(`${path}: must be an array`);
+    return;
+  }
+  if (abilities.length > 8) {
+    errors.push(`${path}: caps at 8 abilities per piece (got ${abilities.length})`);
+  }
+  const seenIds = new Set<string>();
+  for (let i = 0; i < abilities.length; i++) {
+    const ab = abilities[i] as Record<string, unknown>;
+    const sub = `${path}[${i}]`;
+    if (!ab || typeof ab !== "object" || Array.isArray(ab)) {
+      errors.push(`${sub}: must be an object`);
+      continue;
+    }
+    if (typeof ab.id !== "string" || !ABILITY_ID_RE.test(ab.id as string)) {
+      errors.push(`${sub}.id must be lowercase letters/digits/underscores, 1-32 chars (got ${JSON.stringify(ab.id)})`);
+    } else if (seenIds.has(ab.id as string)) {
+      errors.push(`${sub}.id "${ab.id}" is duplicated within the same piece`);
+    } else {
+      seenIds.add(ab.id as string);
+    }
+    if (ab.label !== undefined && typeof ab.label !== "string") {
+      errors.push(`${sub}.label must be a string when set`);
+    }
+    if (ab.intensity !== undefined && !KNOWN_INTENSITIES.has(String(ab.intensity))) {
+      errors.push(`${sub}.intensity must be one of ${[...KNOWN_INTENSITIES].join("/")} when set`);
+    }
+
+    const tgt = ab.target as Record<string, unknown> | undefined;
+    if (!tgt || typeof tgt !== "object") {
+      errors.push(`${sub}.target is required and must be an object`);
+    } else if (!KNOWN_ABILITY_TARGET_KINDS.has(String(tgt.kind))) {
+      errors.push(`${sub}.target.kind "${tgt.kind}" is unknown (must be ranged/leap/slide)`);
+    } else if (tgt.kind === "ranged" || tgt.kind === "leap") {
+      if (!Array.isArray(tgt.offsets) || (tgt.offsets as unknown[]).length === 0) {
+        errors.push(`${sub}.target.offsets must be a non-empty array for kind=${tgt.kind}`);
+      } else if ((tgt.offsets as unknown[]).length > 64) {
+        errors.push(`${sub}.target.offsets caps at 64 entries`);
+      } else {
+        for (let j = 0; j < (tgt.offsets as unknown[]).length; j++) {
+          const off = (tgt.offsets as unknown[])[j];
+          if (!Array.isArray(off) || off.length !== 2 || !Number.isFinite((off as number[])[0]) || !Number.isFinite((off as number[])[1])) {
+            errors.push(`${sub}.target.offsets[${j}] must be a [df,dr] tuple of finite numbers`);
+          } else if ((off as number[])[0] === 0 && (off as number[])[1] === 0) {
+            errors.push(`${sub}.target.offsets[${j}] is [0,0] - cannot target your own square`);
+          }
+        }
+      }
+    } else if (tgt.kind === "slide") {
+      if (!Array.isArray(tgt.dirs) || (tgt.dirs as unknown[]).length === 0) {
+        errors.push(`${sub}.target.dirs must be a non-empty array for kind=slide`);
+      } else {
+        for (let j = 0; j < (tgt.dirs as unknown[]).length; j++) {
+          const d = (tgt.dirs as unknown[])[j];
+          if (!Array.isArray(d) || d.length !== 2 || !Number.isFinite((d as number[])[0]) || !Number.isFinite((d as number[])[1])) {
+            errors.push(`${sub}.target.dirs[${j}] must be a [df,dr] tuple of finite numbers`);
+          } else if ((d as number[])[0] === 0 && (d as number[])[1] === 0) {
+            errors.push(`${sub}.target.dirs[${j}] is [0,0] - zero-vector direction loops forever`);
+          }
+        }
+      }
+      if (tgt.maxRange !== undefined) {
+        const r = Number(tgt.maxRange);
+        if (!Number.isFinite(r) || r < 1 || r > 8) {
+          errors.push(`${sub}.target.maxRange must be 1..8 when set`);
+        }
+      }
+    }
+
+    if (!ab.effect || typeof ab.effect !== "object") {
+      errors.push(`${sub}.effect is required and must be an object`);
+    } else {
+      validateEffectPrimitive(`${sub}.effect`, ab.effect as Record<string, unknown>, errors, /*nested*/ false, labMode);
+    }
+
+    const gating = ab.gating as Record<string, unknown> | undefined;
+    if (gating !== undefined) {
+      if (!gating || typeof gating !== "object") {
+        errors.push(`${sub}.gating must be an object when set`);
+      } else {
+        if (gating.charges !== undefined) {
+          const c = Number(gating.charges);
+          if (!Number.isFinite(c) || c < 1 || c > 99) {
+            errors.push(`${sub}.gating.charges must be 1..99 when set`);
+          }
+        }
+        if (gating.cooldownPlies !== undefined) {
+          const c = Number(gating.cooldownPlies);
+          if (!Number.isFinite(c) || c < 1 || c > 20) {
+            errors.push(`${sub}.gating.cooldownPlies must be 1..20 when set`);
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Validate a composable effect primitive (Ship #2). Mirror of the same
+ * function in ochess-app/src/lib/arena/validator.js. Any rule we add here
+ * MUST also land there.
+ *
+ * `nested` is true when this primitive is INSIDE an aoe_wrap.inner;
+ * forbids further nesting.
+ */
+function validateEffectPrimitive(path: string, eff: Record<string, unknown>, errors: string[], nested: boolean, labMode: boolean = true): void {
+  if (!eff || typeof eff !== "object") {
+    errors.push(`${path}: must be an object`);
+    return;
+  }
+  const kind = String(eff.kind);
+  if (!KNOWN_ABILITY_EFFECT_KINDS.has(kind)) {
+    errors.push(`${path}.kind "${eff.kind}" is unknown (must be one of ${[...KNOWN_ABILITY_EFFECT_KINDS].join("/")})`);
+    return;
+  }
+  // Lab gate: outside the lab, only Ship #1 effect kinds are
+  // accepted. The composable primitives (displace/relocate_self/
+  // spawn/transform/mark/aoe_wrap) are gated until the visuals
+  // layer (Ship #3) lands. Inside the lab, all primitives are
+  // available.
+  if (!labMode && kind !== "capture" && kind !== "destroy") {
+    errors.push(`${path}.kind "${kind}" is not available outside the crazy-arena lab (Ship #1 supports capture/destroy only)`);
+    return;
+  }
+
+  if (kind === "destroy" || kind === "capture") {
+    if (eff.aoe !== undefined) {
+      const aoe = eff.aoe as Record<string, unknown>;
+      if (!aoe || typeof aoe !== "object") {
+        errors.push(`${path}.aoe must be an object when set`);
+      } else {
+        if (aoe.radius !== undefined) {
+          const r = Number(aoe.radius);
+          if (!Number.isFinite(r) || r < 0 || r > 3) {
+            errors.push(`${path}.aoe.radius must be 0..3 when set`);
+          }
+        }
+        if (aoe.hitsPawns !== undefined && typeof aoe.hitsPawns !== "boolean") {
+          errors.push(`${path}.aoe.hitsPawns must be a boolean when set`);
+        }
+        if (aoe.hitsFriendly !== undefined && typeof aoe.hitsFriendly !== "boolean") {
+          errors.push(`${path}.aoe.hitsFriendly must be a boolean when set`);
+        }
+      }
+    }
+    return;
+  }
+
+  if (kind === "displace") {
+    const hasDelta = Array.isArray(eff.delta);
+    const hasDir = typeof eff.direction === "string";
+    if (!hasDelta && !hasDir) {
+      errors.push(`${path} must specify either 'delta' or 'direction'+'distance'`);
+    }
+    if (hasDelta) {
+      const d = eff.delta as unknown[];
+      if (d.length !== 2 || !Number.isFinite(d[0]) || !Number.isFinite(d[1])) {
+        errors.push(`${path}.delta must be a [df,dr] tuple of finite numbers`);
+      } else if ((d as number[])[0] === 0 && (d as number[])[1] === 0) {
+        errors.push(`${path}.delta is [0,0]`);
+      } else if (Math.abs((d as number[])[0]) > 7 || Math.abs((d as number[])[1]) > 7) {
+        errors.push(`${path}.delta components must be -7..7`);
+      }
+    }
+    if (hasDir) {
+      const validDirs = ["from_caster", "toward_caster", "toward_target_from_origin"];
+      if (!validDirs.includes(String(eff.direction))) {
+        errors.push(`${path}.direction must be one of ${validDirs.join("/")}`);
+      }
+      const dist = Number(eff.distance);
+      if (!Number.isFinite(dist) || dist < 1 || dist > 7) {
+        errors.push(`${path}.distance must be 1..7 when direction is set`);
+      }
+    }
+    if (eff.onCollision !== undefined) {
+      const validCollision = ["stop", "destroy_target", "destroy_collider", "destroy_both"];
+      if (!validCollision.includes(String(eff.onCollision))) {
+        errors.push(`${path}.onCollision must be one of ${validCollision.join("/")}`);
+      }
+    }
+    if (eff.bounceOffEdge !== undefined && typeof eff.bounceOffEdge !== "boolean") {
+      errors.push(`${path}.bounceOffEdge must be a boolean when set`);
+    }
+    return;
+  }
+
+  if (kind === "relocate_self") {
+    if (eff.destination !== undefined) {
+      const valid = ["target", "adjacent_to_target", "caster_origin"];
+      if (!valid.includes(String(eff.destination))) {
+        errors.push(`${path}.destination must be one of ${valid.join("/")} when set`);
+      }
+    }
+    return;
+  }
+
+  if (kind === "spawn") {
+    if (typeof eff.pieceType !== "string" || !SPAWNABLE_PIECE_TYPES.has(eff.pieceType as string)) {
+      errors.push(`${path}.pieceType must be one of ${[...SPAWNABLE_PIECE_TYPES].join("/")} (kings can't be spawned)`);
+    }
+    if (eff.color !== undefined && eff.color !== "caster" && eff.color !== "enemy") {
+      errors.push(`${path}.color must be 'caster' or 'enemy' when set`);
+    }
+    if (eff.lifespan !== undefined) {
+      const l = Number(eff.lifespan);
+      if (!Number.isFinite(l) || l < 1 || l > 30) {
+        errors.push(`${path}.lifespan must be 1..30 when set`);
+      }
+    }
+    return;
+  }
+
+  if (kind === "transform") {
+    const hasTypeChange = typeof eff.pieceType === "string";
+    const hasColorChange = typeof eff.color === "string";
+    if (!hasTypeChange && !hasColorChange) {
+      errors.push(`${path} must specify at least one of 'pieceType' or 'color'`);
+    }
+    if (hasTypeChange && !ALL_PIECE_TYPES.has(eff.pieceType as string)) {
+      errors.push(`${path}.pieceType must be one of ${[...ALL_PIECE_TYPES].join("/")}`);
+    }
+    if (hasColorChange && !["flip", "caster", "enemy"].includes(String(eff.color))) {
+      errors.push(`${path}.color must be 'flip'/'caster'/'enemy'`);
+    }
+    if (eff.duration !== undefined) {
+      const d = Number(eff.duration);
+      if (!Number.isFinite(d) || d < 1 || d > 30) {
+        errors.push(`${path}.duration must be 1..30 when set`);
+      }
+    }
+    if (eff.revertOnCapture !== undefined && typeof eff.revertOnCapture !== "boolean") {
+      errors.push(`${path}.revertOnCapture must be a boolean when set`);
+    }
+    return;
+  }
+
+  if (kind === "mark") {
+    if (typeof eff.tag !== "string" || !TAG_RE.test(eff.tag as string)) {
+      errors.push(`${path}.tag must be lowercase letters/digits/underscores, 1-32 chars (got ${JSON.stringify(eff.tag)})`);
+    }
+    if (eff.duration !== undefined) {
+      const d = Number(eff.duration);
+      if (!Number.isFinite(d) || d < 1 || d > 30) {
+        errors.push(`${path}.duration must be 1..30 when set`);
+      }
+    }
+    if (eff.skipTurns !== undefined && typeof eff.skipTurns !== "boolean") {
+      errors.push(`${path}.skipTurns must be boolean when set`);
+    }
+    if (eff.silenceAbilities !== undefined && typeof eff.silenceAbilities !== "boolean") {
+      errors.push(`${path}.silenceAbilities must be boolean when set`);
+    }
+    if (eff.absorbCaptures !== undefined) {
+      const a = Number(eff.absorbCaptures);
+      if (!Number.isFinite(a) || a < 1 || a > 9) {
+        errors.push(`${path}.absorbCaptures must be 1..9 when set`);
+      }
+    }
+    if (eff.extraMoves !== undefined) {
+      const e = Number(eff.extraMoves);
+      if (!Number.isFinite(e) || e < 1 || e > 2) {
+        errors.push(`${path}.extraMoves must be 1..2 when set`);
+      }
+    }
+    if (eff.destroyOnExpire !== undefined && typeof eff.destroyOnExpire !== "boolean") {
+      errors.push(`${path}.destroyOnExpire must be boolean when set`);
+    }
+    if (eff.expireOnCapture !== undefined && typeof eff.expireOnCapture !== "boolean") {
+      errors.push(`${path}.expireOnCapture must be boolean when set`);
+    }
+    return;
+  }
+
+  if (kind === "aoe_wrap") {
+    if (nested) {
+      errors.push(`${path}: aoe_wrap cannot be nested inside another aoe_wrap`);
+      return;
+    }
+    const r = Number(eff.radius);
+    if (!Number.isFinite(r) || r < 1 || r > 3) {
+      errors.push(`${path}.radius must be 1..3`);
+    }
+    if (!eff.inner || typeof eff.inner !== "object") {
+      errors.push(`${path}.inner must be an effect object`);
+    } else {
+      validateEffectPrimitive(`${path}.inner`, eff.inner as Record<string, unknown>, errors, /*nested*/ true, labMode);
+    }
+    if (eff.hitsPawns !== undefined && typeof eff.hitsPawns !== "boolean") {
+      errors.push(`${path}.hitsPawns must be boolean when set`);
+    }
+    if (eff.hitsFriendly !== undefined && typeof eff.hitsFriendly !== "boolean") {
+      errors.push(`${path}.hitsFriendly must be boolean when set`);
+    }
+    return;
   }
 }
 
@@ -900,8 +1631,30 @@ Deno.serve(async (req) => {
     });
   }
 
-  // First attempt.
-  const firstPrompt = buildPrompt(body.prompt);
+  // ── Lab flag (Ship #2). Determines whether the composable-
+  // primitive vocabulary is available to this user. Outside the
+  // lab, only destroy/capture effects are accepted by the server
+  // validator AND the prompt instructs Gemini to ignore the rest.
+  const labMode = await getCrazyArenaLabFlag(req);
+
+  // ── STEP 1: Behaviour Planner (prose vibe) ──
+  // Cheap, fast (~500 tokens out). Failure is non-fatal -
+  // we just skip the planner context and pass the user's raw
+  // prompt straight to the factory.
+  let plannerVibe: PlannerVibe | undefined;
+  const planner = await callPlanner(body.prompt, model);
+  if (planner.ok && planner.vibe) {
+    plannerVibe = planner.vibe;
+  }
+  if (planner.inputTokens || planner.outputTokens) {
+    const cost = estimateMicroUsd(planner.inputTokens || 0, planner.outputTokens || 0);
+    await recordSpendOrBlock(req, "arena_rules", model, planner.inputTokens || 0, planner.outputTokens || 0, cost);
+  }
+
+  // ── STEP 2: Variant Factory (structured rules JSON) ──
+  // First attempt. Planner output is fed in as creative
+  // context, not as instructions to copy verbatim.
+  const firstPrompt = buildPrompt(body.prompt, undefined, plannerVibe, labMode);
   const first = await callGemini(SYSTEM_PROMPT, firstPrompt, model);
   if (!first.ok) {
     return new Response(JSON.stringify({ ok: false, error: first.error || "AI call failed", model }), {
@@ -909,7 +1662,6 @@ Deno.serve(async (req) => {
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
   }
-  // Record the actual spend for the first call.
   if (first.inputTokens || first.outputTokens) {
     const cost = estimateMicroUsd(first.inputTokens || 0, first.outputTokens || 0);
     await recordSpendOrBlock(req, "arena_rules", model, first.inputTokens || 0, first.outputTokens || 0, cost);
@@ -922,14 +1674,15 @@ Deno.serve(async (req) => {
     });
   }
   let rules = parsedFirst.rules!;
-  let errors = validateStructure(rules);
+  let errors = validateStructure(rules, labMode);
 
-  // Auto-retry once with the validator errors fed back.
+  // Auto-retry once with the validator errors fed back. The
+  // planner vibe stays the same on retry - only the structural
+  // errors are new context.
   if (errors.length > 0) {
-    const retryPrompt = buildPrompt(body.prompt, errors);
+    const retryPrompt = buildPrompt(body.prompt, errors, plannerVibe, labMode);
     const second = await callGemini(SYSTEM_PROMPT, retryPrompt, model);
     if (second.ok) {
-      // Record the retry's spend too.
       if (second.inputTokens || second.outputTokens) {
         const cost = estimateMicroUsd(second.inputTokens || 0, second.outputTokens || 0);
         await recordSpendOrBlock(req, "arena_rules", model, second.inputTokens || 0, second.outputTokens || 0, cost);
@@ -937,7 +1690,7 @@ Deno.serve(async (req) => {
       const parsedSecond = parseRulesJson(second.content!);
       if (parsedSecond.ok) {
         rules = parsedSecond.rules!;
-        errors = validateStructure(rules);
+        errors = validateStructure(rules, labMode);
       }
     }
   }
@@ -972,6 +1725,7 @@ Deno.serve(async (req) => {
     ok: true,
     rules,
     summary,
+    planner: plannerVibe,
     model,
     rate_limit: {
       calls_in_window: rl.callsInWindow,
