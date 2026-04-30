@@ -13,6 +13,7 @@ import BotsPage from "./components/BotsPage";
 import VariantsPage from "./components/VariantsPage";
 import ReviewPage from "./components/ReviewPage";
 import ArenaPage from "./components/ArenaPage";
+import PresentationPage from "./components/PresentationPage";
 import Profile from "./components/Profile";
 import PublicProfile from "./components/PublicProfile";
 import GameScreen, { getSavedGame, clearSavedGame } from "./components/GameScreen";
@@ -129,10 +130,15 @@ function AppShell() {
     location.pathname.startsWith("/game/online/") ||
     location.pathname === "/create-challenge" ||
     location.pathname.startsWith("/challenge/");
-  const hideFooter = isGameScreen || location.pathname === "/analysis";
+  // Presentation route owns the full viewport - it renders its
+  // own minimal "Back" button, so the global Navbar / Footer /
+  // social rail / board-style picker all hide here. Same chrome-
+  // free shape as the game screens.
+  const isPresentation = location.pathname === "/presentation";
+  const hideFooter = isGameScreen || isPresentation || location.pathname === "/analysis";
   const isLanding = location.pathname === "/" && !user;
   const [boardPrefsKey, setBoardPrefsKey] = useState(0);
-  const showBoardPicker = !isLanding && !isGameScreen;
+  const showBoardPicker = !isLanding && !isGameScreen && !isPresentation;
 
   if (authLoading) {
     return (
@@ -155,7 +161,7 @@ function AppShell() {
         Skip to main content
       </a>
       <CustomCursor />
-      {!isGameScreen && (
+      {!isGameScreen && !isPresentation && (
         <Navbar
           activePage={activePage}
           onNavigate={handleNavigate}
@@ -170,7 +176,7 @@ function AppShell() {
         onLogin={handleLogin}
       />
 
-      <main id="main" className={isGameScreen ? "" : "pt-16"}>
+      <main id="main" className={isGameScreen || isPresentation ? "" : "pt-16"}>
         <div className="page-enter">
           <Suspense fallback={<LoadingScreen />}>
           <Routes>
@@ -194,6 +200,7 @@ function AppShell() {
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/arena" element={<ArenaPage />} />
             <Route path="/arena/:roomId" element={<ArenaPage />} />
+            <Route path="/presentation" element={<PresentationPage />} />
             <Route path="/game" element={<GameRoute />} />
             <Route path="/variant-game" element={<VariantGameRoute />} />
             <Route path="/game/online/:gameId" element={<OnlineGameRoute />} />
