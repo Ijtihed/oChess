@@ -119,9 +119,22 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   const [confirmDraw, setConfirmDraw] = useState(false);
   const [confirmAbort, setConfirmAbort] = useState(false);
   const [confirmRematch, setConfirmRematch] = useState(false);
-  const [drawIncoming, setDrawIncoming] = useState(false);
+  // Pending draw offer is now authoritative on the games row
+  // (`draw_offer_by` + `draw_offer_ply`) so both sides see the same
+  // state across refreshes and so we can auto-expire the offer
+  // after one full move pair (2 plies). The local state below
+  // tracks the latest server snapshot.
+  const [drawOfferBy, setDrawOfferBy] = useState(gameData.draw_offer_by || null);
+  const [drawOfferPly, setDrawOfferPly] = useState(
+    Number.isFinite(gameData.draw_offer_ply) ? gameData.draw_offer_ply : null
+  );
   const [myDrawOffers, setMyDrawOffers] = useState(0);
   const MAX_DRAW_OFFERS = 3;
+  // How many plies a draw offer remains valid before it auto-expires.
+  // 2 = one full move pair after the offer was sent. Prevents a
+  // player from camping a request and only accepting once they're
+  // losing.
+  const DRAW_OFFER_TTL_PLIES = 2;
   // One-line transient feedback for offer outcomes the user wouldn't
   // otherwise notice (their rematch was declined; their draw was
   // declined; the opponent canceled their incoming rematch). Lives
@@ -137,6 +150,9 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   useEffect(() => () => {
     if (offerNoticeTimerRef.current) clearTimeout(offerNoticeTimerRef.current);
   }, []);
+  // Track which offer (by ply) we already announced so the
+  // declined / expired toast doesn't repeat on every re-render.
+  const announcedOfferEndedRef = useRef(null);
   const [connected, setConnected] = useState(false);
   const [connectionDegraded, setConnectionDegraded] = useState(false);
   // The 8s degraded-connection timer in the mount effect closes over
@@ -144,6 +160,27 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   // delayed check sees the latest value.
   const connectedRef = useRef(false);
   connectedRef.current = connected;
+  // Derive who currently has a pending draw offer.
+  //   drawOfferIsMine    = our own offer is still standing (button → "Draw pending…")
+  //   drawIncoming       = opponent has an offer outstanding (Accept/Decline panel)
+  // Computed from the authoritative server fields. The 2-ply expiry
+  // is enforced by hiding the offer once `history.length` advances
+  // past the TTL window AND by handleDrawAccept refusing to act on
+  // an expired offer - both as a belt-and-suspenders against a
+  // stale row that the expiry sweeper hasn't cleared yet.
+  const drawOfferIsExpired = (() => {
+    if (drawOfferBy == null || drawOfferPly == null) return false;
+    return history.length >= drawOfferPly + DRAW_OFFER_TTL_PLIES;
+  })();
+  const drawOfferActive = drawOfferBy != null && !drawOfferIsExpired;
+  const drawOfferIsMine =
+    drawOfferActive && drawOfferBy === authUserIdRef.current;
+  const drawIncoming =
+    drawOfferActive && drawOfferBy !== authUserIdRef.current;
+  const drawOfferPliesLeft = (() => {
+    if (drawOfferBy == null || drawOfferPly == null) return null;
+    return Math.max(0, drawOfferPly + DRAW_OFFER_TTL_PLIES - history.length);
+  })();
   const [opponentOnline, setOpponentOnline] = useState(false);
   const [pgnCopied, setPgnCopied] = useState(false);
   const [dbError, setDbError] = useState(null);
@@ -382,6 +419,18 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       const myDrawField = playerColor === "w" ? row.white_draw_offers : row.black_draw_offers;
       if (myDrawField != null) setMyDrawOffers(myDrawField);
 
+      // Sync the pending draw-offer record on the row. NULL means
+      // no offer outstanding (fresh game, or someone just cleared
+      // it). When the row says somebody else has a pending offer
+      // we surface the Accept/Decline banner; when the row is null
+      // and we previously had OUR offer outstanding, that means
+      // the opponent declined (or the offer auto-expired) - the
+      // dedicated effect below shows the toast in that case.
+      const nextOfferBy = row.draw_offer_by ?? null;
+      const nextOfferPly = row.draw_offer_ply ?? null;
+      setDrawOfferBy(nextOfferBy);
+      setDrawOfferPly(Number.isFinite(nextOfferPly) ? nextOfferPly : null);
+
       // Sync rematch state. When the DB clears rematch_offered_by (cancel /
       // decline), drop both local flags so the prompt disappears.
       if (row.rematch_game_id) { navigate(`/game/online/${row.rematch_game_id}`); return; }
@@ -462,13 +511,22 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         // anon key could otherwise forge resign payloads.
         verifyTermination("resignation");
       },
-      onDrawOffer: ({ userId }) => {
+      onDrawOffer: ({ userId, ply }) => {
         if (!validPlayers.has(userId) || userId === authUserIdRef.current) return;
         // Use the dedicated "incoming offer" cue (lichess
         // NewChallenge.mp3) so the user isn't second-guessing whether
         // they just lost the game.
         if (!gameOverRef.current) playOfferNotify();
-        setDrawIncoming(true);
+        // Mirror the broadcast hint into local state so the banner
+        // shows up instantly without waiting for the DB row to flip.
+        // The DB sync (applyServerRow) will overwrite this with the
+        // authoritative value moments later. Fall back to the
+        // current local ply count if the offerer is on an older
+        // client that didn't send `ply` over the wire - otherwise
+        // the offer would have no expiry anchor.
+        setDrawOfferBy(userId);
+        const fallbackPly = gameRef.current.history().length;
+        setDrawOfferPly(Number.isFinite(ply) ? ply : fallbackPly);
       },
       onDrawAccept: ({ userId }) => {
         if (!validPlayers.has(userId)) return;
@@ -478,15 +536,18 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       onDrawDecline: ({ userId }) => {
         // Broadcast self:false hides this from the decliner, so we
         // are the offerer. Refund the increment we charged on offer
-        // and persist the corrected count back to the DB so a
-        // refresh doesn't re-debit the player.
+        // and persist the corrected count + clear pending offer
+        // back to the DB so a refresh doesn't re-debit the player
+        // and so the banner stays cleared on both sides.
         if (userId && !validPlayers.has(userId)) return;
         setMyDrawOffers((c) => {
           const next = Math.max(0, c - 1);
           const field = playerColor === "w" ? "white_draw_offers" : "black_draw_offers";
-          saveGameState({ [field]: next });
+          saveGameState({ [field]: next, draw_offer_by: null, draw_offer_ply: null });
           return next;
         });
+        setDrawOfferBy(null);
+        setDrawOfferPly(null);
         setConfirmDraw(false);
         showOfferNotice("Opponent declined your draw offer.");
       },
@@ -660,30 +721,81 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
   const handleDrawOffer = useCallback(() => {
     if (gameOverRef.current) return;
     if (myDrawOffers >= MAX_DRAW_OFFERS) return;
+    // Don't let the same player offer twice or stack offers - if
+    // either side already has an active (non-expired) offer
+    // outstanding, swallow the click.
+    if (drawOfferActive) return;
     if (!confirmDraw) { setConfirmDraw(true); return; }
-    channelRef.current?.sendDrawOffer(authUserIdRef.current);
+    const offerPly = gameRef.current.history().length;
+    channelRef.current?.sendDrawOffer(authUserIdRef.current, offerPly);
     const newCount = myDrawOffers + 1;
     setMyDrawOffers(newCount);
+    setDrawOfferBy(authUserIdRef.current);
+    setDrawOfferPly(offerPly);
     setConfirmDraw(false);
     const field = playerColor === "w" ? "white_draw_offers" : "black_draw_offers";
-    saveGameState({ [field]: newCount });
-  }, [confirmDraw, myDrawOffers, playerColor, saveGameState]);
+    // Persist the pending offer alongside the counter so the
+    // opponent sees it via the postgres-changes feed even if the
+    // broadcast packet is missed, and so refresh / reconnect by
+    // either side keeps the banner state consistent.
+    saveGameState({
+      [field]: newCount,
+      draw_offer_by: authUserIdRef.current,
+      draw_offer_ply: offerPly,
+    });
+  }, [confirmDraw, myDrawOffers, playerColor, saveGameState, drawOfferActive]);
 
   const handleDrawAccept = useCallback(() => {
     if (gameOverRef.current) return;
+    // Only honor offers that are still within their TTL window.
+    // This is the offerer-side guard: if our local move count has
+    // already advanced 2 plies past the offer ply, the offer has
+    // implicitly auto-rejected itself. The expiry-sweep effect
+    // below will also clear it from the DB.
+    if (drawOfferIsExpired) return;
     channelRef.current?.sendDrawAccept(authUserIdRef.current);
     endGame("1/2-1/2", "draw by agreement");
-    setDrawIncoming(false);
-  }, [endGame]);
+    setDrawOfferBy(null);
+    setDrawOfferPly(null);
+  }, [endGame, drawOfferIsExpired]);
 
   const handleDrawDecline = useCallback(() => {
     // Decline is safe to send even after the game ends (it just
     // clears the offer banner on both sides), but skip the redundant
     // broadcast once we're sure the game is over.
-    if (gameOverRef.current) { setDrawIncoming(false); return; }
+    setDrawOfferBy(null);
+    setDrawOfferPly(null);
+    if (gameOverRef.current) return;
     channelRef.current?.sendDrawDecline(authUserIdRef.current);
-    setDrawIncoming(false);
-  }, []);
+    // Clear the pending offer in the DB too so the offerer's row
+    // sync (postgres-changes) hides their "Draw pending..." button
+    // even if the realtime broadcast is dropped.
+    saveGameState({ draw_offer_by: null, draw_offer_ply: null });
+  }, [saveGameState]);
+
+  // Auto-expire a pending draw offer once 2 plies have been played
+  // since it was made. Whichever side sees the threshold first
+  // writes the clear; the other side picks it up via the row sync.
+  // Show the offerer a toast so they know their unanswered offer
+  // lapsed (instead of it silently disappearing).
+  useEffect(() => {
+    if (drawOfferBy == null || drawOfferPly == null) {
+      announcedOfferEndedRef.current = null;
+      return;
+    }
+    if (gameOverRef.current) return;
+    if (history.length < drawOfferPly + DRAW_OFFER_TTL_PLIES) return;
+    const key = `${drawOfferBy}:${drawOfferPly}:expired`;
+    if (announcedOfferEndedRef.current === key) return;
+    announcedOfferEndedRef.current = key;
+    const wasMine = drawOfferBy === authUserIdRef.current;
+    setDrawOfferBy(null);
+    setDrawOfferPly(null);
+    saveGameState({ draw_offer_by: null, draw_offer_ply: null });
+    if (wasMine) {
+      showOfferNotice("Your draw offer expired.");
+    }
+  }, [history.length, drawOfferBy, drawOfferPly, saveGameState, showOfferNotice]);
 
   const handleAbort = useCallback(async () => {
     if (gameOverRef.current) return;
@@ -1009,13 +1121,19 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
                 </button>
               ) : (
                 <>
-                  <button data-confirm-draw onClick={handleDrawOffer} disabled={myDrawOffers >= MAX_DRAW_OFFERS}
+                  <button data-confirm-draw onClick={handleDrawOffer}
+                    disabled={myDrawOffers >= MAX_DRAW_OFFERS || drawOfferActive}
                     className={`py-2.5 px-3 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
                       myDrawOffers >= MAX_DRAW_OFFERS ? "bg-surface-low/50 border border-white/[0.02] text-on-surface-variant/15"
+                      : drawOfferIsMine ? "bg-amber-500/10 border border-amber-500/15 text-amber-400/60"
                       : confirmDraw ? "bg-amber-500/20 text-amber-400 border border-amber-500/20"
                       : "bg-surface-low border border-white/[0.04] text-on-surface-variant/35 hover:text-amber-400 hover:border-amber-500/15"
                     }`}>
-                    {myDrawOffers >= MAX_DRAW_OFFERS ? "No draws left" : `Draw${myDrawOffers > 0 ? ` (${MAX_DRAW_OFFERS - myDrawOffers})` : ""}`}
+                    {myDrawOffers >= MAX_DRAW_OFFERS
+                      ? "No draws left"
+                      : drawOfferIsMine
+                        ? `Draw pending\u2026${drawOfferPliesLeft != null ? ` (${drawOfferPliesLeft})` : ""}`
+                        : `Draw${myDrawOffers > 0 ? ` (${MAX_DRAW_OFFERS - myDrawOffers})` : ""}`}
                   </button>
                   <button data-confirm-resign onClick={handleResign}
                     className={`flex-1 py-2.5 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${confirmResign ? "bg-error/20 text-error border border-error/20" : "bg-surface-low border border-white/[0.04] text-on-surface-variant/35 hover:text-error hover:border-error/15"}`}>

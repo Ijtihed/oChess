@@ -105,6 +105,18 @@ alter table games add column if not exists turn text default 'w';
 alter table games add column if not exists chat jsonb default '[]'::jsonb;
 alter table games add column if not exists white_draw_offers int default 0;
 alter table games add column if not exists black_draw_offers int default 0;
+-- Pending draw-offer state. `draw_offer_by` is the user_id of the
+-- offerer (NULL when no offer is outstanding); `draw_offer_ply` is
+-- the half-move count (`moves_count`) at the moment the offer was
+-- made. Both clients auto-expire the offer once `moves_count`
+-- reaches `draw_offer_ply + 2`, i.e. after one full move pair has
+-- been played since the offer. This prevents a player from sitting
+-- on a pending offer until they're losing and only then accepting.
+-- Persisting the offer to the row (instead of relying purely on a
+-- broadcast) also means a refresh / late-joining tab still sees
+-- the same offer state on both sides.
+alter table games add column if not exists draw_offer_by uuid references profiles(id) on delete set null;
+alter table games add column if not exists draw_offer_ply int;
 alter table games add column if not exists rematch_offered_by uuid references profiles(id) on delete set null;
 alter table games add column if not exists rematch_game_id uuid references games(id) on delete set null;
 -- Arena: each round of an AI Arena match gets persisted here as

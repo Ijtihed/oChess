@@ -151,7 +151,7 @@ export function joinGameChannel(gameId, callbacks) {
     channel,
     sendMove(move) { channel.send({ type: "broadcast", event: "move", payload: move }); },
     sendResign(userId) { channel.send({ type: "broadcast", event: "resign", payload: { userId } }); },
-    sendDrawOffer(userId) { channel.send({ type: "broadcast", event: "draw_offer", payload: { userId } }); },
+    sendDrawOffer(userId, ply) { channel.send({ type: "broadcast", event: "draw_offer", payload: { userId, ply } }); },
     sendDrawAccept(userId) { channel.send({ type: "broadcast", event: "draw_accept", payload: { userId } }); },
     sendDrawDecline(userId) { channel.send({ type: "broadcast", event: "draw_decline", payload: { userId } }); },
     sendGameOver(result) { channel.send({ type: "broadcast", event: "game_over", payload: result }); },

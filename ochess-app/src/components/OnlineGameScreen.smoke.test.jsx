@@ -237,6 +237,71 @@ describe("OnlineGameScreen (smoke)", () => {
     expect(screen.getByText(/Opponent declined your draw offer/i)).toBeDefined();
   });
 
+  // ── Draw-offer pending state (visible to both sides) ──────────
+  // The pending draw offer is now persisted to the games row and
+  // both clients see it via the postgres-changes feed. Verify the
+  // Accept / Decline panel for the receiver and the "Draw pending"
+  // affordance for the offerer.
+
+  it("shows the accept/decline panel when the opponent has a pending offer", () => {
+    const active = makeGameData({ pgn: "1. e4 e5" });
+    mount(active);
+    // Simulate the opponent's draw_offer broadcast arriving.
+    act(() => {
+      channelCallbacksRef.value?.onDrawOffer?.({ userId: "user-2", ply: 2 });
+    });
+    expect(screen.getByText(/Opponent offers a draw/i)).toBeDefined();
+    expect(screen.getByRole("button", { name: /^Accept$/i })).toBeDefined();
+    expect(screen.getByRole("button", { name: /^Decline$/i })).toBeDefined();
+  });
+
+  it("shows 'Draw pending…' on the offerer's side after offering", () => {
+    // The Draw button only renders past the early-abort window
+    // (history.length > 2), so we need at least 3 plies of PGN.
+    const active = makeGameData({
+      pgn: "1. e4 e5 2. Nf3",
+      // Server says I'm the offerer with an offer ply of 3.
+      draw_offer_by: "user-1",
+      draw_offer_ply: 3,
+    });
+    mount(active);
+    expect(screen.getByText(/Draw pending/i)).toBeDefined();
+  });
+
+  // ── Draw-offer expiry (anti-camping) ──────────────────────────
+  // Once 2 plies have been played past the offer ply, the offer
+  // auto-clears for both sides and the offerer sees a notice.
+
+  it("auto-expires my draw offer once 2 plies have advanced past it", async () => {
+    // Mount with my offer at ply 3, but the current PGN already has
+    // 5 plies (3 + 2). The expiry effect should fire on mount, clear
+    // local state, and surface the toast.
+    const active = makeGameData({
+      pgn: "1. e4 e5 2. Nf3 Nc6 3. Bb5",
+      draw_offer_by: "user-1",
+      draw_offer_ply: 3,
+    });
+    mount(active);
+    // Toast should appear since my offer has lapsed.
+    expect(screen.getByText(/Your draw offer expired/i)).toBeDefined();
+    // The "Draw pending…" affordance should be gone - the button
+    // is back to its normal "Draw" label.
+    expect(screen.queryByText(/Draw pending/i)).toBeNull();
+  });
+
+  it("does not let the receiver accept a stale (expired) offer", () => {
+    // Server says opponent (user-2) offered at ply 3, but the game
+    // has already advanced 2 plies past that. The Accept/Decline
+    // panel must not render in this state - the offer has lapsed.
+    const active = makeGameData({
+      pgn: "1. e4 e5 2. Nf3 Nc6 3. Bb5",
+      draw_offer_by: "user-2",
+      draw_offer_ply: 3,
+    });
+    mount(active);
+    expect(screen.queryByText(/Opponent offers a draw/i)).toBeNull();
+  });
+
   it("ignores rematch_decline broadcasts from outside the player set", () => {
     const completed = makeGameData({
       status: "completed",

@@ -1505,6 +1505,20 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
     if (drawTimerRef.current) clearTimeout(drawTimerRef.current);
   }, []);
+  // Transient feedback for draw outcomes the offerer wouldn't
+  // otherwise notice - same pattern as OnlineGameScreen's
+  // offerNotice. Fires when a draw offer is declined or auto-
+  // expires. Auto-clears after ~4s.
+  const [offerNotice, setOfferNotice] = useState(null);
+  const offerNoticeTimerRef = useRef(null);
+  const showOfferNotice = useCallback((text) => {
+    if (offerNoticeTimerRef.current) clearTimeout(offerNoticeTimerRef.current);
+    setOfferNotice(text);
+    offerNoticeTimerRef.current = setTimeout(() => setOfferNotice(null), 4000);
+  }, []);
+  useEffect(() => () => {
+    if (offerNoticeTimerRef.current) clearTimeout(offerNoticeTimerRef.current);
+  }, []);
 
   // Initial move-log load + realtime INSERT subscription. The
   // sidebar move list, opponent-move-detection effect, and
@@ -2094,16 +2108,30 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   }, [confirmResign, role, roundLabel, status, position, room, roomId, setRoom, colorPair]);
 
   // Draw offer flow. State is synced through round_state.drawOffer:
-  //   { from: 'creator'|'joiner', round: <roundLabel> }
+  //   { from: 'creator'|'joiner', round: <roundLabel>, ts, offerPly }
   // Either side can offer; the other side sees the incoming
   // banner and can Accept (round ends as a draw) or Decline
-  // (offer cleared).
+  // (offer cleared). Offers auto-expire 2 plies after they're
+  // made (one full move pair) so a player can't camp the offer
+  // until they're losing and only then accept it.
   const MAX_DRAW_OFFERS = 3;
+  const DRAW_OFFER_TTL_PLIES = 2;
   const drawOffersBySide = room.round_state?.drawOffersUsed || {};
   const myDrawOffersUsed = drawOffersBySide[role] || 0;
   const drawOffer = room.round_state?.drawOffer;
-  const incomingDraw = drawOffer && drawOffer.from && drawOffer.from !== role && drawOffer.round === roundLabel;
-  const myPendingDrawOffer = drawOffer && drawOffer.from === role && drawOffer.round === roundLabel;
+  const currentPly = room.round_state?.plyCount || 0;
+  const drawOfferActive = drawOffer && drawOffer.from && drawOffer.round === roundLabel;
+  const drawOfferPly = drawOfferActive && Number.isFinite(drawOffer.offerPly) ? drawOffer.offerPly : null;
+  const drawOfferIsExpired =
+    drawOfferActive && drawOfferPly != null && currentPly >= drawOfferPly + DRAW_OFFER_TTL_PLIES;
+  const drawOfferPliesLeft =
+    drawOfferActive && drawOfferPly != null
+      ? Math.max(0, drawOfferPly + DRAW_OFFER_TTL_PLIES - currentPly)
+      : null;
+  const incomingDraw =
+    drawOfferActive && drawOffer.from !== role && !drawOfferIsExpired;
+  const myPendingDrawOffer =
+    drawOfferActive && drawOffer.from === role && !drawOfferIsExpired;
 
   // Audible cue when a draw offer arrives, exactly like Play.
   const lastDrawOfferKeyRef = useRef(null);
@@ -2122,6 +2150,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     if (gameStatus.ended) return;
     if (myDrawOffersUsed >= MAX_DRAW_OFFERS) return;
     if (myPendingDrawOffer) return;       // already pending
+    if (incomingDraw) return;             // opponent already has an offer out - they decide first
     if (!confirmDraw) {
       setConfirmDraw(true);
       if (drawTimerRef.current) clearTimeout(drawTimerRef.current);
@@ -2130,31 +2159,51 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     }
     if (drawTimerRef.current) clearTimeout(drawTimerRef.current);
     setConfirmDraw(false);
+    const offerPly = room.round_state?.plyCount || 0;
     const round_state = {
       ...(room.round_state || {}),
-      drawOffer: { from: role, round: roundLabel, ts: new Date().toISOString() },
+      drawOffer: {
+        from: role,
+        round: roundLabel,
+        ts: new Date().toISOString(),
+        offerPly,
+      },
       drawOffersUsed: { ...drawOffersBySide, [role]: myDrawOffersUsed + 1 },
     };
     const result = await updateRoom(roomId, { round_state });
     if (result?.ok && result.room && setRoom) {
       setRoom((prev) => ({ ...(prev || {}), ...result.room }));
     }
-  }, [gameStatus.ended, myDrawOffersUsed, myPendingDrawOffer, confirmDraw, room.round_state, role, roundLabel, drawOffersBySide, roomId, setRoom]);
+  }, [gameStatus.ended, myDrawOffersUsed, myPendingDrawOffer, incomingDraw, confirmDraw, room.round_state, role, roundLabel, drawOffersBySide, roomId, setRoom]);
 
   const onDrawDecline = useCallback(async () => {
     if (!incomingDraw) return;
     const round_state = {
       ...(room.round_state || {}),
       drawOffer: null,
+      // Mark a one-shot decline ack so the offerer's client can
+      // surface a "your draw was declined" toast even though the
+      // offer record itself is now null. The offerer reads this
+      // by ts + from and clears it after acknowledging.
+      drawOfferDeclined: {
+        from: role,
+        round: roundLabel,
+        ts: new Date().toISOString(),
+        offeredBy: drawOffer?.from || null,
+      },
     };
     const result = await updateRoom(roomId, { round_state });
     if (result?.ok && result.room && setRoom) {
       setRoom((prev) => ({ ...(prev || {}), ...result.room }));
     }
-  }, [incomingDraw, room.round_state, roomId, setRoom]);
+  }, [incomingDraw, room.round_state, roomId, setRoom, role, roundLabel, drawOffer]);
 
   const onDrawAccept = useCallback(async () => {
     if (!incomingDraw) return;
+    // Don't honor a stale offer - if the TTL has elapsed locally,
+    // treat the click as a no-op. The expiry effect will clear
+    // the offer record from the server side as well.
+    if (drawOfferIsExpired) return;
     if (advanceRoundEndedRef.current) return;
     advanceRoundEndedRef.current = true;
     const entry = buildRoundEntry({
@@ -2188,7 +2237,59 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     if (result?.room && setRoom) {
       setRoom((prev) => ({ ...(prev || {}), ...result.room }));
     }
-  }, [incomingDraw, role, roundLabel, status, position, room, roomId, setRoom]);
+  }, [incomingDraw, drawOfferIsExpired, role, roundLabel, status, position, room, roomId, setRoom]);
+
+  // Auto-expire a pending draw offer once the configured TTL has
+  // elapsed. Whichever side notices first writes the clear; the
+  // other side picks it up via the room sync. Show the offerer a
+  // toast so they know their unanswered offer lapsed.
+  const announcedDrawEndedRef = useRef(null);
+  useEffect(() => {
+    if (!drawOfferActive || !drawOfferIsExpired) {
+      if (!drawOfferActive) announcedDrawEndedRef.current = null;
+      return;
+    }
+    if (gameStatus.ended) return;
+    const key = `${drawOffer.from}:${drawOffer.round}:${drawOffer.ts || drawOfferPly}:expired`;
+    if (announcedDrawEndedRef.current === key) return;
+    announcedDrawEndedRef.current = key;
+    const wasMine = drawOffer.from === role;
+    const round_state = {
+      ...(room.round_state || {}),
+      drawOffer: null,
+    };
+    updateRoom(roomId, { round_state }).then((result) => {
+      if (result?.ok && result.room && setRoom) {
+        setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+      }
+    });
+    if (wasMine) {
+      showOfferNotice("Your draw offer expired.");
+    }
+  }, [drawOfferActive, drawOfferIsExpired, drawOffer, drawOfferPly, role, room.round_state, roomId, setRoom, gameStatus.ended, showOfferNotice]);
+
+  // Surface a "draw was declined" toast to the offerer.
+  // `drawOfferDeclined` is a one-shot ack the decliner writes into
+  // round_state; we read it once and clear it so it doesn't loop.
+  const announcedDrawDeclineRef = useRef(null);
+  useEffect(() => {
+    const ack = room.round_state?.drawOfferDeclined;
+    if (!ack || !ack.ts) return;
+    if (ack.round !== roundLabel) return;
+    if (ack.offeredBy !== role) return;
+    if (announcedDrawDeclineRef.current === ack.ts) return;
+    announcedDrawDeclineRef.current = ack.ts;
+    showOfferNotice("Opponent declined your draw offer.");
+    const round_state = {
+      ...(room.round_state || {}),
+      drawOfferDeclined: null,
+    };
+    updateRoom(roomId, { round_state }).then((result) => {
+      if (result?.ok && result.room && setRoom) {
+        setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+      }
+    });
+  }, [room.round_state, roundLabel, role, roomId, setRoom, showOfferNotice]);
 
   // History replay. When user clicks a move in the move list,
   // we render that historical FEN read-only; click "Live" to
@@ -2328,9 +2429,19 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
           </div>
 
           <div className="w-full xl:w-[340px] shrink-0 flex flex-col gap-3">
+            {offerNotice && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="anim-fade-up px-3 py-2 bg-surface-low border border-on-surface-variant/20 text-[11px] text-on-surface-variant/85 text-center"
+              >
+                {offerNotice}
+              </div>
+            )}
             {!gameStatus.ended && (
               <div className="flex gap-2 shrink-0 flex-wrap">
-                <button onClick={onDrawOffer} disabled={myDrawOffersUsed >= MAX_DRAW_OFFERS || !!myPendingDrawOffer}
+                <button onClick={onDrawOffer}
+                  disabled={myDrawOffersUsed >= MAX_DRAW_OFFERS || !!myPendingDrawOffer || !!incomingDraw}
                   className={`py-2.5 px-3 font-headline text-xs font-bold uppercase tracking-wide transition-colors active:scale-[0.96] ${
                     myDrawOffersUsed >= MAX_DRAW_OFFERS ? "bg-surface-low/50 border border-white/[0.02] text-on-surface-variant/15"
                     : myPendingDrawOffer ? "bg-amber-500/10 border border-amber-500/15 text-amber-400/60"
@@ -2340,7 +2451,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                   {myDrawOffersUsed >= MAX_DRAW_OFFERS
                     ? "No draws left"
                     : myPendingDrawOffer
-                      ? "Draw pending\u2026"
+                      ? `Draw pending\u2026${drawOfferPliesLeft != null ? ` (${drawOfferPliesLeft})` : ""}`
                       : confirmDraw
                         ? "Tap to offer"
                         : `Draw${myDrawOffersUsed > 0 ? ` (${MAX_DRAW_OFFERS - myDrawOffersUsed})` : ""}`}
