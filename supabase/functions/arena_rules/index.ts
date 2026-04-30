@@ -253,7 +253,7 @@ The user can prompt anything physical - bowling pawns, throwing pieces, summonin
      "distance": 1..7 | undefined,
      "onCollision": "stop" | "destroy_target" | "destroy_collider" | "destroy_both",
      "bounceOffEdge": bool }
-   Move the target piece without removing it. Pick EITHER `delta` (fixed offset) OR `direction`+`distance` (computed). With "destroy_collider" you get bowling/yeet semantics: the target travels along the line and destroys whatever it slams into.
+   Move the target piece without removing it. Pick EITHER 'delta' (fixed offset) OR 'direction'+'distance' (computed). With "destroy_collider" you get bowling/yeet semantics: the target travels along the line and destroys whatever it slams into.
    Use for: throwing pawns, bowling, knockback, gravitational pull, push, yeet.
 
 3. { "kind": "relocate_self", "destination": "target" | "adjacent_to_target" | "caster_origin" }
