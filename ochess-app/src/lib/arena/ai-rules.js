@@ -26,11 +26,17 @@ import { checkPromptSanity } from "./error-messages";
  * Generate a rule diff from a natural-language prompt. Returns
  * a normalized result the lobby UI consumes directly.
  *
+ * Crazy Arena Ship #1: the response also carries a `planner`
+ * payload with three short prose fields describing the
+ * variant's vibe. Optional - the field is undefined when the
+ * planner step errored or was skipped server-side.
+ *
  * @param {string} prompt
  * @returns {Promise<{
  *   ok: boolean,
  *   rules?: object,
  *   summary?: string,
+ *   planner?: { fighting_style: string, signature_mechanic: string, under_pressure: string },
  *   model?: string,
  *   error?: string,
  *   rateLimited?: boolean,
@@ -129,11 +135,20 @@ export async function generateArenaRules(prompt) {
     ok: true,
     rules: merged.rules,
     summary: typeof merged.summary === "string" ? merged.summary : undefined,
+    planner: isPlannerVibe(merged.planner) ? merged.planner : undefined,
     model: typeof merged.model === "string" ? merged.model : undefined,
     callsInWindow: Number(merged.rate_limit?.calls_in_window) || 0,
     maxCalls: Number(merged.rate_limit?.max_calls) || 0,
     windowSeconds: Number(merged.rate_limit?.window_seconds) || 0,
   };
+}
+
+function isPlannerVibe(value) {
+  return value
+    && typeof value === "object"
+    && typeof value.fighting_style === "string"
+    && typeof value.signature_mechanic === "string"
+    && typeof value.under_pressure === "string";
 }
 
 /** Best-effort read of a FunctionsHttpError's JSON body. */

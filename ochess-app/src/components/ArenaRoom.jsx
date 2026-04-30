@@ -280,6 +280,64 @@ export default function ArenaRoom({ roomId }) {
  * "wait, why is the opponent's move taking so long?" is actually
  * just a flaky connection on their side.
  */
+// Crazy Arena Ship #2.5: minimal status-badge overlay that paints
+// the active marks on each square as plain text (e.g. "frost 3",
+// "burn 2"). DELIBERATELY BARE - the AI will draw real visuals in
+// Ship #3, this exists only so humans can SEE that an effect is
+// active during testing. Remove this whole component when Ship #3
+// lands.
+function CrazyStateBadges({ position, orientation }) {
+  const effects = position?.crazyState?.effects;
+  if (!effects || Object.keys(effects).length === 0) return null;
+  const flipped = orientation === "black";
+  return (
+    <div className="absolute inset-0 pointer-events-none z-[3]">
+      {Object.entries(effects).map(([sq, marks]) => {
+        if (!Array.isArray(marks) || marks.length === 0) return null;
+        const file = sq.charCodeAt(0) - 97; // a..h -> 0..7
+        const rank = parseInt(sq[1], 10) - 1; // 1..8 -> 0..7
+        const left = flipped ? (7 - file) : file;
+        const top = flipped ? rank : (7 - rank);
+        const label = marks.map((m) => {
+          const dur = Number.isFinite(m.duration) ? ` ${m.duration}` : "";
+          const tag = (m.tag || "?").slice(0, 9);
+          return `${tag}${dur}`;
+        }).join(" ");
+        return (
+          <span
+            key={sq}
+            className="absolute font-mono text-[8px] font-bold uppercase text-white/95 whitespace-nowrap"
+            style={{
+              left: `${(left / 8) * 100}%`,
+              top: `${(top / 8) * 100}%`,
+              width: `${100 / 8}%`,
+              height: `${100 / 8}%`,
+              padding: "1px 2px",
+              textShadow: "0 0 2px rgba(0,0,0,0.85), 0 0 4px rgba(0,0,0,0.65)",
+            }}
+          >
+            {label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// Crazy Arena Ship #2.5: small dismissible toast that appears
+// when the engine throws a VariantError. Auto-clears after the
+// timeout in the parent's setState. Deliberately ugly so we
+// don't forget to clean it up in Ship #3 once visuals land and
+// most variant errors become impossible.
+function VariantErrorToast({ message, onDismiss }) {
+  if (!message) return null;
+  return (
+    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-[4] pointer-events-auto px-3 py-2 bg-red-500/95 text-white text-[11px] font-mono font-bold border border-red-300/40 max-w-[80%] truncate shadow-lg">
+      <button onClick={onDismiss} className="cursor-pointer">{message}</button>
+    </div>
+  );
+}
+
 function ChannelHealthToast({ health }) {
   if (health === "healthy" || health === "connecting") return null;
   const label = health === "closed" ? "Disconnected" : "Reconnecting\u2026";
@@ -1031,6 +1089,15 @@ function Warmup({ room, setRoom, role, roomId }) {
   const [position, setPosition] = useState(() => Position.fromFen(rules.startingFen || VANILLA_FEN));
   const [highlight, setHighlight] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(WARMUP_DURATION_S);
+  // Crazy Arena Ship #2.5: stash the most recent VariantError
+  // message so the warmup UI can surface a small toast. Clears
+  // automatically after a few seconds via the effect below.
+  const [variantError, setVariantError] = useState(null);
+  useEffect(() => {
+    if (!variantError) return undefined;
+    const t = setTimeout(() => setVariantError(null), 4000);
+    return () => clearTimeout(t);
+  }, [variantError]);
 
   // Hydrate `ready` from the room row so a reload mid-warmup
   // doesn't lose the flag. If this user already pushed
@@ -1170,6 +1237,10 @@ function Warmup({ room, setRoom, role, roomId }) {
         // engine doesn't pre-stamp the captured piece on
         // pseudo-moves the way chess.js does.
         captured: !!position.pieceAt(m.to) || !!m.enPassant,
+        // Ship #2.5: forward ability metadata so the board
+        // renders ability targets distinctly and `onMove` can
+        // dispatch the cast through applyAbilityMove.
+        ...(m.kind === "ability" ? { kind: "ability", abilityId: m.abilityId } : {}),
       }));
   }, [position, rules, myColor]);
 
@@ -1183,8 +1254,19 @@ function Warmup({ room, setRoom, role, roomId }) {
     let next;
     try {
       next = applyMove(position, move, rules);
-    } catch {
-      playError();
+    } catch (e) {
+      // Ship #2.5: a VariantError means the engine could not
+      // resolve a structurally-legal move (e.g. malformed
+      // ability descriptor reaching off-board mid-cast). The
+      // warmup is a practice mode against a random bot; we
+      // surface the issue to the user but keep the warmup
+      // running so they can keep practicing. The live PvP
+      // path treats VariantError as match-cancelling.
+      if (e?.name === "VariantError") {
+        setVariantError(e.message || "Variant error");
+      } else {
+        playError();
+      }
       return false;
     }
     playMoveSound({ flags: move.captured ? "c" : "n" });
@@ -1256,7 +1338,7 @@ function Warmup({ room, setRoom, role, roomId }) {
               pieceColor={myColor === "w" ? "b" : "w"}
               active={position.turn !== myColor && !ready}
             />
-            <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
+            <div className="w-full mx-auto relative" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
               <InteractiveBoard
                 fen={position.toFen()}
                 onMove={onUserMove}
@@ -1265,6 +1347,11 @@ function Warmup({ room, setRoom, role, roomId }) {
                 interactive={position.turn === myColor && !ready}
                 highlightSquares={highlight}
                 legalMovesProvider={legalMovesProvider}
+              />
+              <CrazyStateBadges position={position} orientation={orientation} />
+              <VariantErrorToast
+                message={variantError}
+                onDismiss={() => setVariantError(null)}
               />
             </div>
             <PlayerBar
@@ -1376,11 +1463,21 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     }
   }, [roomPlyCount, localPly, localPosition]);
 
+  // Crazy Arena Ship #2: pull crazy_state off the room row so
+  // ability charges, cooldowns, and active marks survive
+  // reload + realtime sync across both clients. Vanilla games
+  // have crazy_state = null which collapses to "no marks, no
+  // gating" - the engine treats absence as "abilities are
+  // unlimited" which matches Ship #1 behavior.
+  const crazyStateFromRoom = room.crazy_state || null;
   const position = useMemo(() => {
     if (localPosition) return localPosition;
-    try { return Position.fromFen(fenFromRoom); }
-    catch { return Position.fromFen(VANILLA_FEN); }
-  }, [fenFromRoom, localPosition]);
+    let pos;
+    try { pos = Position.fromFen(fenFromRoom); }
+    catch { pos = Position.fromFen(VANILLA_FEN); }
+    if (crazyStateFromRoom) pos.crazyState = crazyStateFromRoom;
+    return pos;
+  }, [fenFromRoom, localPosition, crazyStateFromRoom]);
 
   // Move history for this round. Loaded from arena_moves on
   // mount and kept in sync via realtime + manual appends.
@@ -1390,6 +1487,18 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   const [resignError, setResignError] = useState(null);
   const [confirmResign, setConfirmResign] = useState(false);
   const [confirmDraw, setConfirmDraw] = useState(false);
+  // Crazy Arena Ship #2.5: VariantError surface. In live PvP,
+  // a cast that fails to resolve is a serious problem (the
+  // variant is malformed in a way the validator missed); we
+  // surface a toast and let the user see what happened. The
+  // match itself doesn't auto-cancel - that's a Ship #2.5
+  // followup if the issue turns out to be common.
+  const [variantError, setVariantError] = useState(null);
+  useEffect(() => {
+    if (!variantError) return undefined;
+    const t = setTimeout(() => setVariantError(null), 6000);
+    return () => clearTimeout(t);
+  }, [variantError]);
   const confirmTimerRef = useRef(null);
   const drawTimerRef = useRef(null);
   useEffect(() => () => {
@@ -1448,6 +1557,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
         to: m.to,
         promotion: m.promotion,
         captured: !!livePosition.pieceAt(m.to) || !!m.enPassant,
+        ...(m.kind === "ability" ? { kind: "ability", abilityId: m.abilityId } : {}),
       }));
   }, [rules, myColor]);
 
@@ -1558,7 +1668,14 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     premoveRef.current = null;
     let next;
     try { next = applyMove(livePosition, move, rules); }
-    catch { playError(); return false; }
+    catch (e) {
+      if (e?.name === "VariantError") {
+        setVariantError(e.message || "Variant error");
+      } else {
+        playError();
+      }
+      return false;
+    }
 
     // Sound + highlight match OnlineGameScreen so the play
     // surface feels identical. White tints for the last
@@ -1611,6 +1728,13 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
           fen: nextRoundState.fen,
           move: { ...move, san: lastHistory?.san },
           roundState: nextRoundState,
+          // Ship #2: pass crazy_state alongside the FEN so
+          // the room row carries the new charges/cooldowns/marks
+          // and arena_moves.state_after has a per-ply snapshot
+          // for replay scrubbing. appendMove auto-routes to
+          // arena_apply_move_v2 when these are present.
+          crazyState: next.crazyState || null,
+          stateAfter: next.crazyState || null,
         });
         if (result?.ok && result.room && setRoom) {
           setRoom((prev) => ({ ...(prev || {}), ...result.room }));
@@ -2145,7 +2269,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
               time={oppTime}
               active={oppActive && !gameStatus.ended}
             />
-            <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
+            <div className="w-full mx-auto relative" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
               <InteractiveBoard
                 fen={displayFen}
                 onMove={onUserMove}
@@ -2168,6 +2292,11 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                     premoveRef.current = null;
                   }
                 }}
+              />
+              <CrazyStateBadges position={position} orientation={orientation} />
+              <VariantErrorToast
+                message={variantError}
+                onDismiss={() => setVariantError(null)}
               />
             </div>
             {premove && !gameStatus.ended && (

@@ -23,6 +23,16 @@ function buildPieces(pieceSet) {
 const DOT = "radial-gradient(circle, rgba(255,255,255,0.22) 24%, transparent 25%)";
 const CAPTURE_BG = "rgba(255,255,255,0.18)";
 const PREMOVE_SQ = "rgba(59,130,246,0.30)";
+// Crazy Arena Ship #2.5: ability targets render as a distinct red
+// crosshair so players can tell "cast ability" from "move piece" at
+// a glance. The crosshair is a layered radial-gradient: outer ring
+// + small inner dot in the same brand-red tone.
+const ABILITY_TARGET_BG =
+  "radial-gradient(circle, transparent 40%, rgba(239,68,68,0.55) 41%, rgba(239,68,68,0.55) 47%, transparent 48%)," +
+  "radial-gradient(circle, rgba(239,68,68,0.85) 18%, transparent 19%)";
+const ABILITY_TARGET_BG_CAPTURE =
+  "radial-gradient(circle, transparent 40%, rgba(239,68,68,0.7) 41%, rgba(239,68,68,0.7) 47%, transparent 48%)," +
+  "radial-gradient(circle, rgba(239,68,68,0.95) 22%, transparent 23%)";
 
 export default function InteractiveBoard({
   fen,
@@ -166,8 +176,23 @@ export default function InteractiveBoard({
         const target = legalTargets.find((m) => m.to === square);
         if (target) {
           const promo = target.promotion ? "q" : undefined;
-          const ok = onMove({ from: selectedSq, to: square, promotion: promo });
-          if (ok) soundForMove(selectedSq, square, promo);
+          // Crazy Arena Ship #2.5: forward `kind` and `abilityId`
+          // so the engine routes the cast through applyAbilityMove
+          // rather than treating it as a regular move from
+          // selectedSq -> square.
+          const movePayload = {
+            from: selectedSq,
+            to: square,
+            promotion: promo,
+            ...(target.kind ? { kind: target.kind } : {}),
+            ...(target.abilityId ? { abilityId: target.abilityId } : {}),
+          };
+          const ok = onMove(movePayload);
+          // For ability casts the chess.js sound preview won't
+          // recognize the move (chess.js doesn't know our
+          // primitives), so skip that preview - the engine plays
+          // the right sound through the normal flow.
+          if (ok && !target.kind) soundForMove(selectedSq, square, promo);
           setSelectedSq(null);
           setLegalTargets([]);
           if (ok) return;
@@ -258,7 +283,15 @@ export default function InteractiveBoard({
       const bg = isSqPremove ? PREMOVE_SQ : "rgba(255,255,255,0.35)";
       styles[selectedSq] = { ...(styles[selectedSq] || {}), backgroundColor: bg };
       for (const m of legalTargets) {
-        if (m.captured) {
+        if (m.kind === "ability") {
+          // Ship #2.5: ability targets get the red crosshair, not
+          // the standard dot. Captures inside an ability still get
+          // the slightly punchier capture variant.
+          styles[m.to] = {
+            ...(styles[m.to] || {}),
+            backgroundImage: m.captured ? ABILITY_TARGET_BG_CAPTURE : ABILITY_TARGET_BG,
+          };
+        } else if (m.captured) {
           styles[m.to] = { ...(styles[m.to] || {}), backgroundColor: CAPTURE_BG };
         } else {
           styles[m.to] = { ...(styles[m.to] || {}), backgroundImage: DOT };

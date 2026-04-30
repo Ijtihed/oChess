@@ -237,11 +237,37 @@ export async function updateRoom(roomId, patch) {
  * ply) returns ok=true without re-inserting, so a network retry
  * doesn't surface as a hard error to the user.
  */
-export async function appendMove({ roomId, round, ply, fen, move, roundState }) {
+export async function appendMove({ roomId, round, ply, fen, move, roundState, crazyState, stateAfter }) {
   if (!supabase) return { ok: false, error: "Online features not configured." };
   if (!roomId || !move?.from || !move?.to) return { ok: false, error: "Missing arguments." };
   if (!roundState) return { ok: false, error: "Missing roundState." };
+  // Crazy Arena Ship #2: when the move is an ability cast OR the
+  // room has a crazy_state sidecar, route through arena_apply_move_v2
+  // which accepts the new fields. Pure-vanilla moves keep using v1
+  // so we don't break in-flight clients during a partial rollout.
+  const usesV2 = move.kind === "ability" || crazyState != null || stateAfter != null;
   try {
+    if (usesV2) {
+      const { data, error } = await supabase.rpc("arena_apply_move_v2", {
+        p_room_id: roomId,
+        p_round: round,
+        p_ply: ply,
+        p_fen: fen,
+        p_move_from: move.from,
+        p_move_to: move.to,
+        p_promotion: move.promotion || null,
+        p_san: move.san || null,
+        p_round_state: roundState,
+        p_move_kind: move.kind || null,
+        p_ability_id: move.abilityId || null,
+        p_state_after: stateAfter || null,
+        p_crazy_state: crazyState || null,
+      });
+      if (error) return { ok: false, error: error.message };
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row?.ok) return { ok: false, error: row?.error || "Move rejected" };
+      return { ok: true, room: row.room || null };
+    }
     const { data, error } = await supabase.rpc("arena_apply_move", {
       p_room_id: roomId,
       p_round: round,
