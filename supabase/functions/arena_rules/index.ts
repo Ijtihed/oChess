@@ -289,13 +289,35 @@ PRIMITIVE COMPOSITION RULES:
 - target.offsets must NEVER include [0,0].
 - spawn requires target.requireEmpty=true; relocate_self typically does too (or requireEnemy=false to allow capturing-on-arrival).
 - aoe_wrap.inner must be one of the other six primitives.
-- Translate user prompts literally:
-  - "Knight bowls pawns" → knight ability targeting a friendly pawn (requireEnemy:false), effect: displace with onCollision:"destroy_collider".
-  - "Mind-control wizard" → bishop ability, effect: transform with color:"caster" and duration.
-  - "Frost mage" → queen ability, effect: aoe_wrap with inner mark{tag:"frost", skipTurns, duration}.
-  - "Necromancer raises pawns" → bishop ability targeting empty squares, effect: spawn with pieceType:"p".
-  - "Yeet the king" → any ability targeting enemy king, effect: displace with direction:"from_caster", distance:N.
-  - "Black hole queen" → queen ability targeting self, effect: aoe_wrap with inner displace toward_caster.
+
+ABILITY TARGETING DESIGN (CRITICAL - this is what makes abilities feel good):
+
+An ability is only INTERESTING if it can do something the piece's normal moves can't. Otherwise the user spends a charge on something they could've done for free by just moving.
+
+THE GOLDEN RULE: an ability's target shape MUST differ meaningfully from the caster's movement shape. A queen that already slides 8 directions should NOT have a "ranged capture" ability with queen-fan offsets - all those squares are already reachable by a regular move. Pick targeting that EXTENDS the piece's reach into squares it can't normally touch.
+
+Concretely:
+- For a QUEEN (already moves in 8 directions): ability offsets should include knight-jumps (1,2 / 2,1), longer leaps (3,1 / 1,3), or "through" patterns that ignore blockers between caster and target. NOT a queen-shaped fan.
+- For a BISHOP (diagonals only): orthogonal leaps and knight-jumps make abilities useful. NOT diagonal squares.
+- For a ROOK (orthogonals only): diagonal leaps and knight-jumps. NOT orthogonal rays.
+- For a KNIGHT (knight-jumps only): adjacent squares and 2-3 square orthogonals/diagonals. NOT knight-jumps again.
+- For a PAWN: anything beyond one square forward.
+
+NON-CAPTURE ABILITIES are MORE valuable than capture abilities for slide pieces (queens, rooks, bishops) because the slide piece can already capture via a normal move. Prefer mark/displace/transform/spawn for those. Capture abilities make sense for KNIGHTS and PAWNS (whose captures are constrained).
+
+Use kind:"ranged" or kind:"leap" with explicit offsets when you want to reach THROUGH friendly/enemy pieces (a frost mage freezes the king behind a pawn wall - that's the magic). Use kind:"slide" only when blocking lines of sight is part of the fantasy (a sniper shooting down a corridor).
+
+PROMPT INTERPRETATION GUIDE - translate verbs into primitives + targeting:
+- "Frost mage" / "freeze X" → mark with skipTurns. Target offsets should reach BEYOND normal move range so freezing a piece feels like a real spell. Range 3-5 in many directions is good. Often paired with aoe_wrap radius 1 for area-freeze.
+- "Knight bowls pawns" → knight ability targeting a friendly pawn (requireEnemy:false), effect: displace with onCollision:"destroy_collider".
+- "Mind-control wizard" / "charm X" → bishop ability, effect: transform with color:"caster" and duration. Offsets should include knight-jumps so the charmed piece is ONE you can't already reach.
+- "Necromancer raises pawns" → bishop ability targeting empty squares, effect: spawn with pieceType:"p".
+- "Yeet X" / "knockback" → ability targeting an enemy, effect: displace with direction:"from_caster", distance:3..7.
+- "Black hole" → ability targeting an empty square, effect: aoe_wrap with inner displace toward_caster.
+- "Sniper" / "ranged kill" → kind:"slide" with destroy effect. Slide IS the right shape here because line-of-sight is part of the sniper fantasy.
+- "Burn / curse / doom" → mark with destroyOnExpire and a 3-5 ply duration. Let the target see their fate and try to remove the caster.
+
+If the user prompts something the piece could already do via normal movement, ESCALATE the ability: extend the range, ignore blockers, hit multiple squares with aoe_wrap, or stack multiple primitives so it feels distinctly more powerful than just "another capture."
 
 Win condition objects (used inside "winConditions" array):
 - { "type": "checkmate" }
@@ -509,11 +531,11 @@ Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
     }
   }
 
-  "Frost mage" (aoe_wrap + mark with skipTurns):
+  "Frost mage" (aoe_wrap + mark with skipTurns - note offsets are KNIGHT-JUMPS and far leaps so freezing a piece reaches squares the queen can't simply slide to):
   {
     "extends": "vanilla",
     "name": "Frost Mage",
-    "description": "Queens cast a frost burst that freezes everyone in a 1-tile radius for 2 turns. Frozen pieces skip their owner's turns.",
+    "description": "Queens cast a frost burst at any enemy a knight-jump or two squares away. Everyone in a 1-tile radius around the target gets frozen for 2 turns.",
     "pieces": {
       "q": {
         "abilities": [
@@ -523,9 +545,9 @@ Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
             "target": {
               "kind": "ranged",
               "offsets": [
-                [1,0],[2,0],[3,0],[-1,0],[-2,0],[-3,0],
-                [0,1],[0,2],[0,3],[0,-1],[0,-2],[0,-3],
-                [1,1],[2,2],[1,-1],[2,-2],[-1,1],[-2,2],[-1,-1],[-2,-2]
+                [1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2],
+                [3,1],[1,3],[3,-1],[1,-3],[-1,-3],[-3,-1],[-3,1],[-1,3],
+                [3,2],[2,3],[3,-2],[2,-3],[-2,-3],[-3,-2],[-3,2],[-2,3]
               ]
             },
             "effect": {
