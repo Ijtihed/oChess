@@ -66,6 +66,14 @@ const RATE_LIMIT_MAX_CALLS = 10;
 interface ArenaRulesRequest {
   /** Natural-language description of the variant. */
   prompt?: string;
+  /**
+   * Optional hint added to the factory user-prompt. The client
+   * sends this on a verification-retry attempt: "previous
+   * response was structurally valid but failed the playability
+   * check; please fix THESE specific issues." Capped at 1KB so a
+   * malicious caller can't pad the prompt with garbage.
+   */
+  retryHint?: string;
 }
 
 interface ArenaRulesResponse {
@@ -290,67 +298,29 @@ PRIMITIVE COMPOSITION RULES:
 - spawn requires target.requireEmpty=true; relocate_self typically does too (or requireEnemy=false to allow capturing-on-arrival).
 - aoe_wrap.inner must be one of the other six primitives.
 
-ABILITY TARGETING DESIGN (CRITICAL - this is what makes abilities feel good):
+ABILITY TARGETING DESIGN:
 
-An ability is only INTERESTING if it can do something the piece's normal moves can't. The user spends a charge to do something different - not the same.
+A good ability does something the piece's normal moves can't. Pick targeting that makes the ability feel different - reach BEHIND blockers (kind:"ranged"/"leap" ignores them; kind:"slide" doesn't), apply an effect a normal capture can't (mark/transform/displace/spawn), or hit MULTIPLE pieces (aoe_wrap).
 
-What "different" actually means in chess:
-- Hit a piece BEHIND a blocker (the queen freezes the enemy queen even though there's a pawn in the way - kind:"ranged"/"leap" ignores blockers; kind:"slide" doesn't).
-- Hit a piece CASTER COULDN'T REACH IN ONE MOVE (a bishop charms a knight on an orthogonal square; a knight bolts something on an adjacent square).
-- Apply an effect a normal capture can't (freeze, transform, displace, spawn, mark - all of these are different from "remove the piece").
-- Hit MULTIPLE pieces (aoe_wrap).
+Targeting cheat sheet:
+- For abilities meant to reach the whole board (queen/rook/bishop "spell" abilities, sniper shots): prefer kind:"slide" with all relevant directions. Slide reaches the back rank automatically without hand-rolled offsets.
+- For abilities meant to hit through blockers: kind:"ranged" or kind:"leap" with offsets covering 1..7 squares in every direction (~30-60 offsets). Anything under 12 offsets is suspicious.
+- For abilities at fixed range like "knight bolt": kind:"leap" with the appropriate offsets.
 
-OFFSET DENSITY IS WHAT MAKES ABILITIES PLAYABLE.
+Server-side automation handles the worst common mistake (offsets that don't reach turn-1 enemies on the starting board): if your offsets can't reach an enemy in the first 4 plies, the engine extends them to a baseline queen-fan. So aim for the user's intent; you don't need to manually verify board geometry. But DO emit dense coverage when the user asks for "anywhere within N squares" - that's the user's intent and the engine respects it.
 
-The most common failure: the AI emits offsets at ONLY the maximum range (e.g. only [±4, ±N] for a "4-square fireball"). That ability is INVISIBLE at game start because there are no enemy pieces 4 squares from the queen on the starting board. The user clicks the queen, sees no red crosshairs, and the variant feels broken.
+PROMPT INTERPRETATION GUIDE:
+- "Frost mage / freeze X" → mark with skipTurns. Often paired with aoe_wrap radius 1 for area-freeze.
+- "Burn / curse / doom" → mark with destroyOnExpire and a 3-5 ply duration.
+- "Mind-control / charm" → transform with color:"caster" and duration:3..6.
+- "Necromancer / summon" → spawn with pieceType + lifespan, target.requireEmpty=true.
+- "Yeet / knockback / push" → displace with direction:"from_caster" or "toward_caster" and distance.
+- "Bowling X" → displace with onCollision:"destroy_collider" so the target plows through pieces.
+- "Sniper / long-range kill" → kind:"slide" with destroy effect (line-of-sight is part of the fantasy).
+- "Black hole" → aoe_wrap with inner displace toward_caster.
+- "Teleport / blink" → relocate_self with target.requireEmpty=true.
 
-ALWAYS include short-range AND medium-range offsets, not just the maximum. For a "4-square fireball": include offsets at distance 1, 2, 3, AND 4. Like this for orthogonals only:
-  [[1,0],[-1,0],[0,1],[0,-1],
-   [2,0],[-2,0],[0,2],[0,-2],
-   [3,0],[-3,0],[0,3],[0,-3],
-   [4,0],[-4,0],[0,4],[0,-4]]
-That's 16 offsets. Add diagonals (4 distances × 4 directions) and knight-jumps and you're at 20-32 offsets. THAT's a normal density. Anything under 12 offsets is suspicious - go denser.
-
-Rule of thumb: a ranged ability that says "X squares away" means "ANY square within X squares," not "exactly X squares." Emit a fan that fills the zone densely. Density is more important than which exact directions.
-
-DIFFERENTIATING FROM NORMAL MOVES (avoid pointless redundancy):
-- For a QUEEN: include knight-jump offsets ([1,2], [2,1], etc) since the queen can't make those normally. But ALSO include the slide directions at all distances - the value of an ability isn't "different shape" but "different EFFECT" (capture without moving, freeze, push, etc).
-- For a BISHOP: include orthogonal AND knight-jump offsets in addition to diagonals.
-- For a ROOK: include diagonal AND knight-jump offsets in addition to orthogonals.
-- For a KNIGHT: include adjacent squares (1-step orthogonals/diagonals).
-- For a PAWN: anywhere beyond a 1-step diagonal capture.
-
-NON-CAPTURE ABILITIES are MORE valuable than capture abilities for slide pieces (queens, rooks, bishops) because the slide piece can already capture via a normal move. Prefer mark/displace/transform/spawn for those. Capture abilities make sense for KNIGHTS and PAWNS (whose captures are constrained), AND for slide pieces when paired with AOE (so the ability hits MULTIPLE targets at once).
-
-Use kind:"ranged" or kind:"leap" with explicit offsets when you want to reach THROUGH friendly/enemy pieces (a frost mage freezes the king behind a pawn wall - that's the magic). Use kind:"slide" only when blocking lines of sight is part of the fantasy (a sniper shooting down a corridor).
-
-PROMPT INTERPRETATION GUIDE - translate verbs into primitives + targeting:
-- "Frost mage" / "freeze X" → mark with skipTurns. Target offsets should DENSELY cover squares within the stated range, NOT just the maximum range. Often paired with aoe_wrap radius 1 for area-freeze.
-- "Knight bowls pawns" → knight ability targeting a friendly pawn (requireEnemy:false), effect: displace with onCollision:"destroy_collider".
-- "Mind-control wizard" / "charm X" → bishop ability, effect: transform with color:"caster" and duration. Dense offset coverage so something is in range turn 1.
-- "Necromancer raises pawns" → bishop ability targeting empty squares, effect: spawn with pieceType:"p".
-- "Yeet X" / "knockback" → ability targeting an enemy, effect: displace with direction:"from_caster", distance:3..7.
-- "Black hole" → ability targeting an empty square, effect: aoe_wrap with inner displace toward_caster.
-- "Sniper" / "ranged kill" → kind:"slide" with destroy effect. Slide IS the right shape here because line-of-sight is part of the sniper fantasy.
-- "Burn / curse / doom" → mark with destroyOnExpire and a 3-5 ply duration. Let the target see their fate and try to remove the caster.
-
-REACHABILITY CHECK BEFORE YOU FINALIZE:
-
-Starting board geometry: white pieces sit on ranks 1-2, black on 7-8. The middle ranks 3-6 are EMPTY. A back-rank piece like the queen on d1 needs offsets with dr=5..7 to reach an enemy on turn 1. Anything with dr ≤ 4 (or |df+dr| < 5) cannot fire from the opening.
-
-This means:
-- "Fireball at 4 squares away" sounds reasonable but on a chess starting board it's almost useless - the queen can't reach a black piece 4 squares ahead. Either escalate the range to 5-7 OR use kind:"slide" with maxRange undefined (slide-shaped abilities that reach the back rank like a normal queen does).
-- For a back-rank piece (king/queen/rook/bishop on rank 1 or 8), prefer kind:"slide" with the full set of directions, OR explicit offsets with dr up to 7.
-- For a knight or pawn that starts closer to the middle, ranges of 2-4 are fine.
-- For long-range "spell" abilities, use kind:"slide" so the offsets are computed implicitly and reach the entire board within line-of-sight - this is the simplest way to guarantee reachability.
-
-When in doubt about reachability: prefer kind:"slide" for queens/rooks/bishops, kind:"leap" or kind:"ranged" with offsets covering up to 7 squares for all other pieces. Density of offsets matters but RANGE matters more - 12 offsets that reach rank 7 beat 32 offsets that stop at rank 4.
-
-If the user prompt says "any enemy" with NO explicit range cap, do NOT invent one. Default to kind:"slide" with all 8 directions (queen-shaped fan), or kind:"ranged" with offsets covering up to 7 squares in every direction. The user wanted broad reach; respect that.
-
-If the user does specify a range, like "4 squares away", interpret it as "anywhere within 4 squares" - but ALSO recognize that on a chess starting board, range ≤ 4 reaches into the empty middle ranks, not enemy pieces. If the user's prompt asks for a low range, you may extend it to 5-6 anyway with a note in the description ("...within 5 squares so the spell can reach the back rank") - playability beats literal compliance.
-
-After writing offsets, mentally trace from the piece's starting square: does ANY offset land on an enemy piece on the starting board? If no, the ability is invisible at game start - rewrite with longer reach.
+NON-CAPTURE ABILITIES are usually more interesting than capture abilities on slide pieces (queens, rooks, bishops) because the slide piece can already capture via a normal move. Prefer mark/displace/transform/spawn for those, or pair capture with AOE so it hits multiple targets.
 
 Win condition objects (used inside "winConditions" array):
 - { "type": "checkmate" }
@@ -653,7 +623,13 @@ Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
 
 Reply with ONLY a JSON object, no prose around it.`;
 
-function buildPrompt(prompt: string, validatorErrors?: string[], plannerVibe?: PlannerVibe, labMode: boolean = true): string {
+function buildPrompt(
+  prompt: string,
+  validatorErrors?: string[],
+  plannerVibe?: PlannerVibe,
+  labMode: boolean = true,
+  retryHint?: string,
+): string {
   const trimmed = (prompt || "").trim().slice(0, MAX_PROMPT_CHARS);
   let retryNote = "";
   if (validatorErrors?.length) {
@@ -671,19 +647,27 @@ Fix the errors and try again. Stay within the schema above; do not invent new fi
 `;
   }
   // Lab gate: outside the crazy-arena lab, only "destroy"/"capture"
-  // effects are available. The system prompt documents the full
-  // primitive set, but the user-context here tells Gemini to ignore
-  // everything except the basic shape so we don't waste retry
-  // budget on rejected responses.
+  // effects are available.
   let labNote = "";
   if (!labMode) {
     labNote = `\n\nIMPORTANT (Ship #1 lobby mode): the composable primitives (displace, relocate_self, spawn, transform, mark, aoe_wrap) are NOT available to this user. Use ONLY effect.kind = "destroy" (or its alias "capture"). Status effects, summons, displacement, charm, etc. are not selectable - if the user prompts for them, translate the intent into a thematically-named "destroy" ability with optional AOE. This is enforced by the server validator; ignoring it will fail the response.\n`;
+  }
+  // Verification-retry hint: the client passes this on the second
+  // attempt when a structurally-valid response failed playability.
+  // Gets the same "fix THIS specifically" weight as a structural
+  // validator retry, but the failure modes are different (the
+  // structural validator catches type errors; the playability
+  // verifier catches "ability is invisible at game start").
+  let hintNote = "";
+  if (retryHint && typeof retryHint === "string") {
+    const safe = retryHint.slice(0, 1000);
+    hintNote = `\n\n${safe}\n`;
   }
   return `User's variant description:
 """
 ${trimmed}
 """
-${plannerNote}${retryNote}${labNote}
+${plannerNote}${retryNote}${labNote}${hintNote}
 Produce a JSON rule diff matching the schema. ONLY the JSON object. No prose, no markdown fences.`;
 }
 
@@ -1710,7 +1694,7 @@ Deno.serve(async (req) => {
   // ── STEP 2: Variant Factory (structured rules JSON) ──
   // First attempt. Planner output is fed in as creative
   // context, not as instructions to copy verbatim.
-  const firstPrompt = buildPrompt(body.prompt, undefined, plannerVibe, labMode);
+  const firstPrompt = buildPrompt(body.prompt, undefined, plannerVibe, labMode, body.retryHint);
   const first = await callGemini(SYSTEM_PROMPT, firstPrompt, model);
   if (!first.ok) {
     return new Response(JSON.stringify({ ok: false, error: first.error || "AI call failed", model }), {
@@ -1736,7 +1720,7 @@ Deno.serve(async (req) => {
   // planner vibe stays the same on retry - only the structural
   // errors are new context.
   if (errors.length > 0) {
-    const retryPrompt = buildPrompt(body.prompt, errors, plannerVibe, labMode);
+    const retryPrompt = buildPrompt(body.prompt, errors, plannerVibe, labMode, body.retryHint);
     const second = await callGemini(SYSTEM_PROMPT, retryPrompt, model);
     if (second.ok) {
       if (second.inputTokens || second.outputTokens) {

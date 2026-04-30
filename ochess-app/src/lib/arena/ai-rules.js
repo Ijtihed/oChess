@@ -2,34 +2,56 @@
  * Client wrapper for the `arena_rules` Supabase Edge Function.
  *
  * Sends a free-form prompt and receives a structured rule diff
- * the engine can resolve. Layers on top of the server-side
- * validator a SECOND-PASS validation locally - the server does
- * static checks, the client runs the full validator including
- * 50-game simulation. Defense in depth: even if the server
- * deploy is somehow stale, bad rules won't reach the lobby.
+ * the engine can resolve. The pipeline is:
+ *
+ *   1. Pre-flight prompt sanity (cheap, no AI call).
+ *   2. Edge Function: planner → factory → structural validate.
+ *   3. Local: structural re-validation (defense in depth).
+ *   4. Local: BEHAVIORAL verification (verifyRules in
+ *      verification.js) - confirms abilities are reachable in
+ *      the opening, win conditions can fire, sim runs sanely.
+ *   5. Local: auto-repair (repair.js) for the deterministic
+ *      failure mode of "ability offsets too narrow." Re-verifies.
+ *   6. If verification still fails after auto-repair, ONE
+ *      Gemini retry where we feed the verifier errors back as
+ *      a hint ("previous attempt was rejected because ...").
+ *   7. If retry still fails, return a friendly error - the
+ *      variant isn't playable and a third attempt likely won't
+ *      help.
+ *
+ * The structural validator is the SECURITY boundary (no
+ * malformed JSON / unknown effect kinds reaches the engine);
+ * the behavioral verifier is the PLAYABILITY boundary (no
+ * variant where the AI's intent is invisible at game start).
  *
  * Errors are normalized into a single shape so the UI can
  * render them consistently:
  *
- *   { ok: false, error: "...", rateLimited?: bool, retryAfterSeconds?: number, validatorErrors?: string[] }
+ *   { ok: false, error: "...", rateLimited?: bool,
+ *     retryAfterSeconds?: number, validatorErrors?: string[] }
  *
  * Successful responses include the resolver-ready diff:
  *
- *   { ok: true, rules: { extends: "vanilla", ... }, summary?: "...", model?: "..." }
+ *   { ok: true, rules: {...}, summary?: "...", model?: "...",
+ *     repairs?: string[] // human-readable list of auto-fixes
+ *     applied to the AI's output }
  */
 
 import { supabase } from "../supabase";
 import { validateRules } from "./validator";
+import { verifyRules } from "./verification";
+import { repairRules } from "./repair";
 import { checkPromptSanity } from "./error-messages";
+
+// Verification budget. The Edge Function is a remote call, so we
+// can afford one retry with verifier-error feedback. Beyond that
+// we surface a friendly error rather than burn rate-limit tokens
+// on calls that keep failing.
+const MAX_VERIFICATION_RETRIES = 1;
 
 /**
  * Generate a rule diff from a natural-language prompt. Returns
  * a normalized result the lobby UI consumes directly.
- *
- * Crazy Arena Ship #1: the response also carries a `planner`
- * payload with three short prose fields describing the
- * variant's vibe. Optional - the field is undefined when the
- * planner step errored or was skipped server-side.
  *
  * @param {string} prompt
  * @returns {Promise<{
@@ -45,6 +67,7 @@ import { checkPromptSanity } from "./error-messages";
  *   maxCalls?: number,
  *   windowSeconds?: number,
  *   validatorErrors?: string[],
+ *   repairs?: string[],
  * }>}
  */
 export async function generateArenaRules(prompt) {
@@ -58,17 +81,70 @@ export async function generateArenaRules(prompt) {
     return { ok: false, error: promptError, promptInvalid: true };
   }
 
-  // Hard timeout - generationally Gemini is fast (< 5s) but a
-  // hung function shouldn't lock the UI.
+  // First attempt: plain prompt, no retry context.
+  let attempt = await runOneGenerationAttempt(prompt, null);
+  if (!attempt.ok) return attempt; // bail on rate-limit / network / structural errors
+
+  // Behavioral verification on the AI's output.
+  let verified = verifyAndRepair(attempt.rules);
+  if (verified.ok) {
+    return finalizeSuccess(attempt, verified);
+  }
+
+  // Verification failed even after auto-repair. Try ONE more
+  // Gemini call, this time feeding the verifier errors back
+  // as a hint so the model knows what to fix.
+  if (MAX_VERIFICATION_RETRIES > 0) {
+    const retryHint = buildVerificationRetryHint(verified.errors);
+    attempt = await runOneGenerationAttempt(prompt, retryHint);
+    if (!attempt.ok) return attempt;
+    verified = verifyAndRepair(attempt.rules);
+    if (verified.ok) {
+      return finalizeSuccess(attempt, verified);
+    }
+  }
+
+  // Still failing. Return a clear friendly error. The user can
+  // rephrase and try again.
+  return {
+    ok: false,
+    error: friendlyVerificationFailure(verified.errors),
+    validatorErrors: verified.errors,
+  };
+}
+
+// ── Single generation attempt ──────────────────────────────
+
+/**
+ * Make ONE call to the Edge Function with optional retry hint.
+ * Surfaces the structural validator's verdict as well as
+ * connection / rate-limit errors. Pure I/O - no behavioral
+ * verification here.
+ *
+ * @param {string} prompt
+ * @param {string|null} retryHint  Extra context for the AI when
+ *   we're asking it to fix a previous failed attempt.
+ * @returns {Promise<{ ok: boolean, rules?: object, ...meta }>}
+ */
+async function runOneGenerationAttempt(prompt, retryHint) {
   const timeoutMs = 30_000;
   const timeout = new Promise((resolve) =>
     setTimeout(() => resolve({ __timeout: true }), timeoutMs),
   );
 
+  // The Edge Function accepts an optional `retryHint` field. If
+  // present, it gets appended to the user-facing prompt before
+  // the factory call so Gemini sees the previous failure
+  // context. Backwards-compatible: older Edge Function deploys
+  // ignore unknown fields.
+  const body = retryHint
+    ? { prompt: prompt.trim(), retryHint }
+    : { prompt: prompt.trim() };
+
   let result;
   try {
     result = await Promise.race([
-      supabase.functions.invoke("arena_rules", { body: { prompt: prompt.trim() } }),
+      supabase.functions.invoke("arena_rules", { body }),
       timeout,
     ]);
   } catch (e) {
@@ -78,13 +154,9 @@ export async function generateArenaRules(prompt) {
     return { ok: false, error: "AI took too long. Try again." };
   }
   const { data, error } = result;
-  // supabase-js sometimes routes the response body through
-  // `error.context` even for 4xx with a parseable JSON body.
-  // Read both so we always get the structured payload.
   const errBody = await readErrorBody(error);
   const merged = data && typeof data === "object" ? data : errBody;
 
-  // Rate-limit branch.
   const rateData = merged && Number.isFinite(merged.retry_after_seconds) ? merged : null;
   const isRateLimited = error?.context?.status === 429 || (rateData && rateData.ok === false && rateData.retry_after_seconds);
   if (isRateLimited && rateData) {
@@ -113,15 +185,8 @@ export async function generateArenaRules(prompt) {
     return { ok: false, error: "AI returned malformed rules." };
   }
 
-  // Second-pass structural validation locally. The server does
-  // the same checks but a stale deployment shouldn't be the
-  // line of defense, so we re-run them here. NO simulation -
-  // random play is a noisy fairness signal that produces
-  // false rejections for perfectly playable variants (e.g.
-  // knight-queens) AND blocks the main thread for several
-  // seconds. Layer 3a's deterministic mobility check covers
-  // the real failure modes (one side has zero legal moves,
-  // mobility is catastrophically asymmetric).
+  // Local structural re-validation (defense in depth - protects
+  // against a stale Edge Function deploy that dropped a check).
   const localReport = validateRules(merged.rules);
   if (!localReport.valid) {
     return {
@@ -140,6 +205,95 @@ export async function generateArenaRules(prompt) {
     callsInWindow: Number(merged.rate_limit?.calls_in_window) || 0,
     maxCalls: Number(merged.rate_limit?.max_calls) || 0,
     windowSeconds: Number(merged.rate_limit?.window_seconds) || 0,
+  };
+}
+
+// ── Behavioral verification + auto-repair ─────────────────
+
+/**
+ * Run the behavioral verifier and, if it surfaces deterministic
+ * failures, apply auto-repair and re-verify. Returns the final
+ * (possibly repaired) rules + a list of any repairs we applied.
+ */
+function verifyAndRepair(rulesIn) {
+  // First pass: verify as-is.
+  let rules = rulesIn;
+  let report = verifyRules(rules);
+  let appliedRepairs = [];
+  if (report.ok) {
+    return { ok: true, rules, repairs: [], report };
+  }
+
+  // Second pass: auto-repair what we can, re-verify.
+  const { repaired, applied } = repairRules(rules, report);
+  if (applied.length > 0) {
+    rules = repaired;
+    appliedRepairs = applied;
+    report = verifyRules(rules);
+  }
+  if (report.ok) {
+    return { ok: true, rules, repairs: appliedRepairs, report };
+  }
+
+  return {
+    ok: false,
+    rules,
+    repairs: appliedRepairs,
+    errors: report.errors,
+    warnings: report.warnings,
+    report,
+  };
+}
+
+/**
+ * Build a hint string the Edge Function will pass to Gemini on
+ * the verification-retry path. We feed back the most actionable
+ * subset of the verifier errors (the model gets confused by
+ * dumping every internal field).
+ */
+function buildVerificationRetryHint(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) return null;
+  const lines = errors.slice(0, 4).map((e) => `  - ${e}`).join("\n");
+  return `The previous response was structurally valid but failed the playability check:\n${lines}\n\nPlease fix specifically these issues. Keep the variant's overall flavor and gating, just adjust offsets/ranges/win conditions so the abilities are USABLE FROM THE OPENING.`;
+}
+
+/**
+ * Translate verifier errors into a one-liner the user can act on.
+ * The internal messages are useful for the AI retry loop but too
+ * technical to dump on the user.
+ */
+function friendlyVerificationFailure(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return "AI couldn't produce a playable variant. Try rephrasing.";
+  }
+  // The most common case is "too narrow" abilities. Detect that
+  // and use a tailored message; fall back to a generic one.
+  const tooNarrow = errors.some((e) => /too narrow|unreachable/.test(e));
+  if (tooNarrow) {
+    return "The AI's variant produced abilities that aren't usable from the opening. Try rephrasing with broader range (e.g. 'reaches the back rank', 'long-range spell').";
+  }
+  const noTermination = errors.some((e) => /never terminate|loops forever/.test(e));
+  if (noTermination) {
+    return "The AI's variant doesn't produce games that end. Try rephrasing with a clearer win condition.";
+  }
+  return "AI couldn't produce a playable variant. Try rephrasing the prompt.";
+}
+
+/**
+ * Wrap a successful generate-and-verify result in the public
+ * response shape.
+ */
+function finalizeSuccess(attempt, verified) {
+  return {
+    ok: true,
+    rules: verified.rules,
+    summary: attempt.summary,
+    planner: attempt.planner,
+    model: attempt.model,
+    callsInWindow: attempt.callsInWindow,
+    maxCalls: attempt.maxCalls,
+    windowSeconds: attempt.windowSeconds,
+    repairs: verified.repairs || [],
   };
 }
 

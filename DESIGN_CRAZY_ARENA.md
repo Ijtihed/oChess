@@ -39,6 +39,107 @@ they are today. Everything in this doc is **additive** to that infra.
 - Per-user spend caps or paid tiers (yet). Free for everyone, hard global
   $200/month cap shared with `coach` is the day-1 monetization.
 
+## Defense in depth (the real architecture)
+
+After several rounds of "Gemini emits variants the user can't actually play"
+hard lessons, the design crystallized around **layered defenses, mostly engine-
+side**. The system prompt is no longer the only line of defense — it's just
+the first layer in a pipeline that ends with a programmatic verifier and
+deterministic auto-repair.
+
+```
+   ┌─────────────────────────────────┐
+   │ User prompt                     │
+   └────────────────┬────────────────┘
+                    │
+                    ▼
+   ┌─────────────────────────────────┐
+   │ Pre-flight prompt sanity check  │  CHEAP, no AI call
+   └────────────────┬────────────────┘
+                    │
+                    ▼
+   ┌─────────────────────────────────┐
+   │ STEP 1: Behaviour Planner       │  Gemini, ~500 tok out
+   │ (prose vibe; non-fatal)         │
+   └────────────────┬────────────────┘
+                    │
+                    ▼
+   ┌─────────────────────────────────┐
+   │ STEP 2: Variant Factory         │  Gemini, JSON schema
+   │ (rule diff w/ schema mode)      │
+   └────────────────┬────────────────┘
+                    │
+                    ▼
+   ┌─────────────────────────────────┐
+   │ Structural validator            │  PURE FUNCTION, server + client
+   │ (schema, types, ranges, AST)    │
+   │ ─ on fail: 1 Gemini retry       │
+   └────────────────┬────────────────┘
+                    │
+                    ▼
+   ┌─────────────────────────────────┐
+   │ Behavioural verifier (NEW)      │  PURE FUNCTION, runs the engine
+   │ (verification.js)               │
+   │ ─ ability reachability ≤4 plies │
+   │ ─ win-condition feasibility     │
+   │ ─ 8-game random-walk sim        │
+   └────────────────┬────────────────┘
+                    │ failed
+                    ▼
+   ┌─────────────────────────────────┐
+   │ Auto-repair (NEW)               │  PURE FUNCTION, no AI
+   │ (repair.js)                     │
+   │ ─ extend too-narrow offsets     │
+   │ ─ flip blockedByPieces=false    │
+   │ ─ remove maxRange caps          │
+   │ ─ re-verify                     │
+   └────────────────┬────────────────┘
+                    │ still failed
+                    ▼
+   ┌─────────────────────────────────┐
+   │ Repair-via-Gemini retry (NEW)   │  ONE Gemini call w/ verifier hint
+   │ ("previous attempt failed       │
+   │  because X; please fix that.")  │
+   └────────────────┬────────────────┘
+                    │ still failed
+                    ▼
+   ┌─────────────────────────────────┐
+   │ Friendly user error             │  "Try rephrasing your prompt."
+   └─────────────────────────────────┘
+```
+
+Why each layer exists:
+
+- The **system prompt** sets up the schema. It can't enforce playability —
+  the LLM doesn't have a chess board to verify against. So we keep the prompt
+  focused on the schema + a few worked examples, no hand-tuned fragile
+  geometry rules.
+- The **structural validator** catches malformed JSON, unknown effect kinds,
+  out-of-range parameters. Pure shape checks. The AI gets one retry with the
+  errors fed back.
+- The **behavioural verifier** runs the actual engine to confirm the variant
+  is PLAYABLE. Specifically: every declared ability must be reachable within
+  4 plies of legal play, win conditions must be satisfiable, and an 8-game
+  random simulation must show abilities firing. This is where we catch the
+  "AI emitted offsets that don't reach turn-1 enemies" failure that plagued
+  the early ship.
+- The **auto-repair pass** is deterministic. The most common failure
+  (offset coverage too narrow) has a programmatic fix: union the AI's offsets
+  with a baseline queen-fan + knight-jumps, flip `blockedByPieces=false` on
+  slide abilities so they reach through opening-rank pawns, drop tight
+  maxRange caps. No AI call, no extra tokens.
+- The **repair-via-Gemini retry** is the last AI call. We feed the verifier's
+  errors back as a focused hint so Gemini knows exactly what to fix. One
+  retry max — beyond that we save rate-limit tokens and surface a friendly
+  user error.
+
+Live-AI testing (see `__live-prompts.test.js`) shows this pipeline reaches
+**~90% playability** across a 20-prompt diverse adversarial set covering
+happy-path, edge cases, vague/gibberish prompts, prompts asking for engine-
+incompatible features, and adversarial / jailbreak attempts. Total cost per
+batch is ~$0.013 / €0.012, which makes it cheap enough to run as a CI
+regression gate before any prompt change.
+
 ## Architecture
 
 ```
