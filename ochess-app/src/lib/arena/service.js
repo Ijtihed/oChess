@@ -133,18 +133,30 @@ export async function getRoom(roomId) {
 /**
  * Claim a waiting room as the joiner. Only succeeds when the
  * row's `joiner_id` is NULL and the caller isn't the creator
- * (RLS enforces both, but we surface a clean error if the
- * UPDATE returns zero rows). Once both rules are stamped, the
- * room is moved to 'prompting' / further status states by
- * `updateRoom`.
+ * (RLS + the arena_rooms_guard_writes trigger enforce both;
+ * we surface a clean error if the UPDATE returns zero rows).
+ *
+ * In the same UPDATE we transition the status from
+ * `waiting_for_joiner` to `prompting` so the lobby UI's status
+ * pill reads correctly the moment both seats are filled.
  */
 export async function joinRoom({ roomId, joinerId, joinerName, rulesJoiner } = {}) {
   if (!supabase) return { ok: false, error: "Online features not configured." };
   if (!roomId || !joinerId) return { ok: false, error: "Missing arguments." };
+  // Plausibility check: display names should be non-empty short
+  // text. The DB trigger doesn't restrict length, so we clamp
+  // here to keep an accidental 4KB paste out of the row.
+  const cleanName = typeof joinerName === "string"
+    ? joinerName.trim().slice(0, 50) || null
+    : null;
   try {
     const updates = {
       joiner_id: joinerId,
-      joiner_name: joinerName || null,
+      joiner_name: cleanName,
+      // Bump status only when the prior value is the open seat.
+      // If the row already has `status = 'prompting'` (rare race
+      // with a subsequent rules write) we leave it alone.
+      status: "prompting",
       updated_at: new Date().toISOString(),
     };
     if (rulesJoiner) updates.rules_joiner = rulesJoiner;
@@ -152,6 +164,7 @@ export async function joinRoom({ roomId, joinerId, joinerName, rulesJoiner } = {
       .from("arena_rooms")
       .update(updates)
       .eq("id", roomId)
+      .eq("status", "waiting_for_joiner")
       .is("joiner_id", null)
       .neq("creator_id", joinerId)
       .select()
@@ -213,25 +226,72 @@ export async function updateRoom(roomId, patch) {
 }
 
 /**
- * Append a move to the round's move log. Called after each
- * confirmed 1v1 move so spectators / refreshes can replay.
+ * Append a move to the round's move log AND update the room's
+ * round_state (fen / plyCount / clock) atomically. Routed through
+ * the `arena_apply_move` SECURITY DEFINER RPC which holds a row-
+ * lock on arena_rooms for the duration of the transaction so
+ * concurrent move writes can't desync the move log from
+ * round_state.plyCount.
+ *
+ * Also idempotent: a duplicate call with the same (room, round,
+ * ply) returns ok=true without re-inserting, so a network retry
+ * doesn't surface as a hard error to the user.
  */
-export async function appendMove({ roomId, round, ply, fen, move }) {
+export async function appendMove({ roomId, round, ply, fen, move, roundState }) {
   if (!supabase) return { ok: false, error: "Online features not configured." };
   if (!roomId || !move?.from || !move?.to) return { ok: false, error: "Missing arguments." };
+  if (!roundState) return { ok: false, error: "Missing roundState." };
   try {
-    const { error } = await supabase.from("arena_moves").insert({
-      room_id: roomId,
-      round,
-      ply,
-      fen,
-      move_from: move.from,
-      move_to: move.to,
-      promotion: move.promotion || null,
-      san: move.san || null,
+    const { data, error } = await supabase.rpc("arena_apply_move", {
+      p_room_id: roomId,
+      p_round: round,
+      p_ply: ply,
+      p_fen: fen,
+      p_move_from: move.from,
+      p_move_to: move.to,
+      p_promotion: move.promotion || null,
+      p_san: move.san || null,
+      p_round_state: roundState,
     });
     if (error) return { ok: false, error: error.message };
-    return { ok: true };
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row?.ok) return { ok: false, error: row?.error || "Move rejected" };
+    return { ok: true, room: row.room || null };
+  } catch (e) {
+    return { ok: false, error: e?.message || "Unknown error" };
+  }
+}
+
+/**
+ * Atomically advance the room past a round end. Either both
+ * clients race to call this; the winner gets `applied=true` and
+ * is responsible for recording the round to the `games` table.
+ * The loser gets `applied=false` and skips the duplicate write,
+ * but still receives the latest room snapshot via `room`.
+ *
+ * @param {Object} args
+ * @param {string} args.roomId
+ * @param {string} args.roundLabel        "1" | "2" | "tiebreak"
+ * @param {Object} args.matchResult
+ * @param {Object} args.roundState
+ * @param {string} args.nextStatus
+ * @returns {Promise<{ ok: boolean, applied?: boolean, room?: Object, error?: string }>}
+ */
+export async function advanceRound({ roomId, roundLabel, matchResult, roundState, nextStatus }) {
+  if (!supabase) return { ok: false, error: "Online features not configured." };
+  if (!roomId) return { ok: false, error: "Missing room id." };
+  try {
+    const { data, error } = await supabase.rpc("arena_advance_round", {
+      p_room_id: roomId,
+      p_round_label: String(roundLabel),
+      p_match_result: matchResult,
+      p_round_state: roundState,
+      p_next_status: nextStatus,
+    });
+    if (error) return { ok: false, error: error.message };
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row?.ok) return { ok: false, error: row?.error || "Round advance rejected" };
+    return { ok: true, applied: !!row.applied, room: row.room || null };
   } catch (e) {
     return { ok: false, error: e?.message || "Unknown error" };
   }
@@ -383,8 +443,15 @@ function escapePgnTag(value) {
  * the lobby + session UI to react when the OTHER player's
  * actions land. Returns an unsubscribe function. Caller must
  * call it on unmount.
+ *
+ * @param {string} roomId
+ * @param {(row: Object) => void} onUpdate
+ * @param {(status: string) => void} [onStatus] Optional channel
+ *   status callback. Useful for the UI to back off polling /
+ *   surface a "reconnecting" toast. Common values: "SUBSCRIBED",
+ *   "CHANNEL_ERROR", "TIMED_OUT", "CLOSED".
  */
-export function subscribeRoom(roomId, onUpdate) {
+export function subscribeRoom(roomId, onUpdate, onStatus) {
   if (!supabase || !roomId) return () => {};
   const client = getRealtimeClient();
   if (!client) return () => {};
@@ -403,6 +470,7 @@ export function subscribeRoom(roomId, onUpdate) {
     )
     .subscribe((status) => {
       log(`arena_room_${roomId} channel:`, status);
+      try { onStatus?.(status); } catch (e) { logErr("subscribeRoom status callback threw:", e); }
     });
   return () => {
     try {

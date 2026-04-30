@@ -23,6 +23,7 @@ import {
   subscribeRoom,
   subscribeMoves,
   appendMove,
+  advanceRound,
   loadMoves,
   recordRoundGame,
   createRoom,
@@ -40,7 +41,7 @@ import { VANILLA_FEN } from "../lib/arena/schema";
 import { generateArenaRules, isAIRulesAvailable } from "../lib/arena/ai-rules";
 import { describeRules } from "../lib/arena/rule-preview";
 import { translateValidatorErrors } from "../lib/arena/error-messages";
-import { RulePreview } from "./ArenaPage";
+import RulePreview from "./RulePreview";
 import {
   colorFor,
   colorPairFor,
@@ -94,6 +95,11 @@ export default function ArenaRoom({ roomId }) {
   const [room, setRoom] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Realtime channel health. We start in "connecting" so the
+  // first SUBSCRIBED event flips us to healthy; if we never get
+  // SUBSCRIBED or we get CHANNEL_ERROR / TIMED_OUT, we fall
+  // back to fast polling AND surface a small reconnecting toast.
+  const [channelHealth, setChannelHealth] = useState("connecting");
 
   // Initial load + realtime subscription. The subscription is
   // cheap so we hold it open for the lifetime of the
@@ -114,35 +120,55 @@ export default function ArenaRoom({ roomId }) {
       setRoom(result.room);
       setLoading(false);
     })();
-    const unsub = subscribeRoom(roomId, (next) => {
-      if (cancelled) return;
-      setRoom((prev) => ({ ...(prev || {}), ...next }));
-    });
-    // Backup polling. Realtime is the primary sync path, but
-    // the channel can silently die (network blip, server-side
-    // hiccup, table accidentally not on the publication). A
-    // 5s poll guarantees the UI converges even if realtime
-    // stops delivering UPDATE events. Cheap (one row by id).
+    const unsub = subscribeRoom(
+      roomId,
+      (next) => {
+        if (cancelled) return;
+        setRoom((prev) => ({ ...(prev || {}), ...next }));
+      },
+      (status) => {
+        if (cancelled) return;
+        // Map Supabase realtime channel status into the three
+        // states the UI cares about: healthy (SUBSCRIBED),
+        // reconnecting (everything else that isn't terminal),
+        // or closed.
+        if (status === "SUBSCRIBED") setChannelHealth("healthy");
+        else if (status === "CLOSED") setChannelHealth("closed");
+        else setChannelHealth("reconnecting");
+      },
+    );
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
+  }, [roomId]);
+
+  // Adaptive backup polling. When realtime is healthy we poll
+  // sparingly (30s) just to recover from any silent message
+  // drop on long-lived rooms; when realtime is degraded we poll
+  // aggressively (5s) so the UI still converges. The previous
+  // version polled every 5s unconditionally, generating ~12
+  // reads per minute per client even when realtime was fine.
+  useEffect(() => {
+    if (!roomId) return undefined;
+    let cancelled = false;
+    const intervalMs = channelHealth === "healthy" ? 30_000 : 5_000;
     const poll = setInterval(async () => {
       if (cancelled) return;
       const r = await getRoom(roomId);
       if (cancelled || !r.ok || !r.room) return;
       setRoom((prev) => {
-        // Avoid React re-rendering when nothing changed. We
-        // compare updated_at since it's the canonical change
-        // marker on the row.
         if (prev?.updated_at === r.room.updated_at && prev?.status === r.room.status) {
           return prev;
         }
         return { ...(prev || {}), ...r.room };
       });
-    }, 5000);
+    }, intervalMs);
     return () => {
       cancelled = true;
       clearInterval(poll);
-      unsub?.();
     };
-  }, [roomId]);
+  }, [roomId, channelHealth]);
 
   // Refetch on tab focus / visibility return. If the user
   // switched tabs or backgrounded the browser long enough for
@@ -201,6 +227,7 @@ export default function ArenaRoom({ roomId }) {
     return (
       <div className="flex">
         <div className="flex-1 min-w-0">
+          <ChannelHealthToast health={channelHealth} />
           <RoomBody
             room={room}
             setRoom={setRoom}
@@ -216,6 +243,7 @@ export default function ArenaRoom({ roomId }) {
   return (
     <div className="flex">
       <div className="flex-1 min-w-0 max-w-[1400px] xl:max-w-[1500px] 2xl:max-w-[1600px] mx-auto px-4 sm:px-6 md:px-10 py-6 sm:py-10 min-h-[calc(100dvh-4rem)]">
+        <ChannelHealthToast health={channelHealth} />
         <header className="anim-fade-up mb-3 sm:mb-5" style={{ "--delay": "0.05s" }}>
           <button onClick={() => navigate("/arena")}
             className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-primary transition-colors flex items-center gap-1 mb-1">
@@ -228,7 +256,7 @@ export default function ArenaRoom({ roomId }) {
             Arena room
           </h1>
           <p className="text-[12px] text-on-surface-variant/55 mt-1">
-            Share the URL with your opponent &middot; status: <span className="text-on-surface-variant/85 font-bold">{room.status}</span>
+            Share the URL with your opponent &middot; status: <span className="text-on-surface-variant/85 font-bold">{formatRoomStatusInline(room.status)}</span>
           </p>
         </header>
 
@@ -243,6 +271,43 @@ export default function ArenaRoom({ roomId }) {
       <SocialPanel />
     </div>
   );
+}
+
+/**
+ * Tiny fixed-bottom toast that surfaces realtime-channel issues.
+ * Hidden when the channel is healthy. The poll fallback already
+ * keeps the UI working - this is just so users understand when
+ * "wait, why is the opponent's move taking so long?" is actually
+ * just a flaky connection on their side.
+ */
+function ChannelHealthToast({ health }) {
+  if (health === "healthy" || health === "connecting") return null;
+  const label = health === "closed" ? "Disconnected" : "Reconnecting\u2026";
+  return (
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 bg-amber-500/15 border border-amber-500/30 text-amber-200 text-[11px] font-headline font-bold uppercase tracking-widest shadow-lg">
+      {label}
+    </div>
+  );
+}
+
+/**
+ * Human-readable room status. Mirrors the lobby formatter in
+ * ArenaPage so the header pill doesn't show raw enum values
+ * like "warmup_round_1".
+ */
+function formatRoomStatusInline(status) {
+  switch (status) {
+    case "waiting_for_joiner": return "Waiting for opponent";
+    case "prompting": return "Picking rules";
+    case "warmup_round_1": return "Warmup \u00b7 round 1";
+    case "warmup_round_2": return "Warmup \u00b7 round 2";
+    case "round_1": return "Round 1";
+    case "round_2": return "Round 2";
+    case "tiebreak": return "Tie-break";
+    case "done": return "Match complete";
+    case "abandoned": return "Abandoned";
+    default: return status;
+  }
 }
 
 // ── Body dispatch ──────────────────────────────────────────
@@ -445,18 +510,50 @@ function Lobby({ room, setRoom, role, user, roomId }) {
   // creator's commit-on-create flow but happens here in the
   // lobby because the joiner doesn't pick rules until they've
   // landed in the room.
+  //
+  // Status decision uses ONLY the truthiness of rules_creator on
+  // the latest room snapshot, never the pre-merge state. The
+  // previous version pushed status=prompting whenever joiner_id
+  // was set, which on a normally-set-up room kept it stuck at
+  // 'prompting' even when the creator's rules were missing - the
+  // dead-end branch in RuleSummary then showed the "weren't
+  // saved correctly" copy with no recovery affordance.
   const onCommitJoinerRules = useCallback(async (rules) => {
     const patch = { rules_joiner: rules };
-    const next = { ...room, ...patch };
-    let nextStatus = room.status;
-    if (next.rules_creator && next.rules_joiner) nextStatus = "warmup_round_1";
-    else if (next.joiner_id) nextStatus = "prompting";
-    if (nextStatus !== room.status) patch.status = nextStatus;
+    // Only advance to warmup if the room ALREADY has
+    // rules_creator stamped. We never invent a status that
+    // would skip the creator's rules.
+    if (room.rules_creator) {
+      patch.status = "warmup_round_1";
+    } else if (room.status === "waiting_for_joiner") {
+      // Defensive: shouldn't happen post-fix to joinRoom (which
+      // bumps to prompting on join), but if we somehow arrive
+      // here with the open-seat status, normalize it.
+      patch.status = "prompting";
+    }
     const result = await updateRoom(roomId, patch);
     if (result?.ok && result.room) {
       setRoom?.((prev) => ({ ...(prev || {}), ...result.room }));
     }
-  }, [room, roomId, setRoom]);
+  }, [room.rules_creator, room.status, roomId, setRoom]);
+
+  // Recovery path for the creator if rules_creator never made
+  // it onto the row. Same handler shape as
+  // onCommitJoinerRules but writes the creator's slot. Will
+  // also advance to warmup if the joiner's rules are already
+  // committed.
+  const onCommitCreatorRules = useCallback(async (rules) => {
+    const patch = { rules_creator: rules };
+    if (room.rules_joiner) {
+      patch.status = "warmup_round_1";
+    } else if (room.joiner_id && room.status === "waiting_for_joiner") {
+      patch.status = "prompting";
+    }
+    const result = await updateRoom(roomId, patch);
+    if (result?.ok && result.room) {
+      setRoom?.((prev) => ({ ...(prev || {}), ...result.room }));
+    }
+  }, [room.rules_joiner, room.joiner_id, room.status, roomId, setRoom]);
 
   // Creator-only: cancel the room and bounce back to /arena.
   // Only allowed while no joiner has claimed the second seat;
@@ -495,13 +592,15 @@ function Lobby({ room, setRoom, role, user, roomId }) {
           ) : role === "joiner" ? (
             <JoinerRulePrompt onCommit={onCommitJoinerRules} />
           ) : (
-            // Creator's rules are committed at room-creation
-            // time, so this branch only fires if the creator
-            // somehow lands here without rules. Show a stub
-            // with a back link.
-            <p className="text-[12px] text-on-surface-variant/45">
-              Your rules weren&apos;t saved correctly. Cancel the room and create a new one.
-            </p>
+            // Creator's rules are normally committed at room-
+            // creation time, so this branch only fires if the
+            // creator landed here without rules (rare: the
+            // INSERT succeeded but rules_creator was null because
+            // a stale realtime payload overwrote it, or a bad
+            // initial deploy). Surface the same prompt panel the
+            // joiner uses so the creator can recover without
+            // having to cancel + re-create the room.
+            <JoinerRulePrompt onCommit={onCommitCreatorRules} />
           )}
         </div>
 
@@ -552,6 +651,30 @@ function Lobby({ room, setRoom, role, user, roomId }) {
           </p>
         </div>
 
+        {/* Color assignment hint. The orchestrator pairs the
+            rule designer with Black so the opponent gets the
+            slight first-move advantage to compensate for the
+            designer knowing their own variant. Surface that
+            here so players don't get a surprise when round 1
+            starts. */}
+        <div className="p-5 bg-surface-low border border-white/[0.04] space-y-1.5">
+          <h3 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+            Round colors
+          </h3>
+          <p className="text-[11px] text-on-surface-variant/65 leading-snug">
+            <span className="text-on-surface-variant/40">Round 1:</span> you play{" "}
+            <span className="text-on-surface-variant/85 font-bold">{role === "creator" ? "Black" : "White"}</span>
+            {role === "creator" && <span className="text-on-surface-variant/35"> (you wrote the rules)</span>}
+          </p>
+          <p className="text-[11px] text-on-surface-variant/65 leading-snug">
+            <span className="text-on-surface-variant/40">Round 2:</span> you play{" "}
+            <span className="text-on-surface-variant/85 font-bold">{role === "creator" ? "White" : "Black"}</span>
+          </p>
+          <p className="text-[10px] text-on-surface-variant/35 leading-snug pt-0.5">
+            Tie-break (if 1-1) plays vanilla chess at 1+0.
+          </p>
+        </div>
+
         {/* Cancel-room: creator-only, only available while no
             opponent has claimed the second seat. Two-step
             confirm matches the destructive-action pattern used
@@ -560,7 +683,7 @@ function Lobby({ room, setRoom, role, user, roomId }) {
           <div className="p-4 bg-surface-low border border-white/[0.04] space-y-2">
             <button onClick={onCancel}
               disabled={cancelPending}
-              title={confirmCancel ? "Tap again to permanently cancel this room" : "Cancel this room"}
+              title={confirmCancel ? "Tap to permanently cancel this room" : "Cancel this room"}
               className={`w-full px-3 py-2 font-headline text-[10px] font-bold uppercase tracking-widest border transition-colors ${
                 confirmCancel
                   ? "bg-error/15 border-error/30 text-error animate-pulse"
@@ -569,7 +692,7 @@ function Lobby({ room, setRoom, role, user, roomId }) {
               {cancelPending
                 ? "Loading\u2026 cancelling"
                 : confirmCancel
-                  ? "Tap again to cancel"
+                  ? "Tap to confirm"
                   : "Cancel room"}
             </button>
             {cancelError && (
@@ -1472,23 +1595,30 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
       ts: new Date().toISOString(),
     }]));
 
-    // ── DB writes in the background ──
-    // Fire-and-forget. The room realtime update from
-    // updateRoom will replace localPosition once it lands.
-    // appendMove still needs to resolve before round-end
-    // PGN reconstruction, so we await the BACKGROUND task
-    // chain inside the same async handler the round-end
-    // effect can observe (the `lastWriteRef` promise).
+    // ── DB write in the background ──
+    // Single atomic RPC: arena_apply_move inserts the move row
+    // AND updates round_state in one transaction. If it fails
+    // (network blip / row-lock contention), the realtime push
+    // from a peer's future move OR a manual refetch will
+    // rectify. lastWriteRef chains to the round-end effect so
+    // PGN reconstruction sees the final move.
     const writePromise = (async () => {
       try {
-        await appendMove({ roomId, round, ply, fen: nextRoundState.fen, move: { ...move, san: lastHistory?.san } });
-        const update = await updateRoom(roomId, { round_state: nextRoundState });
-        if (update?.ok && update.room && setRoom) {
-          setRoom((prev) => ({ ...(prev || {}), ...update.room }));
+        const result = await appendMove({
+          roomId,
+          round,
+          ply,
+          fen: nextRoundState.fen,
+          move: { ...move, san: lastHistory?.san },
+          roundState: nextRoundState,
+        });
+        if (result?.ok && result.room && setRoom) {
+          setRoom((prev) => ({ ...(prev || {}), ...result.room }));
+        } else if (!result?.ok) {
+          // eslint-disable-next-line no-console
+          console.warn("arena/onUserMove rejected:", result?.error);
         }
       } catch (e) {
-        // Network glitch - the realtime push from a peer's
-        // future move OR a manual refetch will rectify.
         // eslint-disable-next-line no-console
         console.warn("arena/onUserMove writes failed:", e);
       }
@@ -1504,14 +1634,23 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   // Premove auto-trigger. Runs whenever the position changes
   // (opponent moved → it became my turn). If a premove is
   // queued and still legal in the new position, fire it.
+  //
+  // Cheap pre-check before the (expensive on variant rules)
+  // full move generation: bail out fast when the queued piece
+  // is no longer on its `from` square or has changed color.
+  // This skips the full `generateLegalMoves` pass on the
+  // common case of "the opponent captured my premove piece".
   useEffect(() => {
     if (gameStatus.ended) return;
     const queued = premoveRef.current;
     if (!queued) return;
     if (position.turn !== myColor) return;
-    // Validate legality under the live variant rules. If the
-    // piece moved or the destination is now blocked the move
-    // applyMove call will throw and we silently drop.
+    const piece = position.pieceAt(queued.from);
+    if (!piece || piece.color !== myColor) {
+      setPremove(null);
+      premoveRef.current = null;
+      return;
+    }
     let stillLegal = false;
     try {
       const candidates = generateLegalMoves(position, rules);
@@ -1677,19 +1816,22 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
           endedAt: new Date().toISOString(),
         };
       }
-      const result = await updateRoom(roomId, {
-        match_result: finalMatch,
-        round_state: nextRoundState,
-        status: nextStatus,
+      const result = await advanceRound({
+        roomId,
+        roundLabel,
+        matchResult: finalMatch,
+        roundState: nextRoundState,
+        nextStatus,
       });
       if (result?.ok && result.room && setRoom) {
         setRoom((prev) => ({ ...(prev || {}), ...result.room }));
       }
-      // Persist the round to the games table for profile
-      // history. Fire-and-forget; failure here doesn't block
-      // the match flow. Skipped if we don't have full identity
-      // info (e.g. partial DB row).
-      if (room.creator_id && room.joiner_id) {
+      // Only the client whose write was actually applied (i.e.
+      // won the row-lock race) records the round to the games
+      // table. The losing client's `applied` is false, and we
+      // skip recordRoundGame entirely - this prevents the
+      // duplicate-rows-per-round bug where both peers wrote.
+      if (result?.applied && room.creator_id && room.joiner_id) {
         const creatorInfo = { id: room.creator_id, name: room.creator_name, color: colorPair.creator };
         const joinerInfo  = { id: room.joiner_id,  name: room.joiner_name,  color: colorPair.joiner };
         const pgnLines = (await loadMoves(roomId, roundLabel === "tiebreak" ? 99 : roundLabel)).moves || [];
@@ -1809,10 +1951,12 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
         clock: pauseClock(room.round_state?.clock),
         endedAt: new Date().toISOString(),
       };
-      const result = await updateRoom(roomId, {
-        match_result: finalMatch,
-        round_state,
-        status: nextStatus,
+      const result = await advanceRound({
+        roomId,
+        roundLabel,
+        matchResult: finalMatch,
+        roundState: round_state,
+        nextStatus,
       });
       if (!result?.ok) {
         setResignError(result?.error || "Couldn't resign.");
@@ -1906,10 +2050,12 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
       clock: pauseClock(room.round_state?.clock),
       endedAt: new Date().toISOString(),
     };
-    const result = await updateRoom(roomId, {
-      match_result: finalMatch,
-      round_state,
-      status: nextStatus,
+    const result = await advanceRound({
+      roomId,
+      roundLabel,
+      matchResult: finalMatch,
+      roundState: round_state,
+      nextStatus,
     });
     if (!result?.ok) {
       advanceRoundEndedRef.current = false;
@@ -2557,10 +2703,66 @@ function MatchResults({ room, setRoom, role, user }) {
   const oppRole = role === "creator" ? "joiner" : "creator";
   const oppName = role === "creator" ? room.joiner_name : room.creator_name;
 
-  // Play-again with role swap: previous joiner becomes new
-  // creator. Each side opts in from the results screen; first
-  // to click creates the new room and writes its id back into
-  // the old room so the OTHER side can follow.
+  // Play-again with role swap. The previous JOINER becomes the
+  // new CREATOR (so rules-design rotation is fair across
+  // matches). The flow:
+  //
+  //   1. Either side clicks "Play again" -> writes
+  //      round_state.playAgainOptIn.<role> = true.
+  //   2. Once BOTH sides have opted in, the previous joiner's
+  //      client creates a new arena_rooms row, stamps the
+  //      previous creator as the joiner, and writes
+  //      next_room_id on the old room so the previous creator's
+  //      client can follow.
+  //   3. Both sides land on the new lobby. The new creator
+  //      designs Round 1's rules; the new joiner designs
+  //      Round 2's rules (same flow as a fresh match).
+  //
+  // The previous version created the new room as soon as the
+  // joiner clicked, even if the creator hadn't opted in. That
+  // leaves an orphan if the creator never opts in. The new
+  // version waits for both, so cancel-by-leaving-the-tab works.
+  const myOptIn = !!(room.round_state?.playAgainOptIn || {})[role];
+  const oppOptInRole = role === "creator" ? "joiner" : "creator";
+  const oppOptIn = !!(room.round_state?.playAgainOptIn || {})[oppOptInRole];
+
+  // Single side-effect to materialize the rematch room once
+  // both sides have opted in. Only the previous-joiner's client
+  // does the create (otherwise we'd race and produce two rooms).
+  // Idempotent on next_room_id so a re-render doesn't double-
+  // create.
+  const rematchInFlightRef = useRef(false);
+  useEffect(() => {
+    if (room.next_room_id) return;
+    if (!myOptIn || !oppOptIn) return;
+    if (role !== "joiner") return;
+    if (rematchInFlightRef.current) return;
+    rematchInFlightRef.current = true;
+    (async () => {
+      try {
+        const created = await createRoom({
+          creatorId: user.id,
+          creatorName: user.name || null,
+        });
+        if (!created.ok || !created.room) {
+          setError(created.error || "Couldn't create the rematch room.");
+          rematchInFlightRef.current = false;
+          return;
+        }
+        // Link the rooms. The previous creator's client picks
+        // up `next_room_id` via realtime + the navigate effect
+        // below and lands on the new room. They claim the
+        // joiner seat through the normal ClaimJoinerSeat flow
+        // (which the arena_rooms_guard_writes trigger allows
+        // because new.joiner_id = the claiming user's auth.uid()).
+        await updateRoom(room.id, { next_room_id: created.room.id });
+      } catch (e) {
+        setError(e?.message || "Couldn't create the rematch room.");
+        rematchInFlightRef.current = false;
+      }
+    })();
+  }, [myOptIn, oppOptIn, room.next_room_id, role, user, room.id]);
+
   const onPlayAgain = useCallback(async () => {
     if (room.next_room_id) {
       navigate(`/arena/${room.next_room_id}`);
@@ -2568,43 +2770,26 @@ function MatchResults({ room, setRoom, role, user }) {
     }
     setPendingPlayAgain(true);
     setError(null);
-    // Determine new creator: previous JOINER. If I am the
-    // joiner, I create. Otherwise I wait for the joiner to
-    // create + write next_room_id.
-    if (role !== "joiner") {
-      // Just sit and wait - polling + realtime will pick up
-      // the new room id when the joiner clicks Play again.
-      setPendingPlayAgain(false);
-      const updateResult = await updateRoom(room.id, { round_state: { ...(room.round_state || {}), playAgainOptIn: { ...(room.round_state?.playAgainOptIn || {}), [role]: true } } });
+    try {
+      const round_state = {
+        ...(room.round_state || {}),
+        playAgainOptIn: {
+          ...(room.round_state?.playAgainOptIn || {}),
+          [role]: true,
+        },
+      };
+      const updateResult = await updateRoom(room.id, { round_state });
       if (updateResult?.ok && updateResult.room && setRoom) {
         setRoom((prev) => ({ ...(prev || {}), ...updateResult.room }));
+      } else if (!updateResult?.ok) {
+        setError(updateResult?.error || "Couldn't opt in to rematch.");
       }
-      return;
-    }
-    const created = await createRoom({
-      creatorId: user.id,
-      creatorName: user.name || null,
-    });
-    if (!created.ok || !created.room) {
+    } finally {
       setPendingPlayAgain(false);
-      setError(created.error || "Couldn't create the rematch room.");
-      return;
     }
-    // Stamp the previous creator as the new joiner up front
-    // so they don't have to claim a seat.
-    await updateRoom(created.room.id, {
-      joiner_id: room.creator_id,
-      joiner_name: room.creator_name,
-    });
-    // Link the rooms so the previous creator can follow.
-    await updateRoom(room.id, { next_room_id: created.room.id });
-    setPendingPlayAgain(false);
-    navigate(`/arena/${created.room.id}`);
-  }, [room, role, user, navigate, setRoom]);
+  }, [room, role, navigate, setRoom]);
 
-  // The waiting-for-other-side state. If I opted in but the
-  // other side hasn't created yet, show waiting copy. If
-  // next_room_id appears, navigate there.
+  // Once next_room_id materializes, navigate both sides over.
   useEffect(() => {
     if (room.next_room_id) {
       navigate(`/arena/${room.next_room_id}`);
@@ -2649,18 +2834,23 @@ function MatchResults({ room, setRoom, role, user }) {
 
       <div className="flex flex-wrap gap-2">
         <button onClick={onPlayAgain}
-          disabled={pendingPlayAgain}
+          disabled={pendingPlayAgain || myOptIn}
           className="btn btn-primary px-5 py-2 text-xs">
           {pendingPlayAgain
-            ? "Loading\u2026 setting up rematch"
-            : role === "joiner"
-              ? "Play again"
-              : ((room.round_state?.playAgainOptIn || {})[role] ? "Waiting on opponent\u2026" : "Play again")}
+            ? "Loading\u2026 opting in"
+            : myOptIn
+              ? (oppOptIn ? "Loading\u2026 starting rematch" : "Waiting on opponent\u2026")
+              : "Play again"}
         </button>
         <button onClick={() => navigate("/arena")} className="btn btn-secondary px-5 py-2 text-xs">
           Back to Arena
         </button>
       </div>
+      {oppOptIn && !myOptIn && (
+        <p className="text-[12px] text-primary/65">
+          {oppName || "Opponent"} wants a rematch.
+        </p>
+      )}
       {error && (
         <p className="text-[12px] text-error">{error}</p>
       )}

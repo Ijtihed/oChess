@@ -9,14 +9,16 @@ import { resolveRules } from "../lib/arena/rules";
 import { describeRules } from "../lib/arena/rule-preview";
 import { translateValidatorErrors } from "../lib/arena/error-messages";
 import ArenaRoom from "./ArenaRoom";
+import RulePreview from "./RulePreview";
 
 /**
  * ArenaPage - landing for the AI Arena route.
  *
  * Without a roomId, lands on the create-or-join screen:
- *   - Create: pick a rule preset, click Create. New room id
- *     gets pushed to the URL (/arena/<roomId>) and the share
- *     link is copied to clipboard.
+ *   - Create: describe a variant, generate AI rules, then
+ *     click Create. New room id gets pushed to the URL
+ *     (/arena/<roomId>) and the share link is copied to the
+ *     clipboard so the user can paste it straight into a DM.
  *   - Join: paste a share link or room id, click Join. Routes
  *     to /arena/<roomId>.
  *
@@ -171,6 +173,8 @@ function formatRoomStatus(status) {
     case "round_1": return "Round 1 in progress";
     case "round_2": return "Round 2 in progress";
     case "tiebreak": return "Tie-break";
+    case "done": return "Match complete";
+    case "abandoned": return "Abandoned";
     default: return status;
   }
 }
@@ -256,6 +260,17 @@ function CreatePanel({ user, navigate }) {
         setError(result.error || "Couldn't create the room.");
         return;
       }
+      // Auto-copy the share link so the user can paste it
+      // straight into a DM without having to fish around the
+      // lobby. Best-effort - clipboard is unavailable in
+      // insecure contexts, in which case the lobby's input +
+      // copy button takes over.
+      try {
+        if (typeof navigator !== "undefined" && navigator.clipboard) {
+          const url = `${window.location.origin}/arena/${result.room.id}`;
+          await navigator.clipboard.writeText(url);
+        }
+      } catch { /* ignore */ }
       navigate(`/arena/${result.room.id}`);
     } catch (e) {
       setError(e?.message || "Couldn't create the room.");
@@ -443,53 +458,6 @@ function FriendlyValidatorErrors({ errors }) {
     </div>
   );
 }
-
-function RulePreview({ description, model }) {
-  if (!description) return null;
-  return (
-    <div className="px-3 py-3 bg-surface-container border border-primary/20 space-y-2">
-      <div className="flex items-baseline justify-between gap-3 flex-wrap">
-        <span className="font-headline text-[13px] font-bold text-primary">
-          {description.name || "Custom rules"}
-        </span>
-        {model && (
-          <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30">
-            {model}
-          </span>
-        )}
-      </div>
-      {description.description && (
-        <p className="text-[12px] text-on-surface-variant/65 leading-relaxed">
-          {description.description}
-        </p>
-      )}
-      {description.changes.length > 0 && (
-        <ul className="text-[11px] text-on-surface-variant/65 leading-snug space-y-0.5">
-          {description.changes.slice(0, 8).map((c, i) => (
-            <li key={i} className="flex gap-2">
-              <span className="text-primary/60 shrink-0">&middot;</span>
-              <span>{c.detail}</span>
-            </li>
-          ))}
-          {description.changes.length > 8 && (
-            <li className="text-on-surface-variant/35">
-              &hellip; and {description.changes.length - 8} more
-            </li>
-          )}
-        </ul>
-      )}
-      {description.changes.length === 0 && (
-        <p className="text-[11px] text-on-surface-variant/40 italic">
-          No changes from standard chess.
-        </p>
-      )}
-    </div>
-  );
-}
-
-// Export for use in the room lobby (joiner's prompt panel
-// re-mounts the same UX inside ArenaRoom).
-export { RulePreview };
 
 // ── Join flow ──────────────────────────────────────────────
 

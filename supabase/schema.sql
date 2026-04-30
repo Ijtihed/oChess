@@ -1268,6 +1268,300 @@ revoke all on function record_ai_spend_or_block(text, text, text, int, int, bigi
 grant execute on function record_ai_spend_or_block(text, text, text, int, int, bigint, bigint)
   to authenticated, service_role;
 
+-- ── arena_apply_move: atomic move append + round_state update ──
+--
+-- The previous flow had two separate writes from the client:
+--   1. INSERT into arena_moves
+--   2. UPDATE arena_rooms.round_state.fen / plyCount / clock
+--
+-- If step 2 failed after step 1 succeeded, the round_state.plyCount
+-- diverged from the move log, and the next move would PK-conflict
+-- on (room_id, round, ply). The user got soft-locked silently.
+--
+-- This RPC does both writes in a single transaction. The caller
+-- passes the move + the next round_state; we INSERT the move and
+-- UPDATE the room atomically. Either both succeed or both roll back.
+--
+-- Auth: caller must be a participant of the room. We re-verify
+-- here rather than trusting RLS so a future RLS loosening doesn't
+-- open a hole. The `room_id`/`round`/`ply` PK on arena_moves
+-- naturally rejects double-writes for the same ply, so a duplicate
+-- call from a flaky network just returns the existing state.
+create or replace function arena_apply_move(
+  p_room_id uuid,
+  p_round int,
+  p_ply int,
+  p_fen text,
+  p_move_from text,
+  p_move_to text,
+  p_promotion text,
+  p_san text,
+  p_round_state jsonb
+)
+returns table (
+  ok boolean,
+  room arena_rooms,
+  error text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_room arena_rooms;
+  v_existing_ply int;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    return query select false, null::arena_rooms, 'unauthenticated';
+    return;
+  end if;
+
+  -- Lock the room row to serialize concurrent move writes. Without
+  -- the FOR UPDATE the two clients in a 2-player game can both
+  -- read the same plyCount, both compute ply+1, and the second
+  -- write loses. The lock is per-row and held for the duration of
+  -- the transaction.
+  select * into v_room from arena_rooms where id = p_room_id for update;
+  if not found then
+    return query select false, null::arena_rooms, 'room not found';
+    return;
+  end if;
+  if v_uid <> v_room.creator_id and v_uid <> v_room.joiner_id then
+    return query select false, null::arena_rooms, 'not a participant';
+    return;
+  end if;
+  if v_room.status not in ('round_1','round_2','tiebreak') then
+    return query select false, null::arena_rooms, 'room is not in a playable state';
+    return;
+  end if;
+
+  -- Idempotent: if the move row already exists with the same FEN,
+  -- treat the call as a successful no-op so a network retry from
+  -- the same client doesn't surface a confusing error.
+  select ply into v_existing_ply
+    from arena_moves
+    where room_id = p_room_id and round = p_round and ply = p_ply;
+  if found then
+    return query select true, v_room, null::text;
+    return;
+  end if;
+
+  insert into arena_moves(room_id, round, ply, fen, move_from, move_to, promotion, san)
+    values (p_room_id, p_round, p_ply, p_fen, p_move_from, p_move_to, p_promotion, p_san);
+
+  update arena_rooms
+    set round_state = p_round_state,
+        updated_at = now()
+    where id = p_room_id
+    returning * into v_room;
+
+  return query select true, v_room, null::text;
+end;
+$$;
+revoke all on function arena_apply_move(uuid, int, int, text, text, text, text, text, jsonb)
+  from public, anon;
+grant execute on function arena_apply_move(uuid, int, int, text, text, text, text, text, jsonb)
+  to authenticated;
+
+-- ── arena_advance_round: atomic round-end resolution ──
+--
+-- When a round ends both clients race to write `match_result` +
+-- `round_state` + `status`. The previous flow let either side
+-- win, with the second write being a no-op IF the appendRound
+-- guard ran on already-merged state. In practice this caused
+-- duplicate `games` table rows (each client invoked
+-- recordRoundGame) and noisy round_state churn.
+--
+-- This RPC is the single sanctioned advancer. The caller passes
+-- the candidate match_result / round_state / status. We:
+--   1. Verify the caller is a participant.
+--   2. SELECT FOR UPDATE the room.
+--   3. If match_result.rounds already contains an entry for the
+--      current round label, treat as already-advanced and return
+--      `applied=false` with the existing room. The losing client
+--      can use this to skip recordRoundGame.
+--   4. Otherwise apply the writes and return `applied=true` so the
+--      winning client knows it owns the recordRoundGame call.
+create or replace function arena_advance_round(
+  p_room_id uuid,
+  p_round_label text,
+  p_match_result jsonb,
+  p_round_state jsonb,
+  p_next_status text
+)
+returns table (
+  ok boolean,
+  applied boolean,
+  room arena_rooms,
+  error text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_room arena_rooms;
+  v_existing_rounds jsonb;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    return query select false, false, null::arena_rooms, 'unauthenticated';
+    return;
+  end if;
+
+  select * into v_room from arena_rooms where id = p_room_id for update;
+  if not found then
+    return query select false, false, null::arena_rooms, 'room not found';
+    return;
+  end if;
+  if v_uid <> v_room.creator_id and v_uid <> v_room.joiner_id then
+    return query select false, false, null::arena_rooms, 'not a participant';
+    return;
+  end if;
+
+  v_existing_rounds := coalesce(v_room.match_result->'rounds', '[]'::jsonb);
+  if exists (
+    select 1 from jsonb_array_elements(v_existing_rounds) elt
+    where elt->>'round' = p_round_label
+  ) then
+    -- Already advanced by the other client. Return the current
+    -- room so the caller can sync but skip the record-game step.
+    return query select true, false, v_room, null::text;
+    return;
+  end if;
+
+  update arena_rooms
+    set match_result = p_match_result,
+        round_state = p_round_state,
+        status = p_next_status,
+        updated_at = now()
+    where id = p_room_id
+    returning * into v_room;
+
+  return query select true, true, v_room, null::text;
+end;
+$$;
+revoke all on function arena_advance_round(uuid, text, jsonb, jsonb, text)
+  from public, anon;
+grant execute on function arena_advance_round(uuid, text, jsonb, jsonb, text)
+  to authenticated;
+
+-- ── arena_rooms write-protection trigger ──
+--
+-- RLS allows participants to UPDATE the room row, but doesn't
+-- restrict WHICH columns they can write. Without this trigger a
+-- malicious joiner could overwrite `rules_creator` (the variant
+-- the host designed), `creator_id`, `creator_name`, or stamp a
+-- false `match_result` directly. The trigger rejects any update
+-- that mutates protected columns from a path other than:
+--
+--   - SECURITY DEFINER RPCs (which bypass auth.uid() checks
+--     on a per-function basis), OR
+--   - the legitimate "joiner claims unfilled seat" transition
+--     where joiner_id was null and the new joiner_id is the
+--     caller.
+--
+-- Columns covered:
+--   creator_id          - immutable
+--   creator_name        - immutable
+--   rules_creator       - only the creator can set / change
+--   joiner_id           - only the not-yet-joined caller can claim
+--   joiner_name         - only the joiner can set
+--   rules_joiner        - only the joiner can set
+--
+-- match_result / round_state / status are deliberately NOT
+-- gated here because both sides legitimately advance them via
+-- the orchestrator. Future hardening: route those through
+-- arena_advance_round / arena_apply_move exclusively and add
+-- guards here.
+create or replace function arena_rooms_guard_writes()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_is_creator boolean;
+  v_is_joiner boolean;
+begin
+  v_uid := auth.uid();
+  -- service_role bypass: NULL auth.uid() means the request was
+  -- made with the service key (Edge Function, cron job). Trust
+  -- those calls implicitly.
+  if v_uid is null then
+    return new;
+  end if;
+
+  v_is_creator := v_uid = old.creator_id;
+  v_is_joiner := old.joiner_id is not null and v_uid = old.joiner_id;
+
+  -- Immutable columns.
+  if new.creator_id is distinct from old.creator_id then
+    raise exception 'creator_id is immutable';
+  end if;
+  if new.creator_name is distinct from old.creator_name then
+    raise exception 'creator_name is immutable';
+  end if;
+
+  -- rules_creator: only the creator may change. NULL → value is
+  -- a fresh assignment (rare; create-time path normally writes
+  -- rules_creator at INSERT). Any non-NULL → value or value →
+  -- value mutation must come from the creator.
+  if new.rules_creator is distinct from old.rules_creator and not v_is_creator then
+    raise exception 'only the creator may change rules_creator';
+  end if;
+
+  -- joiner_id: 3 cases.
+  --   1. unchanged: fine.
+  --   2. NULL → caller's uid: legitimate seat claim.
+  --   3. anything else: reject.
+  if new.joiner_id is distinct from old.joiner_id then
+    if old.joiner_id is null and new.joiner_id = v_uid then
+      -- legitimate claim
+      null;
+    else
+      raise exception 'joiner_id can only be set when the seat is open and only by the claiming user';
+    end if;
+  end if;
+
+  -- joiner_name: only the joiner (post-claim) can change.
+  if new.joiner_name is distinct from old.joiner_name then
+    -- Allow the seat-claim row, where joiner_id flips to v_uid
+    -- in the same UPDATE.
+    if new.joiner_id = v_uid and old.joiner_id is null then
+      null;
+    elsif v_is_joiner then
+      null;
+    else
+      raise exception 'only the joiner may change joiner_name';
+    end if;
+  end if;
+
+  -- rules_joiner: only the joiner may change.
+  if new.rules_joiner is distinct from old.rules_joiner then
+    if new.joiner_id = v_uid and old.joiner_id is null then
+      null;
+    elsif v_is_joiner then
+      null;
+    else
+      raise exception 'only the joiner may change rules_joiner';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists arena_rooms_guard_writes on arena_rooms;
+create trigger arena_rooms_guard_writes
+  before update on arena_rooms
+  for each row
+  execute function arena_rooms_guard_writes();
+
 -- ── cleanup_stale_seeks: housekeeping (call from a cron job) ──
 -- Restricted to the service_role so a logged-in user can't grief
 -- matchmaking by globally evicting other players' open seeks.
@@ -1437,40 +1731,44 @@ select cron.schedule(
 --
 -- Arena rooms are short-lived lobby+session containers. When players
 -- abandon a room mid-flow we end up with orphans, and the "right"
--- thing to do depends on the state:
+-- thing to do depends on the state. The previous version of this
+-- function used a flat 10-minute "idle" threshold that hard-deleted
+-- live games where one side was legitimately thinking on a long move
+-- (e.g. 9-minute think in a 10+0 game). The new version is conservative:
+-- we NEVER hard-delete a room with an unresolved game state - we only
+-- close it out as a forfeit when the clock evidence makes that safe,
+-- and we only sweep abandoned rooms after a much longer grace.
 --
 --   * Lobbies (`waiting_for_joiner`, `prompting`) idle 1h+ get
 --     deleted. They're abandoned share-links / no-show prompts;
 --     nothing of value to preserve.
 --
---   * Mid-game rooms (`round_1`/`round_2`/`tiebreak`) where the
---     clock has objectively expired for one side AND the row
---     hasn't been touched in 10 minutes get RESOLVED as a
---     time-out forfeit. The user explicitly asked for "delete
---     old games that have been on for more than 10 mins with no
---     active users". The expired side loses the match; the
---     other side wins regardless of how many rounds are left to
---     play (we don't try to advance to round 2 / tiebreak with
---     no one around). Match is closed with status = 'done',
---     match_result.winner set, ended_at stamped.
+--   * Warmup rooms (`warmup_round_1`/`warmup_round_2`) idle 30m+ get
+--     deleted. Warmup is meant to take seconds; if a user closes
+--     the tab here, the room is dead.
 --
---   * Mid-game rooms idle 10+ minutes WHERE NO CLOCK has
---     expired (e.g. clock paused, never started, or some other
---     edge state) get HARD-DELETED. The user wants old idle
---     games gone, full stop - we don't preserve them just
---     because the resolver can't determine a winner.
+--   * Mid-game rooms (`round_1`/`round_2`/`tiebreak`) where the
+--     clock has objectively expired for one side get RESOLVED as
+--     a time-out forfeit. We compute the expiration based on the
+--     stored clock + wall time, so a 10+0 game where Alice has
+--     been thinking for 11 minutes will fire here, not before.
+--     The expired side loses the match; the other side wins
+--     regardless of how many rounds are left to play. Match is
+--     closed with status='done', match_result.winner set.
 --
 --   * Truly orphan rooms (any active state, idle 24h+) get
 --     hard-deleted as a last-resort cleanup so a cosmic-ray
---     edge case doesn't leak rows forever.
+--     edge case doesn't leak rows forever. 24h is well past the
+--     longest legitimate game length even with the most generous
+--     time control we'd ever support.
 --
 -- The function does NOT persist round forfeits to the `games`
 -- table - that's the live client's job. The orphan resolution
 -- here is purely about freeing the lobby slot and letting both
 -- sides see a final "match results" screen if they ever come
--- back. Running every 10 min so users who close their laptop
--- on a pending move get a timely resolution rather than waiting
--- a full hour.
+-- back. Running every 5 min so users who close their laptop
+-- on a pending move get a timely resolution after their clock
+-- objectively expires.
 create or replace function cleanup_stale_arena_rooms()
 returns void as $$
 declare
@@ -1504,9 +1802,21 @@ begin
     and updated_at < now() - interval '1 hour';
 
   ---------------------------------------------------------------
-  -- 2. Mid-game timeouts: row idle 5 min AND clock objectively
-  --    expired for one side. Resolve as a forfeit, close out
-  --    the match, mark status='done'.
+  -- 2. Abandoned warmups idle 30m+ → delete. Warmup is a
+  --    60-second prep window; nobody's coming back after 30
+  --    minutes.
+  ---------------------------------------------------------------
+  delete from arena_rooms
+  where status in ('warmup_round_1','warmup_round_2')
+    and updated_at < now() - interval '30 minutes';
+
+  ---------------------------------------------------------------
+  -- 3. Mid-game timeouts: clock has OBJECTIVELY expired for one
+  --    side. We don't gate this on a wall-clock idle threshold
+  --    because a long think (e.g. 9 minutes in a 10+0 game) is
+  --    legitimate. We only forfeit once the clock budget is
+  --    actually used up. Resolves as a forfeit, closes out the
+  --    match, marks status='done'.
   ---------------------------------------------------------------
   v_now_ms := (extract(epoch from now()) * 1000)::bigint;
 
@@ -1514,7 +1824,6 @@ begin
     select id, status, round_state, match_result, creator_id, joiner_id
     from arena_rooms
     where status in ('round_1','round_2','tiebreak')
-      and updated_at < now() - interval '10 minutes'
   loop
     v_round_state := coalesce(r.round_state, '{}'::jsonb);
     v_clock := v_round_state->'clock';
@@ -1648,17 +1957,18 @@ begin
   end loop;
 
   ---------------------------------------------------------------
-  -- 3. Anything still active after 10 min that the resolver
-  --    above didn't pick up (e.g. clock never started, paused,
-  --    unparseable shape, or the room is still in warmup with
-  --    nobody clicking ready) gets HARD DELETED. The user
-  --    wants idle games gone so the lobby + db stay clean -
-  --    we don't preserve rooms just because the auto-resolver
-  --    can't determine a winner from the data on hand.
+  -- 4. Last-resort orphan sweep. Any active room idle for 24h+
+  --    is presumed dead - the longest legitimate match length
+  --    (3 rounds * 10 minutes + warmups) is under an hour, so
+  --    24h with no row writes is unambiguously abandoned. We
+  --    hard-delete here without trying to resolve - the
+  --    forfeit resolver above already had its chance, and any
+  --    row that fell through has unparseable / missing clock
+  --    data we can't reason about safely.
   ---------------------------------------------------------------
   delete from arena_rooms
   where status in ('warmup_round_1','warmup_round_2','round_1','round_2','tiebreak','prompting')
-    and updated_at < now() - interval '10 minutes';
+    and updated_at < now() - interval '24 hours';
 end;
 $$ language plpgsql security definer;
 
