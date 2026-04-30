@@ -154,8 +154,11 @@ export async function joinRoom({ roomId, joinerId, joinerName, rulesJoiner } = {
       joiner_id: joinerId,
       joiner_name: cleanName,
       // Bump status only when the prior value is the open seat.
-      // If the row already has `status = 'prompting'` (rare race
-      // with a subsequent rules write) we leave it alone.
+      // If the row already has `status = 'prompting'` (creator
+      // generated rules at create time, so createRoom inserted
+      // with status=prompting upfront) we leave it alone - the
+      // seat is still claimable, the lobby just skips the
+      // "creator picks rules" sub-state.
       status: "prompting",
       updated_at: new Date().toISOString(),
     };
@@ -164,7 +167,13 @@ export async function joinRoom({ roomId, joinerId, joinerName, rulesJoiner } = {
       .from("arena_rooms")
       .update(updates)
       .eq("id", roomId)
-      .eq("status", "waiting_for_joiner")
+      // Either the room is still waiting for a joiner, OR the
+      // creator already locked their rules (status=prompting)
+      // and the seat is still empty. Both are valid claim
+      // states. The joiner_id IS NULL guard is what actually
+      // prevents double-claims; the status filter is just
+      // belt-and-suspenders against advancing past lobby.
+      .in("status", ["waiting_for_joiner", "prompting"])
       .is("joiner_id", null)
       .neq("creator_id", joinerId)
       .select()
