@@ -253,6 +253,15 @@ function validateStructure(rules, errors, warnings) {
         }
       }
     }
+
+    // Active abilities (AI Arena Ship #1+). Each ability is an
+    // active-cast effect: instead of moving, the piece spends a
+    // charge / starts a cooldown to apply an effect at a target
+    // square. Optional - vanilla and pre-Ship-#1 variants don't
+    // set this.
+    if (spec.abilities !== undefined) {
+      validatePieceAbilities(`pieces.${pt}.abilities`, spec.abilities, errors, warnings);
+    }
   }
 
   // Win conditions.
@@ -291,6 +300,321 @@ function validateStructure(rules, errors, warnings) {
   // Ply cap sanity.
   if (!Number.isFinite(rules.maxPlies) || rules.maxPlies < 10 || rules.maxPlies > 2000) {
     errors.push("maxPlies must be 10..2000");
+  }
+}
+
+// ── Active-ability structural validation (AI Arena) ─────────
+
+const KNOWN_ABILITY_TARGET_KINDS = new Set(["ranged", "leap", "slide"]);
+// Ship #2: seven composable effect primitives. "capture" is the Ship #1
+// alias for "destroy" - kept for backward compat with already-saved
+// variants.
+const KNOWN_ABILITY_EFFECT_KINDS = new Set([
+  "capture", "destroy", "displace", "relocate_self",
+  "spawn", "transform", "mark", "aoe_wrap",
+]);
+const KNOWN_INTENSITIES = new Set(["brief", "medium", "dramatic"]);
+const ABILITY_ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const TAG_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const SPAWNABLE_PIECE_TYPES = new Set(["p", "n", "b", "r", "q"]);
+const ALL_PIECE_TYPES = new Set(["p", "n", "b", "r", "q", "k"]);
+
+/**
+ * Validate the `abilities` array on a piece spec. Every check
+ * here also runs server-side (the Edge Function mirrors this
+ * logic to keep parity), but the client validator is the
+ * authoritative defense against a stale Edge Function deploy.
+ */
+function validatePieceAbilities(pathPrefix, abilities, errors, warnings) {
+  if (!Array.isArray(abilities)) {
+    errors.push(`${pathPrefix} must be an array`);
+    return;
+  }
+  if (abilities.length > 8) {
+    errors.push(`${pathPrefix} caps at 8 abilities per piece (got ${abilities.length})`);
+  }
+  const seenIds = new Set();
+  for (let i = 0; i < abilities.length; i++) {
+    const ab = abilities[i];
+    const path = `${pathPrefix}[${i}]`;
+    if (!ab || typeof ab !== "object" || Array.isArray(ab)) {
+      errors.push(`${path} must be an object`);
+      continue;
+    }
+    if (typeof ab.id !== "string" || !ABILITY_ID_RE.test(ab.id)) {
+      errors.push(`${path}.id must be lowercase letters/digits/underscores, 1-32 chars (got ${JSON.stringify(ab.id)})`);
+    } else if (seenIds.has(ab.id)) {
+      errors.push(`${path}.id "${ab.id}" is duplicated within the same piece`);
+    } else {
+      seenIds.add(ab.id);
+    }
+    if (ab.label !== undefined && typeof ab.label !== "string") {
+      errors.push(`${path}.label must be a string when set`);
+    }
+    if (ab.intensity !== undefined && !KNOWN_INTENSITIES.has(ab.intensity)) {
+      errors.push(`${path}.intensity must be one of ${[...KNOWN_INTENSITIES].join("/")} when set`);
+    }
+
+    // Target.
+    const tgt = ab.target;
+    if (!tgt || typeof tgt !== "object") {
+      errors.push(`${path}.target is required and must be an object`);
+    } else if (!KNOWN_ABILITY_TARGET_KINDS.has(tgt.kind)) {
+      errors.push(`${path}.target.kind "${tgt.kind}" is unknown (must be ranged/leap/slide)`);
+    } else if (tgt.kind === "ranged" || tgt.kind === "leap") {
+      if (!Array.isArray(tgt.offsets) || tgt.offsets.length === 0) {
+        errors.push(`${path}.target.offsets must be a non-empty array for kind=${tgt.kind}`);
+      } else if (tgt.offsets.length > 64) {
+        errors.push(`${path}.target.offsets caps at 64 entries (got ${tgt.offsets.length})`);
+      } else {
+        for (let j = 0; j < tgt.offsets.length; j++) {
+          const off = tgt.offsets[j];
+          if (!Array.isArray(off) || off.length !== 2 || !Number.isFinite(off[0]) || !Number.isFinite(off[1])) {
+            errors.push(`${path}.target.offsets[${j}] must be a [df,dr] tuple of finite numbers`);
+          } else if (off[0] === 0 && off[1] === 0) {
+            errors.push(`${path}.target.offsets[${j}] is [0,0] - cannot target your own square`);
+          }
+        }
+      }
+    } else if (tgt.kind === "slide") {
+      if (!Array.isArray(tgt.dirs) || tgt.dirs.length === 0) {
+        errors.push(`${path}.target.dirs must be a non-empty array for kind=slide`);
+      } else {
+        for (let j = 0; j < tgt.dirs.length; j++) {
+          const d = tgt.dirs[j];
+          if (!Array.isArray(d) || d.length !== 2 || !Number.isFinite(d[0]) || !Number.isFinite(d[1])) {
+            errors.push(`${path}.target.dirs[${j}] must be a [df,dr] tuple of finite numbers`);
+          } else if (d[0] === 0 && d[1] === 0) {
+            errors.push(`${path}.target.dirs[${j}] is [0,0] - zero-vector direction loops forever`);
+          }
+        }
+      }
+      if (tgt.maxRange !== undefined) {
+        if (!Number.isFinite(tgt.maxRange) || tgt.maxRange < 1 || tgt.maxRange > 8) {
+          errors.push(`${path}.target.maxRange must be 1..8 when set`);
+        }
+      }
+    }
+
+    // Effect (Ship #2: composable primitive validation).
+    if (!ab.effect || typeof ab.effect !== "object") {
+      errors.push(`${path}.effect is required and must be an object`);
+    } else {
+      validateEffectPrimitive(`${path}.effect`, ab.effect, errors, /*nested*/ false);
+    }
+
+    // Gating.
+    if (ab.gating !== undefined) {
+      if (!ab.gating || typeof ab.gating !== "object") {
+        errors.push(`${path}.gating must be an object when set`);
+      } else {
+        if (ab.gating.charges !== undefined) {
+          if (!Number.isFinite(ab.gating.charges) || ab.gating.charges < 1 || ab.gating.charges > 99) {
+            errors.push(`${path}.gating.charges must be 1..99 when set`);
+          }
+        }
+        if (ab.gating.cooldownPlies !== undefined) {
+          if (!Number.isFinite(ab.gating.cooldownPlies) || ab.gating.cooldownPlies < 1 || ab.gating.cooldownPlies > 20) {
+            errors.push(`${path}.gating.cooldownPlies must be 1..20 when set`);
+          }
+        }
+        if (ab.gating.startsOnCooldown !== undefined && typeof ab.gating.startsOnCooldown !== "boolean") {
+          errors.push(`${path}.gating.startsOnCooldown must be a boolean when set`);
+        }
+      }
+    } else {
+      // Soft warning: ungated abilities can be balanced ("free
+      // fireball every turn from any pawn") but they're easy to
+      // misuse. The critic catches the truly broken cases via
+      // simulation; this just nudges the AI toward sensible
+      // gating during retry.
+      warnings.push(`${pathPrefix}[${i}].gating is unset - ability "${ab.id}" has unlimited uses with no cooldown`);
+    }
+  }
+}
+
+/**
+ * Validate a composable effect primitive (Ship #2).
+ *
+ * `nested` is true when this primitive is INSIDE an `aoe_wrap.inner`,
+ * which forbids further nesting (no AOE-of-AOE) and forbids ability-level
+ * concerns like AOE radius on an `aoe_wrap` at the top level.
+ *
+ * Mirror of the same logic in supabase/functions/arena_rules/index.ts -
+ * any rule we add here MUST also land in the server validator.
+ */
+function validateEffectPrimitive(path, eff, errors, nested) {
+  if (!eff || typeof eff !== "object") {
+    errors.push(`${path}: must be an object`);
+    return;
+  }
+  if (!KNOWN_ABILITY_EFFECT_KINDS.has(eff.kind)) {
+    errors.push(`${path}.kind "${eff.kind}" is unknown (must be one of ${[...KNOWN_ABILITY_EFFECT_KINDS].join("/")})`);
+    return;
+  }
+
+  // Per-primitive rules.
+  if (eff.kind === "destroy" || eff.kind === "capture") {
+    // Optional AOE for back-compat with Ship #1's
+    // { kind: "capture", aoe: {...} }. New variants should use
+    // aoe_wrap+destroy instead, but we still accept the legacy
+    // shape.
+    if (eff.aoe !== undefined) {
+      if (!eff.aoe || typeof eff.aoe !== "object") {
+        errors.push(`${path}.aoe must be an object when set`);
+      } else {
+        if (eff.aoe.radius !== undefined && (!Number.isFinite(eff.aoe.radius) || eff.aoe.radius < 0 || eff.aoe.radius > 3)) {
+          errors.push(`${path}.aoe.radius must be 0..3 when set`);
+        }
+        if (eff.aoe.hitsPawns !== undefined && typeof eff.aoe.hitsPawns !== "boolean") {
+          errors.push(`${path}.aoe.hitsPawns must be a boolean when set`);
+        }
+        if (eff.aoe.hitsFriendly !== undefined && typeof eff.aoe.hitsFriendly !== "boolean") {
+          errors.push(`${path}.aoe.hitsFriendly must be a boolean when set`);
+        }
+      }
+    }
+    return;
+  }
+
+  if (eff.kind === "displace") {
+    const hasDelta = Array.isArray(eff.delta);
+    const hasDir = typeof eff.direction === "string";
+    if (!hasDelta && !hasDir) {
+      errors.push(`${path} must specify either 'delta' or 'direction'+'distance'`);
+    }
+    if (hasDelta) {
+      if (eff.delta.length !== 2 || !Number.isFinite(eff.delta[0]) || !Number.isFinite(eff.delta[1])) {
+        errors.push(`${path}.delta must be a [df,dr] tuple of finite numbers`);
+      } else if (eff.delta[0] === 0 && eff.delta[1] === 0) {
+        errors.push(`${path}.delta is [0,0] - displace must move the target somewhere`);
+      } else if (Math.abs(eff.delta[0]) > 7 || Math.abs(eff.delta[1]) > 7) {
+        errors.push(`${path}.delta components must be -7..7`);
+      }
+    }
+    if (hasDir) {
+      const validDirs = ["from_caster", "toward_caster", "toward_target_from_origin"];
+      if (!validDirs.includes(eff.direction)) {
+        errors.push(`${path}.direction must be one of ${validDirs.join("/")}`);
+      }
+      if (!Number.isFinite(eff.distance) || eff.distance < 1 || eff.distance > 7) {
+        errors.push(`${path}.distance must be 1..7 when direction is set`);
+      }
+    }
+    if (eff.onCollision !== undefined) {
+      const validCollision = ["stop", "destroy_target", "destroy_collider", "destroy_both"];
+      if (!validCollision.includes(eff.onCollision)) {
+        errors.push(`${path}.onCollision must be one of ${validCollision.join("/")}`);
+      }
+    }
+    if (eff.bounceOffEdge !== undefined && typeof eff.bounceOffEdge !== "boolean") {
+      errors.push(`${path}.bounceOffEdge must be a boolean when set`);
+    }
+    return;
+  }
+
+  if (eff.kind === "relocate_self") {
+    if (eff.destination !== undefined) {
+      const valid = ["target", "adjacent_to_target", "caster_origin"];
+      if (!valid.includes(eff.destination)) {
+        errors.push(`${path}.destination must be one of ${valid.join("/")} when set`);
+      }
+    }
+    return;
+  }
+
+  if (eff.kind === "spawn") {
+    if (typeof eff.pieceType !== "string" || !SPAWNABLE_PIECE_TYPES.has(eff.pieceType)) {
+      errors.push(`${path}.pieceType must be one of ${[...SPAWNABLE_PIECE_TYPES].join("/")} (kings can't be spawned)`);
+    }
+    if (eff.color !== undefined && eff.color !== "caster" && eff.color !== "enemy") {
+      errors.push(`${path}.color must be 'caster' or 'enemy' when set`);
+    }
+    if (eff.lifespan !== undefined) {
+      if (!Number.isFinite(eff.lifespan) || eff.lifespan < 1 || eff.lifespan > 30) {
+        errors.push(`${path}.lifespan must be 1..30 when set`);
+      }
+    }
+    return;
+  }
+
+  if (eff.kind === "transform") {
+    const hasTypeChange = typeof eff.pieceType === "string";
+    const hasColorChange = typeof eff.color === "string";
+    if (!hasTypeChange && !hasColorChange) {
+      errors.push(`${path} must specify at least one of 'pieceType' or 'color'`);
+    }
+    if (hasTypeChange && !ALL_PIECE_TYPES.has(eff.pieceType)) {
+      errors.push(`${path}.pieceType must be one of ${[...ALL_PIECE_TYPES].join("/")}`);
+    }
+    if (hasColorChange && !["flip", "caster", "enemy"].includes(eff.color)) {
+      errors.push(`${path}.color must be 'flip'/'caster'/'enemy'`);
+    }
+    if (eff.duration !== undefined) {
+      if (!Number.isFinite(eff.duration) || eff.duration < 1 || eff.duration > 30) {
+        errors.push(`${path}.duration must be 1..30 when set`);
+      }
+    }
+    if (eff.revertOnCapture !== undefined && typeof eff.revertOnCapture !== "boolean") {
+      errors.push(`${path}.revertOnCapture must be a boolean when set`);
+    }
+    return;
+  }
+
+  if (eff.kind === "mark") {
+    if (typeof eff.tag !== "string" || !TAG_RE.test(eff.tag)) {
+      errors.push(`${path}.tag must be lowercase letters/digits/underscores, 1-32 chars (got ${JSON.stringify(eff.tag)})`);
+    }
+    if (eff.duration !== undefined) {
+      if (!Number.isFinite(eff.duration) || eff.duration < 1 || eff.duration > 30) {
+        errors.push(`${path}.duration must be 1..30 when set`);
+      }
+    }
+    if (eff.skipTurns !== undefined && typeof eff.skipTurns !== "boolean") {
+      errors.push(`${path}.skipTurns must be boolean when set`);
+    }
+    if (eff.silenceAbilities !== undefined && typeof eff.silenceAbilities !== "boolean") {
+      errors.push(`${path}.silenceAbilities must be boolean when set`);
+    }
+    if (eff.absorbCaptures !== undefined) {
+      if (!Number.isFinite(eff.absorbCaptures) || eff.absorbCaptures < 1 || eff.absorbCaptures > 9) {
+        errors.push(`${path}.absorbCaptures must be 1..9 when set`);
+      }
+    }
+    if (eff.extraMoves !== undefined) {
+      if (!Number.isFinite(eff.extraMoves) || eff.extraMoves < 1 || eff.extraMoves > 2) {
+        errors.push(`${path}.extraMoves must be 1..2 when set`);
+      }
+    }
+    if (eff.destroyOnExpire !== undefined && typeof eff.destroyOnExpire !== "boolean") {
+      errors.push(`${path}.destroyOnExpire must be boolean when set`);
+    }
+    if (eff.expireOnCapture !== undefined && typeof eff.expireOnCapture !== "boolean") {
+      errors.push(`${path}.expireOnCapture must be boolean when set`);
+    }
+    return;
+  }
+
+  if (eff.kind === "aoe_wrap") {
+    if (nested) {
+      errors.push(`${path}: aoe_wrap cannot be nested inside another aoe_wrap`);
+      return;
+    }
+    if (!Number.isFinite(eff.radius) || eff.radius < 1 || eff.radius > 3) {
+      errors.push(`${path}.radius must be 1..3`);
+    }
+    if (!eff.inner || typeof eff.inner !== "object") {
+      errors.push(`${path}.inner must be an effect object`);
+    } else {
+      validateEffectPrimitive(`${path}.inner`, eff.inner, errors, /*nested*/ true);
+    }
+    if (eff.hitsPawns !== undefined && typeof eff.hitsPawns !== "boolean") {
+      errors.push(`${path}.hitsPawns must be boolean when set`);
+    }
+    if (eff.hitsFriendly !== undefined && typeof eff.hitsFriendly !== "boolean") {
+      errors.push(`${path}.hitsFriendly must be boolean when set`);
+    }
+    return;
   }
 }
 

@@ -207,6 +207,15 @@ function mergePieceSpec(base, override) {
   } else if (out.promotion) {
     out.promotion = structuredClone(out.promotion);
   }
+  // Active abilities (AI Arena Ship #1+). Replace wholesale on
+  // overlap rather than merging - abilities have no natural
+  // "merge by id" semantics and the AI consistently emits a
+  // full list when it sets the field at all.
+  if (override.abilities !== undefined) {
+    out.abilities = structuredClone(override.abilities);
+  } else if (Array.isArray(out.abilities)) {
+    out.abilities = structuredClone(out.abilities);
+  }
   return out;
 }
 

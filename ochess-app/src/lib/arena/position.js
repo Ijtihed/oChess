@@ -25,6 +25,11 @@
  *   - `extinct`: per-color flag set when a color has only its
  *      king left (or no king if rules removed the king-must-
  *      survive contract). Used by "last_standing" win conditions.
+ *   - `crazyState`: AI-Arena-specific sidecar carrying ability
+ *      charges, cooldowns, and (Ship #2+) per-square status
+ *      effects. Optional - vanilla / non-ability variants
+ *      leave it unset and the engine treats abilities as
+ *      unlimited.
  *
  * The class only knows about board state. It does NOT know
  * about move primitives, win conditions, or rule semantics -
@@ -114,6 +119,13 @@ export class Position {
     this.captureTally = init.captureTally
       ? { w: init.captureTally.w | 0, b: init.captureTally.b | 0 }
       : { w: 0, b: 0 };
+    // Crazy-arena sidecar (AI Arena Ship #1+). Holds per-square
+    // ability charges and cooldowns. Optional - undefined means
+    // "no ability gating" which is the correct semantics for
+    // pre-Ship-#1 callers.
+    this.crazyState = init.crazyState
+      ? cloneCrazyState(init.crazyState)
+      : null;
   }
 
   /** Build a Position from a FEN string. Throws on bad FEN. */
@@ -202,6 +214,7 @@ export class Position {
       fullmove: this.fullmove,
       history: this.history.slice(),
       captureTally: { ...this.captureTally },
+      crazyState: this.crazyState ? cloneCrazyState(this.crazyState) : null,
     });
   }
 
@@ -237,6 +250,46 @@ export class Position {
     const all = this.findPieces(color, "k");
     return all.length > 0 ? all[0] : null;
   }
+}
+
+// ── Crazy-arena sidecar ─────────────────────────────────────
+
+/**
+ * Deep-copy the crazyState sidecar so cloning a Position
+ * doesn't share mutable maps. Shape is forgiving: missing
+ * sub-objects collapse to `undefined`, never throw.
+ *
+ * @param {{
+ *   charges?:   Record<string, Record<string, number>>,
+ *   cooldowns?: Record<string, Record<string, number>>,
+ *   effects?:   Record<string, Array<object>>
+ * }} state
+ */
+function cloneCrazyState(state) {
+  if (!state || typeof state !== "object") return null;
+  const out = {};
+  if (state.charges && typeof state.charges === "object") {
+    out.charges = {};
+    for (const [sq, abilityMap] of Object.entries(state.charges)) {
+      if (!abilityMap || typeof abilityMap !== "object") continue;
+      out.charges[sq] = { ...abilityMap };
+    }
+  }
+  if (state.cooldowns && typeof state.cooldowns === "object") {
+    out.cooldowns = {};
+    for (const [sq, abilityMap] of Object.entries(state.cooldowns)) {
+      if (!abilityMap || typeof abilityMap !== "object") continue;
+      out.cooldowns[sq] = { ...abilityMap };
+    }
+  }
+  if (state.effects && typeof state.effects === "object") {
+    out.effects = {};
+    for (const [sq, effs] of Object.entries(state.effects)) {
+      if (!Array.isArray(effs)) continue;
+      out.effects[sq] = effs.map((e) => ({ ...e }));
+    }
+  }
+  return out;
 }
 
 // ── chess.js bridge ─────────────────────────────────────────

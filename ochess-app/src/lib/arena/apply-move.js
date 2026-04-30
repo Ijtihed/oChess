@@ -24,16 +24,30 @@
 
 import { Chess } from "chess.js";
 import { generateLegalMoves } from "./move-gen";
+import { pieceSpecFor } from "./rules";
 import {
   squareToFR,
   frToSquare,
   inBounds,
 } from "./position";
+import {
+  resolveEffect,
+  tickMarks,
+  tryAbsorbCapture,
+  dropExpireOnCaptureMarks,
+} from "./effects";
 
 /**
  * Validated version: call this from the UI / network sync.
  * Throws if `move` isn't in the legal list under the current
  * rules.
+ *
+ * Ship #2 strict-failure: if the move is legal but its effect
+ * resolver fails (e.g. a malformed ability descriptor produces
+ * an off-board target at runtime), this throws an Error
+ * tagged with `name === "VariantError"` so the lobby can
+ * display "variant error - match cancelled" rather than a
+ * generic illegal-move toast.
  */
 export function applyMove(position, move, rules) {
   if (!move || typeof move !== "object") throw new Error("move must be an object");
@@ -42,9 +56,17 @@ export function applyMove(position, move, rules) {
   if (!match) {
     throw new Error(`illegal move ${move.from}${move.to}${move.promotion ? `=${move.promotion}` : ""}`);
   }
-  // Use the canonical move object from generateLegalMoves so
-  // metadata flags (castling, enPassant) are filled in.
-  return applyMoveRaw(position, match, rules);
+  // Clear any stale resolver-error message before applying so
+  // the next cast doesn't pick up a previous match's debris.
+  position.lastEffectError = null;
+  const next = applyMoveRaw(position, match, rules);
+  if (!next) {
+    const detail = position.lastEffectError || "effect resolver returned null";
+    const err = new Error(`variant error: ${detail}`);
+    err.name = "VariantError";
+    throw err;
+  }
+  return next;
 }
 
 /**
@@ -62,6 +84,16 @@ export function applyMoveRaw(position, move, rules) {
 
   const piece = next.pieceAt(move.from);
   if (!piece) return null;
+
+  // Ability casts (AI Arena Ship #1+) are turn-replacing
+  // actions: the caster does NOT move, the target square is
+  // resolved per the ability's effect, and charges/cooldowns
+  // are decremented. They share the side-to-move-flip and
+  // history-append bookkeeping with regular moves but skip
+  // castling rights, en-passant, and promotion entirely.
+  if (move.kind === "ability") {
+    return applyAbilityMove(next, position, move, rules, piece, moverFR, targetFR);
+  }
 
   // ── Move classification ──
   // Pull these out so the post-move bookkeeping (en passant,
@@ -101,6 +133,25 @@ export function applyMoveRaw(position, move, rules) {
 
   // ── Standard capture detection (non-en-passant) ──
   if (!isEnPassant && next.pieceAt(move.to)) {
+    // Shield check (Ship #2 absorb_captures marks). If the target
+    // has a shield mark with remaining absorbs, eat one absorb and
+    // treat the move as a non-capture: the attacker stops at its
+    // origin (the move "bounces"). This is the simplest physically-
+    // sensible interpretation of "shield blocked the attack."
+    if (tryAbsorbCapture(next, move.to)) {
+      // Cancel the move entirely: the piece does not move, the
+      // shield absorbed one charge, and the side-to-move still
+      // flips (the caster used their turn). History records a
+      // bounce.
+      next.history.push({ ...move, bounced: true, san: `${move.from}>${move.to}!shield` });
+      next.halfmove = next.halfmove + 1;
+      if (piece.color === "b") next.fullmove += 1;
+      next.enPassant = null;
+      tickCooldowns(next);
+      tickMarks(next);
+      next.turn = piece.color === "w" ? "b" : "w";
+      return next;
+    }
     captured = next.pieceAt(move.to);
   }
 
@@ -116,7 +167,15 @@ export function applyMoveRaw(position, move, rules) {
   if (captured) {
     applyCaptureEffects(next, move.to, captured, rules);
     next.captureTally[piece.color] += 1;
+    // Marks with `expireOnCapture` drop now that this piece just
+    // made a capture.
+    dropExpireOnCaptureMarks(next, move.to);
   }
+  // Migrate any marks attached to the from-square to the to-square
+  // so status effects follow the piece (frozen knight that's
+  // forced to move via haste should still BE frozen on its new
+  // square, etc.).
+  migrateSquareEffects(next, move.from, move.to);
 
   // ── En passant target for the NEXT move ──
   // Standard rules: a 2-square pawn move sets the en-passant
@@ -168,10 +227,154 @@ export function applyMoveRaw(position, move, rules) {
   const san = computeSan(position, move, piece, captured, isPromotion, isEnPassant);
   next.history.push({ ...move, captured, san });
 
+  // ── Cooldowns tick at end of every move (Ship #1+). ──
+  // Charges don't auto-refill; only ability casts decrement
+  // them. Cooldowns are inclusive: a cooldown of 4 means the
+  // piece can cast again on its 4th turn after the cast.
+  tickCooldowns(next);
+  // Status marks tick at end of every move too (Ship #2). Marks
+  // with destroyOnExpire run their handler when the timer hits
+  // zero (burn semantics).
+  tickMarks(next);
+
   // ── Side to move ──
   next.turn = piece.color === "w" ? "b" : "w";
 
   return next;
+}
+
+/**
+ * Move all crazyState marks from one square to another. Used by
+ * regular moves so that status effects follow the piece. Ability
+ * casts already handle this themselves via the resolver.
+ */
+function migrateSquareEffects(next, fromSq, toSq) {
+  if (fromSq === toSq) return;
+  const cs = next.crazyState;
+  if (!cs?.effects) return;
+  if (cs.effects[fromSq]) {
+    cs.effects[toSq] = (cs.effects[toSq] || []).concat(cs.effects[fromSq]);
+    delete cs.effects[fromSq];
+  }
+}
+
+// ── Active abilities (AI Arena Ship #1+) ───────────────────
+
+/**
+ * Resolve a `kind: "ability"` move: do not move the caster,
+ * apply the ability's effect to the target square via the
+ * Ship #2 composable primitive resolver, then decrement
+ * charges / start cooldown for that ability. Side-to-move
+ * flips after, just like a regular move.
+ *
+ * Strict failure mode (Ship #2): if the effect resolver
+ * returns an error, this function returns null. The caller
+ * (`applyMoveRaw` / `applyMove`) treats that as an
+ * unresolvable move; `applyMove` throws, which the lobby
+ * surfaces as "variant error - match cancelled."
+ */
+function applyAbilityMove(next, prevPosition, move, rules, piece, moverFR, targetFR) {
+  const ability = findAbility(rules, piece, move.abilityId);
+  if (!ability) return null;
+
+  const effect = ability.effect || {};
+  const ctx = {
+    caster: piece,
+    casterSquare: move.from,
+    casterFR: moverFR,
+    targetSquare: move.to,
+    targetFR,
+    abilityId: ability.id,
+    rules,
+  };
+  const result = resolveEffect(next, ctx, effect);
+  if (!result.ok) {
+    // Strict mode: surface a recognizable error so apply-move's
+    // caller can show "variant error" toast and abort the round.
+    // We attach it to the SOURCE position (prevPosition) because
+    // the clone is being thrown away.
+    prevPosition.lastEffectError = result.error;
+    return null;
+  }
+
+  // ── Gating bookkeeping ──
+  // Only mutate crazyState if it exists; pre-Ship-#2 callers
+  // who never plumbed crazyState through skip this and just
+  // get unlimited-uses-no-cooldown semantics. Note: the
+  // resolver may have moved the caster (relocate_self), so
+  // gating attaches to ctx.casterSquare, not move.from.
+  if (next.crazyState && ability.gating) {
+    if (!next.crazyState.charges) next.crazyState.charges = {};
+    if (!next.crazyState.cooldowns) next.crazyState.cooldowns = {};
+
+    if (Number.isFinite(ability.gating.charges)) {
+      const sqMap = next.crazyState.charges[ctx.casterSquare] || {};
+      const remaining = Number.isFinite(sqMap[ability.id])
+        ? sqMap[ability.id] - 1
+        : ability.gating.charges - 1;
+      sqMap[ability.id] = Math.max(0, remaining);
+      next.crazyState.charges[ctx.casterSquare] = sqMap;
+    }
+    if (Number.isFinite(ability.gating.cooldownPlies) && ability.gating.cooldownPlies > 0) {
+      const sqMap = next.crazyState.cooldowns[ctx.casterSquare] || {};
+      // Plus 1 because tickCooldowns runs once at the end of
+      // this same move; without the +1 we'd silently skip a
+      // ply.
+      sqMap[ability.id] = ability.gating.cooldownPlies + 1;
+      next.crazyState.cooldowns[ctx.casterSquare] = sqMap;
+    }
+  }
+
+  // ── Halfmove + fullmove + history bookkeeping ──
+  next.halfmove = result.captures > 0 ? 0 : next.halfmove + 1;
+  if (piece.color === "b") next.fullmove += 1;
+  next.enPassant = null;
+
+  const san = abilityCastSan(move, result.captures);
+  next.history.push({ ...move, captures: result.captures, san });
+  tickCooldowns(next);
+  tickMarks(next);
+  next.turn = piece.color === "w" ? "b" : "w";
+  return next;
+}
+
+/** Look up an ability descriptor on a piece's spec by id. */
+function findAbility(rules, piece, abilityId) {
+  const spec = pieceSpecFor(rules, piece);
+  if (!spec || !Array.isArray(spec.abilities)) return null;
+  return spec.abilities.find((a) => a?.id === abilityId) || null;
+}
+
+/**
+ * Decrement every cooldown by 1 ply, dropping zero entries to
+ * keep the sidecar tidy. Runs at the end of every move
+ * (regular OR ability) so cooldowns measured in plies
+ * progress consistently.
+ */
+function tickCooldowns(next) {
+  const cs = next.crazyState;
+  if (!cs?.cooldowns) return;
+  for (const [sq, abilityMap] of Object.entries(cs.cooldowns)) {
+    if (!abilityMap || typeof abilityMap !== "object") continue;
+    for (const [abilityId, plies] of Object.entries(abilityMap)) {
+      if (!Number.isFinite(plies)) continue;
+      const remaining = plies - 1;
+      if (remaining <= 0) {
+        delete abilityMap[abilityId];
+      } else {
+        abilityMap[abilityId] = remaining;
+      }
+    }
+    if (Object.keys(abilityMap).length === 0) {
+      delete cs.cooldowns[sq];
+    }
+  }
+}
+
+/** Best-effort SAN-ish string for ability casts. */
+function abilityCastSan(move, captures) {
+  const verb = captures > 0 ? `x${captures > 1 ? captures : ""}` : "→";
+  return `${move.casterType?.toUpperCase() || "?"}!${move.abilityId}${verb}${move.to}`;
 }
 
 // ── Capture effects ────────────────────────────────────────
@@ -282,8 +485,24 @@ function computeSan(prevPosition, move, piece, captured, isPromotion, isEnPassan
 
 // ── Move equality ──────────────────────────────────────────
 
+/**
+ * Compare two moves for "the engine should treat these as the
+ * same action." Beyond from/to/promotion we also distinguish:
+ *
+ *   - ability casts vs regular moves (kind="ability" vs absent)
+ *   - which ability is being cast (abilityId)
+ *
+ * Without the kind+abilityId check, a regular slide from d3 to
+ * d5 would shadow an ability cast targeting d5, since both
+ * have the same from/to. The UI MUST send the move object
+ * generated by `generateLegalMoves` (with `kind` set) for
+ * ability casts to dispatch correctly.
+ */
 function sameMove(a, b) {
-  return a.from === b.from
-    && a.to === b.to
-    && (a.promotion || null) === (b.promotion || null);
+  if (a.from !== b.from) return false;
+  if (a.to !== b.to) return false;
+  if ((a.promotion || null) !== (b.promotion || null)) return false;
+  if ((a.kind || null) !== (b.kind || null)) return false;
+  if ((a.abilityId || null) !== (b.abilityId || null)) return false;
+  return true;
 }

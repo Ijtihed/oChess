@@ -33,6 +33,7 @@ import {
   squareToIndex,
 } from "./position";
 import { applyMoveRaw } from "./apply-move";
+import { pieceEffectiveState } from "./effects";
 
 // ── Public API ──────────────────────────────────────────────
 
@@ -68,11 +69,18 @@ export function generateLegalMoves(position, rules) {
  * `isSquareAttacked` to break the addCastlingMoves ->
  * isSquareAttacked recursion - castling can't capture so it
  * never threatens any square.
+ *
+ * `opts.excludeAbilities` skips ability generation. Used by
+ * `isSquareAttacked` so that ability-targeting (a "fireball at
+ * e7") doesn't count as a king-attack for check detection -
+ * abilities are turn-replacing actions, not threats. Without
+ * this we'd over-detect check.
  */
 export function generatePseudoMoves(position, rules, opts = {}) {
   const out = [];
   const me = position.turn;
   const includeCastling = !opts.excludeCastling;
+  const includeAbilities = !opts.excludeAbilities;
   for (let i = 0; i < 64; i++) {
     const pc = position.board[i];
     if (!pc || pc.color !== me) continue;
@@ -81,13 +89,32 @@ export function generatePseudoMoves(position, rules, opts = {}) {
     const from = frToSquare([file, rank]);
     const spec = pieceSpecFor(rules, pc);
     if (!spec) continue;
+    // Ship #2: status-mark gating. A piece with a `skipTurns`
+    // mark contributes ZERO moves (frozen / stunned). A piece
+    // with `silenceAbilities` contributes movement moves but
+    // no ability casts.
+    const effState = pieceEffectiveState(position, from);
+    if (effState.skipTurns) continue;
     for (const prim of spec.moves || []) {
-      addPrimitiveMoves(out, position, rules, pc, [file, rank], from, prim);
+      if (effState.canMove) {
+        addPrimitiveMoves(out, position, rules, pc, [file, rank], from, prim);
+      }
     }
     // Castling - only for kings, only when their spec says so,
     // and only when the caller hasn't asked us to skip it.
-    if (includeCastling && pc.type === "k" && spec.castling) {
+    if (includeCastling && effState.canMove && pc.type === "k" && spec.castling) {
       addCastlingMoves(out, position, rules, pc, [file, rank], from, spec);
+    }
+    // Active abilities (AI Arena Ship #1+). Each ability emits
+    // one or more candidate target squares; the engine treats
+    // ability casts as turn-replacing moves with kind="ability".
+    // Castles and abilities are mutually exclusive on a given
+    // turn - the player picks one or the other. Silenced pieces
+    // skip ability generation but can still move normally.
+    if (includeAbilities && effState.canCast && Array.isArray(spec.abilities)) {
+      for (const ability of spec.abilities) {
+        addAbilityMoves(out, position, rules, pc, [file, rank], from, ability);
+      }
     }
   }
   return out;
@@ -112,7 +139,7 @@ export function generatePseudoMoves(position, rules, opts = {}) {
 export function isSquareAttacked(position, square, byColor, rules) {
   const sim = position.turn === byColor ? position : position.clone();
   if (sim !== position) sim.turn = byColor;
-  return generatePseudoMoves(sim, rules, { excludeCastling: true })
+  return generatePseudoMoves(sim, rules, { excludeCastling: true, excludeAbilities: true })
     .some((mv) => mv.to === square);
 }
 
@@ -206,6 +233,113 @@ function addPrimitiveMoves(out, position, rules, piece, fromFR, fromSq, prim) {
       }
     }
     return;
+  }
+}
+
+// ── Active abilities (AI Arena) ────────────────────────────
+
+/**
+ * Emit ability-cast moves for a single ability owned by a
+ * piece. Ability moves are turn-replacing actions: instead of
+ * moving, the piece spends a charge or starts a cooldown to
+ * apply an effect at a target square within range.
+ *
+ * Ship #1: only `target.kind === "ranged"` and
+ * `effect.kind === "capture"` are wired through. Future ships
+ * add slide/leap targeting for empty squares (summon,
+ * teleport) and freeze/burn/shield/swap effects.
+ *
+ * Charges and cooldowns live in the position's `crazyState`
+ * sidecar (see `crazy-state.js` from Ship #2). For Ship #1 the
+ * sidecar is optional - if it's absent, abilities are
+ * effectively unlimited (which matches "no gating" semantics).
+ *
+ * Each emitted move has shape:
+ *   { from, to, kind: "ability", abilityId, casterType, intensity }
+ *
+ * `to` is the target square. The caster does NOT move; that's
+ * resolved by `apply-move.js` which knows to keep the piece
+ * on its origin square for ability moves.
+ */
+function addAbilityMoves(out, position, rules, piece, fromFR, fromSq, ability) {
+  if (!ability || typeof ability !== "object") return;
+  if (typeof ability.id !== "string" || ability.id.length === 0) return;
+  if (!ability.target || typeof ability.target !== "object") return;
+  if (!ability.effect || typeof ability.effect !== "object") return;
+
+  // Cooldown / charge gating. If the position has no crazyState
+  // (pre-Ship-#2), assume unlimited - the engine still resolves
+  // the ability correctly without it.
+  const cs = position.crazyState;
+  if (cs) {
+    const cooldown = cs.cooldowns?.[fromSq]?.[ability.id];
+    if (Number.isFinite(cooldown) && cooldown > 0) return;
+    const charges = cs.charges?.[fromSq]?.[ability.id];
+    if (Number.isFinite(charges) && charges <= 0) return;
+  }
+
+  const target = ability.target;
+  const kind = target.kind;
+  const requireEnemy = target.requireEnemy !== false; // default true
+  const requireEmpty = target.requireEmpty === true;  // default false
+  const flip = piece.color === "b" ? -1 : 1;
+  const intensity = ability.intensity === "brief" || ability.intensity === "dramatic"
+    ? ability.intensity
+    : "medium";
+
+  const candidates = [];
+
+  if (kind === "ranged" || kind === "leap") {
+    const offsets = Array.isArray(target.offsets) ? target.offsets : [];
+    for (const [df, dr] of offsets) {
+      if (!Number.isFinite(df) || !Number.isFinite(dr)) continue;
+      const f = fromFR[0] + df;
+      const r = fromFR[1] + dr * flip;
+      if (!inBounds([f, r])) continue;
+      candidates.push([f, r]);
+    }
+  } else if (kind === "slide") {
+    const dirs = Array.isArray(target.dirs) ? target.dirs : [];
+    const max = Number.isFinite(target.maxRange) ? target.maxRange : 8;
+    const blocked = target.blockedByPieces !== false; // default true
+    for (const [df, dr] of dirs) {
+      if (!Number.isFinite(df) || !Number.isFinite(dr)) continue;
+      let f = fromFR[0];
+      let r = fromFR[1];
+      for (let step = 0; step < max; step++) {
+        f += df;
+        r += dr * flip;
+        if (!inBounds([f, r])) break;
+        candidates.push([f, r]);
+        // If blocked, the line stops once we hit any piece; we
+        // still allow targeting that occupied square (so a
+        // fireball can hit through to the first piece in line),
+        // but anything beyond is out of reach.
+        if (blocked && position.board[f + r * 8]) break;
+      }
+    }
+  } else {
+    return; // unknown target kind - silently skip; validator catches it.
+  }
+
+  for (const [f, r] of candidates) {
+    const targetSq = frToSquare([f, r]);
+    const targetPc = position.board[f + r * 8];
+
+    if (requireEmpty && targetPc) continue;
+    if (requireEnemy) {
+      if (!targetPc) continue;
+      if (targetPc.color === piece.color) continue;
+    }
+
+    out.push({
+      from: fromSq,
+      to: targetSq,
+      kind: "ability",
+      abilityId: ability.id,
+      casterType: piece.type,
+      intensity,
+    });
   }
 }
 
@@ -305,6 +439,14 @@ function intermediateClear(position, fromFR, toFR) {
 /**
  * Apply a move on a clone and check whether the friendly king
  * is now under attack. Used by the legal-move filter.
+ *
+ * Ability moves don't relocate the caster, so the only way an
+ * ability can leave the king in check is if the ability
+ * itself happens to be cast BY the king (rare) or if the AOE
+ * blast from the ability removes a friendly defender. We
+ * still funnel through the same path - apply, then test - so
+ * both kinds of moves obey the same "you can't leave your king
+ * attacked" rule.
  */
 function leavesOwnKingInCheck(position, move, rules) {
   const us = position.turn;
