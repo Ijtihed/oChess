@@ -426,7 +426,7 @@ function parseCoachJson(content: string): CoachResponse | null {
           ? String(d.query).trim().replace(/^["']|["']$/g, "").replace(/^query:\s*/i, "")
           : "",
         summary: typeof d?.summary === "string" ? d.summary.trim() : "",
-      })).filter((d) => d.name && d.query) : [],
+      })).filter((d: { name: string; query: string }) => d.name && d.query) : [],
     };
   } catch {
     return null;

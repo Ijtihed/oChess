@@ -247,8 +247,11 @@ async function runOneGenerationAttempt(prompt, retryHint) {
  *
  * Returns { cleaned, errors }. cleaned is undefined if
  * everything dropped.
+ *
+ * Exported for direct unit testing of the cleaning logic
+ * (see ai-rules-visuals.test.js).
  */
-function filterValidVisuals(raw) {
+export function filterValidVisuals(raw) {
   const compiled = compileVisuals(raw);
   const cleaned = {};
   // Slots: keep raw source for keys that compiled successfully.

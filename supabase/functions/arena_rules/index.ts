@@ -662,7 +662,7 @@ Allowed canvas API (everything else is rejected by the validator):
 - Transforms: save, restore, translate, rotate, scale, transform, setTransform
 - Gradients: createLinearGradient, createRadialGradient, createConicGradient (the returned object has only addColorStop)
 
-Allowed JS surface: Math.* (PI, E, sin, cos, tan, sqrt, pow, abs, min, max, floor, ceil, round, atan2, hypot, log, exp, random), Number.isFinite, Array.from, Array.isArray, JSON.stringify, JSON.parse, parseInt, parseFloat, Infinity, NaN. Standard control flow (if/else, for/while/do-while, switch). const/let/var. Function expressions / arrow functions. try/catch (catch must be parameterless: `catch {}`).
+Allowed JS surface: Math.* (PI, E, sin, cos, tan, sqrt, pow, abs, min, max, floor, ceil, round, atan2, hypot, log, exp, random), Number.isFinite, Array.from, Array.isArray, JSON.stringify, JSON.parse, parseInt, parseFloat, Infinity, NaN. Standard control flow (if/else, for/while/do-while, switch). const/let/var. Function expressions / arrow functions. try/catch (catch must be parameterless, written as: catch {} with no parentheses).
 
 NEVER do these things (they will be rejected by the validator):
 - fetch, XMLHttpRequest, WebSocket, fetchSync, navigator, Image, Audio
@@ -1191,7 +1191,7 @@ const TAG_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const SPAWNABLE_PIECE_TYPES = new Set(["p", "n", "b", "r", "q"]);
 const ALL_PIECE_TYPES = new Set(["p", "n", "b", "r", "q", "k"]);
 
-function validateStructure(rules: Record<string, unknown>, labMode: boolean = true): string[] {
+export function validateStructure(rules: Record<string, unknown>, labMode: boolean = true): string[] {
   const errors: string[] = [];
 
   if (rules.extends !== "vanilla") {
@@ -1330,7 +1330,7 @@ const MAX_SLOTS = 28;
 const MAX_PROJECTILES = 12;
 const MAX_OVERLAYS = 6;
 
-function validateVisualsBlock(v: unknown, errors: string[]): void {
+export function validateVisualsBlock(v: unknown, errors: string[]): void {
   if (!v || typeof v !== "object" || Array.isArray(v)) {
     errors.push("visuals: must be an object");
     return;
