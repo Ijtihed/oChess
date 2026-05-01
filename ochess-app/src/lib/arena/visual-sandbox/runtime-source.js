@@ -277,7 +277,7 @@ export const RUNTIME_SOURCE = `<!doctype html>
       var world = makeBrainWorld(nowT);
       var g = makeGuardCtx();
       try {
-        brain(g, guardFn, self, world, dt, selfState);
+        brain(g, guardFn, self, world, dt, selfState, state.seededRandom);
       } catch (err) {
         handleDrawError("brain." + piece.type, err, []);
       }
