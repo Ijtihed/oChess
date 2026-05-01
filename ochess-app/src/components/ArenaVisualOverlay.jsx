@@ -70,22 +70,6 @@ export default function ArenaVisualOverlay({
   const [isReady, setIsReady] = useState(false);
   const sentInitRef = useRef(false);
 
-  // Render counter for diagnosing render loops. Renders 50+
-  // times in a single tick is a strong signal something is
-  // setStating in a tight cycle. We log loudly so the next
-  // production occurrence of React error #185 includes a
-  // breadcrumb pointing at THIS component.
-  const renderCountRef = useRef(0);
-  renderCountRef.current += 1;
-  if (renderCountRef.current === 50) {
-    // eslint-disable-next-line no-console
-    console.warn("[ArenaVisualOverlay] hit 50 renders - possible loop. compiledDraws identity stable?", {
-      hasCompiledDraws: !!compiledDraws,
-      seed,
-      shouldMount: undefined, // computed below
-    });
-  }
-
   // Pin the latest event callbacks in refs so the message-
   // handler effect doesn't have to depend on them. Parents
   // typically pass inline arrows, which produce a fresh

@@ -35,12 +35,22 @@ describe("visuals-error-buffer", () => {
     expect(typeof errs[0].at).toBe("number");
   });
 
-  it("returns a NEW array on each get (so React reference equality fires)", () => {
+  it("returns the SAME snapshot reference until the store changes", () => {
     pushVisualError(ROOM, { slot: "x", message: "y" });
     const a = getVisualErrors(ROOM);
     const b = getVisualErrors(ROOM);
-    expect(a).not.toBe(b);
-    expect(a).toEqual(b);
+    // useSyncExternalStore requires stable snapshots. Returning
+    // a fresh array on each get causes React error #185.
+    expect(a).toBe(b);
+  });
+
+  it("returns a new snapshot reference only after a mutation", () => {
+    pushVisualError(ROOM, { slot: "x", message: "y" });
+    const before = getVisualErrors(ROOM);
+    pushVisualError(ROOM, { slot: "z", message: "w" });
+    const after = getVisualErrors(ROOM);
+    expect(after).not.toBe(before);
+    expect(after.length).toBe(2);
   });
 
   it("normalizes missing fields to defaults", () => {
@@ -99,6 +109,19 @@ describe("visuals-error-buffer", () => {
     clearVisualErrors(ROOM);
     expect(getVisualErrors(ROOM)).toEqual([]);
     expect(getVisualErrors(ROOM_B).length).toBe(1);
+  });
+
+  it("clearVisualErrors notifies subscribers and returns a stable empty snapshot", () => {
+    let calls = 0;
+    subscribeToVisualErrors(ROOM, () => { calls++; });
+    pushVisualError(ROOM, { slot: "x", message: "" });
+    expect(calls).toBe(1);
+    clearVisualErrors(ROOM);
+    expect(calls).toBe(2);
+    const a = getVisualErrors(ROOM);
+    const b = getVisualErrors(ROOM);
+    expect(a).toBe(b);
+    expect(a).toEqual([]);
   });
 
   it("ignores pushes with no roomId (defensive)", () => {

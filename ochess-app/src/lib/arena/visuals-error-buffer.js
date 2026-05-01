@@ -15,6 +15,7 @@
  */
 
 const MAX_ENTRIES = 32;
+const EMPTY_ERRORS = Object.freeze([]);
 const buffers = new Map();        // roomId -> { entries, listeners }
 
 /**
@@ -35,23 +36,28 @@ export function pushVisualError(roomId, err) {
     ply: Number.isFinite(err?.ply) ? err.ply : null,
     at: Date.now(),
   };
-  bucket.entries.push(entry);
-  if (bucket.entries.length > MAX_ENTRIES) {
-    bucket.entries.shift();
-  }
-  for (const fn of bucket.listeners) {
-    try { fn(); } catch { /* swallow */ }
-  }
+  // IMPORTANT: useSyncExternalStore requires getSnapshot to
+  // return the SAME reference unless the store changed. So we
+  // replace the entries array exactly once per mutation, then
+  // keep returning that stable reference until the next push /
+  // clear. The previous version returned `[...entries]` from
+  // getVisualErrors, creating a fresh reference every render
+  // and triggering React error #185 (maximum update depth).
+  bucket.entries = [...bucket.entries, entry].slice(-MAX_ENTRIES);
+  notify(bucket);
 }
 
 /**
- * Get a snapshot of the buffer for the given room. Returns a
- * NEW array each call so React's reference equality fires.
+ * Get a snapshot of the buffer for the given room.
+ *
+ * MUST return a stable reference until the store actually
+ * changes. React's useSyncExternalStore compares snapshots by
+ * Object.is; a fresh array here creates an infinite render loop.
  */
 export function getVisualErrors(roomId) {
   const bucket = buffers.get(roomId);
-  if (!bucket) return [];
-  return [...bucket.entries];
+  if (!bucket) return EMPTY_ERRORS;
+  return bucket.entries;
 }
 
 /**
@@ -77,5 +83,19 @@ export function subscribeToVisualErrors(roomId, listener) {
  * variant regenerate).
  */
 export function clearVisualErrors(roomId) {
-  buffers.delete(roomId);
+  const bucket = buffers.get(roomId);
+  if (!bucket) return;
+  bucket.entries = EMPTY_ERRORS;
+  notify(bucket);
+  // Keep the bucket around if it has listeners so their
+  // unsubscribe closures remain valid; otherwise drop it.
+  if (bucket.listeners.size === 0) {
+    buffers.delete(roomId);
+  }
+}
+
+function notify(bucket) {
+  for (const fn of bucket.listeners) {
+    try { fn(); } catch { /* swallow */ }
+  }
 }
