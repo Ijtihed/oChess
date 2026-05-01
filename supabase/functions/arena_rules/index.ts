@@ -849,7 +849,37 @@ function estimateMicroUsdFromPromptChars(promptChars: number, maxOutputTokens: n
   return estimateMicroUsd(estIn, maxOutputTokens);
 }
 
+// Models we'll fall back to if the primary one 404s (deprecated /
+// renamed). Order matters: try the most-similar known-good model
+// first. The list is hand-curated; update when Google publishes
+// new stable models.
+const GEMINI_FALLBACK_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-1.5-flash",
+];
+
 async function callGemini(systemPrompt: string, userPrompt: string, model: string, maxTokens = 16000): Promise<GeminiResult> {
+  // Try the primary model. If it returns 404 (model not found /
+  // deprecated), iterate through fallbacks. ANY other error is
+  // returned immediately - we don't want to mask transient
+  // upstream issues by silently switching models.
+  const result = await callGeminiOne(systemPrompt, userPrompt, model, maxTokens);
+  if (result.ok || !result.modelNotFound) return result;
+
+  log("model_fallback", { primary: model });
+  for (const fb of GEMINI_FALLBACK_MODELS) {
+    if (fb === model) continue; // don't retry the same one
+    const r = await callGeminiOne(systemPrompt, userPrompt, fb, maxTokens);
+    if (r.ok) {
+      log("model_fallback_succeeded", { primary: model, fallback: fb });
+      return r;
+    }
+    if (!r.modelNotFound) return r;
+  }
+  return { ok: false, error: `All Gemini models returned 404. Update GEMINI_MODEL secret.` };
+}
+
+async function callGeminiOne(systemPrompt: string, userPrompt: string, model: string, maxTokens: number): Promise<GeminiResult & { modelNotFound?: boolean }> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, error: "GEMINI_API_KEY not configured" };
   const url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`;
@@ -873,7 +903,14 @@ async function callGemini(systemPrompt: string, userPrompt: string, model: strin
     });
     if (!resp.ok) {
       const body = await resp.text();
-      return { ok: false, error: `Gemini returned ${resp.status}: ${body.slice(0, 300)}` };
+      // 404 means the model name is wrong/deprecated. Surface it
+      // with a marker so the caller can try a fallback.
+      const modelNotFound = resp.status === 404 || /model.*not.*found/i.test(body);
+      return {
+        ok: false,
+        error: `Gemini returned ${resp.status}: ${body.slice(0, 300)}`,
+        modelNotFound,
+      };
     }
     const json = await resp.json();
     const content = json?.choices?.[0]?.message?.content;
@@ -1797,6 +1834,35 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// ── Structured logging ──
+//
+// Supabase aggregates Edge Function stdout/stderr but the format
+// is freeform unless we shape it ourselves. Emitting JSON lines
+// makes filtering easy in the dashboard's Logs Explorer:
+//   filter by event_type=ai_call_failed
+//   filter by user_id=...
+//   group by event_type for an at-a-glance breakdown
+//
+// The fields are minimal on purpose - logs cost money on the
+// Supabase free tier (10GB/month) and we want them to stay
+// useful without becoming noise.
+function log(eventType: string, fields: Record<string, unknown> = {}) {
+  try {
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      fn: "arena_rules",
+      event: eventType,
+      ...fields,
+    });
+    // stderr instead of stdout because Supabase routes stderr
+    // separately and lets you grep on log_level=error/warning,
+    // which is what these structured events feel most like.
+    console.log(line);
+  } catch {
+    // Don't throw from a logger.
+  }
+}
+
 // ── Handler ──
 
 Deno.serve(async (req) => {
@@ -1827,6 +1893,9 @@ Deno.serve(async (req) => {
     });
   }
 
+  const t0 = performance.now();
+  log("request_received", { prompt_chars: body.prompt.length, has_retry_hint: !!body.retryHint });
+
   // Rate limit (also serves as auth gate - non-authed users
   // can't make the RPC succeed).
   const rl = await recordRateLimitedCall(req);
@@ -1837,6 +1906,7 @@ Deno.serve(async (req) => {
     });
   }
   if (!rl.allowed) {
+    log("rate_limited", { calls_in_window: rl.callsInWindow, max_calls: rl.maxCalls });
     const resp: ArenaRulesResponse = {
       ok: false,
       error: `You can request up to ${rl.maxCalls} variant rules per ${Math.round(rl.windowSeconds / 60)} min. Try again in ${rl.retryAfterSeconds}s.`,
@@ -1873,6 +1943,11 @@ Deno.serve(async (req) => {
     preCheck.usedMicroUsd >= preCheck.capMicroUsd ||
     preCheck.usedMicroUsd + estMicroUsd > preCheck.capMicroUsd
   )) {
+    log("cap_exhausted", {
+      used_micro_usd: preCheck.usedMicroUsd,
+      cap_micro_usd: preCheck.capMicroUsd,
+      est_micro_usd: estMicroUsd,
+    });
     return new Response(JSON.stringify({
       ok: false,
       error: capExhaustedMessage(),
@@ -1915,6 +1990,7 @@ Deno.serve(async (req) => {
   const firstPrompt = buildPrompt(body.prompt, undefined, plannerVibe, labMode, body.retryHint);
   const first = await callGemini(SYSTEM_PROMPT, firstPrompt, model);
   if (!first.ok) {
+    log("gemini_call_failed", { model, error: first.error, attempt: 1 });
     return new Response(JSON.stringify({ ok: false, error: first.error || "AI call failed", model }), {
       status: 502,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -1954,6 +2030,7 @@ Deno.serve(async (req) => {
   }
 
   if (errors.length > 0) {
+    log("validation_failed_after_retry", { model, error_count: errors.length, first_error: errors[0] });
     const resp: ArenaRulesResponse = {
       ok: false,
       error: "AI couldn't produce valid rules. Try rephrasing your prompt.",
@@ -1992,6 +2069,12 @@ Deno.serve(async (req) => {
     },
     spend_warning: softWarningActive,
   };
+  log("request_succeeded", {
+    model,
+    elapsed_ms: Math.round(performance.now() - t0),
+    has_visuals: !!(rules as Record<string, unknown>).visuals,
+    soft_warning: softWarningActive,
+  });
   return new Response(JSON.stringify(resp), {
     status: 200,
     headers: { ...CORS_HEADERS, "Content-Type": "application/json" },

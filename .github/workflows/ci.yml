@@ -48,3 +48,31 @@ jobs:
           if [ -f tsconfig.json ]; then
             npx tsc --noEmit
           fi
+
+  edge-functions:
+    name: Edge Functions (Deno typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # Typecheck every Edge Function. If we ever add new
+      # Supabase functions under supabase/functions/<name>/index.ts
+      # they'll be picked up automatically by the glob.
+      - name: Typecheck Edge Functions
+        run: |
+          for f in supabase/functions/*/index.ts; do
+            echo "::group::$f"
+            deno check "$f"
+            echo "::endgroup::"
+          done
+
+      # Smoke-test the structural validators in real Deno (the
+      # production runtime). Catches the backtick-in-template
+      # class of bug we hit before deploy.
+      - name: Edge Function smoke test
+        run: PORT=0 deno run --allow-net --allow-env --allow-read scripts/test-edge-validation.ts

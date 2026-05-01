@@ -12,8 +12,6 @@ import StudyPage from "./components/StudyPage";
 import BotsPage from "./components/BotsPage";
 import VariantsPage from "./components/VariantsPage";
 import ReviewPage from "./components/ReviewPage";
-import ArenaPage from "./components/ArenaPage";
-import ArenaSoloRoom from "./components/ArenaSoloRoom";
 import PresentationPage from "./components/PresentationPage";
 import Profile from "./components/Profile";
 import PublicProfile from "./components/PublicProfile";
@@ -34,6 +32,11 @@ const AnalysisPage = lazy(() => import("./components/AnalysisPage"));
 const PuzzlesPage = lazy(() => import("./components/PuzzlesPage"));
 const OnlineGameScreen = lazy(() => import("./components/OnlineGameScreen"));
 const VariantGameScreen = lazy(() => import("./components/VariantGameScreen"));
+// Arena routes pull in acorn (~150KB) + the iframe runtime
+// source (~16KB) + the ability panel + visual overlay. Lazy so
+// the homepage doesn't pay this cost.
+const ArenaPage = lazy(() => import("./components/ArenaPage"));
+const ArenaSoloRoom = lazy(() => import("./components/ArenaSoloRoom"));
 
 export default function App() {
   return (

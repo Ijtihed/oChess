@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "./AuthProvider";
 import SocialPanel from "./SocialPanel";
@@ -300,6 +300,10 @@ function CreatePanel({ user, navigate }) {
   const [error, setError] = useState(null);
   const [validatorErrors, setValidatorErrors] = useState(null);
   const [cooldownSec, setCooldownSec] = useState(0);
+  // Cancel handle for the in-flight generation. Stop button
+  // calls .abort(); the generateArenaRules promise then
+  // resolves with cancelled=true and we surface a friendly UI.
+  const generationAbortRef = useRef(null);
   const online = isOnline();
   const aiAvailable = isAIRulesAvailable();
 
@@ -337,10 +341,17 @@ function CreatePanel({ user, navigate }) {
     setError(null);
     setValidatorErrors(null);
     setGenerated(null);
+    // Fresh abort controller per attempt; old refs naturally
+    // GC since we overwrite the only handle.
+    const ctrl = new AbortController();
+    generationAbortRef.current = ctrl;
     try {
-      const result = await generateArenaRules(prompt);
+      const result = await generateArenaRules(prompt, { signal: ctrl.signal });
       if (!result.ok) {
-        setError(result.error || "AI couldn't produce rules.");
+        // Cancellation is a friendly outcome, not an error.
+        if (!result.cancelled) {
+          setError(result.error || "AI couldn't produce rules.");
+        }
         if (result.validatorErrors) setValidatorErrors(result.validatorErrors);
         if (result.rateLimited && result.retryAfterSeconds) {
           setCooldownSec(Math.ceil(Number(result.retryAfterSeconds)) || 0);
@@ -357,9 +368,14 @@ function CreatePanel({ user, navigate }) {
     } catch (e) {
       setError(e?.message || "AI request failed.");
     } finally {
+      generationAbortRef.current = null;
       setGenerating(false);
     }
   }, [aiAvailable, prompt]);
+
+  const onCancelGenerate = useCallback(() => {
+    generationAbortRef.current?.abort();
+  }, []);
 
   const onCreate = useCallback(async () => {
     if (!online) { setError("Offline. Connect to create rooms."); return; }
@@ -433,15 +449,25 @@ function CreatePanel({ user, navigate }) {
         </p>
         <PromptIdeas onPick={(text) => setPrompt(text)} disabled={generating} />
       </div>
-      <button onClick={onGenerate}
-        disabled={generating || cooldownSec > 0 || !online || !prompt.trim()}
-        className="btn btn-secondary w-full py-2.5 text-xs">
-        {generating
-          ? "Loading\u2026 asking AI"
-          : cooldownSec > 0
-            ? `Wait ${cooldownSec}s`
-            : generated ? "Regenerate" : "Generate rules"}
-      </button>
+      <div className="flex gap-2">
+        <button onClick={onGenerate}
+          disabled={generating || cooldownSec > 0 || !online || !prompt.trim()}
+          aria-label={generated ? "Regenerate variant rules" : "Generate variant rules from prompt"}
+          className="btn btn-secondary flex-1 py-2.5 text-xs">
+          {generating
+            ? "Loading\u2026 asking AI"
+            : cooldownSec > 0
+              ? `Wait ${cooldownSec}s`
+              : generated ? "Regenerate" : "Generate rules"}
+        </button>
+        {generating && (
+          <button onClick={onCancelGenerate}
+            aria-label="Stop generating"
+            className="btn btn-ghost py-2.5 px-4 text-xs">
+            Stop
+          </button>
+        )}
+      </div>
 
       {description && (
         <RulePreview description={description} model={generated?.model} />
@@ -471,6 +497,7 @@ function CreatePanel({ user, navigate }) {
         <div className="space-y-2">
           <button onClick={onCreate}
             disabled={creating || !online}
+            aria-label="Create a multiplayer room with these rules and copy the share link"
             className="btn btn-primary w-full py-3 text-sm">
             {creating ? "Loading\u2026 creating room" : "Create room with these rules"}
           </button>
@@ -481,6 +508,7 @@ function CreatePanel({ user, navigate }) {
               } catch { /* ignore */ }
               navigate("/arena/solo");
             }}
+            aria-label="Play this variant solo against a random bot"
             className="btn btn-secondary w-full py-2.5 text-xs">
             Play solo (vs random bot)
           </button>
@@ -761,7 +789,7 @@ function JoinPanel({ navigate }) {
           onKeyDown={(e) => { if (e.key === "Enter") onJoin(); }}
         />
       </div>
-      <button onClick={onJoin} className="btn btn-secondary w-full py-3 text-sm">
+      <button onClick={onJoin} aria-label="Join room from share link or room id" className="btn btn-secondary w-full py-3 text-sm">
         Join room
       </button>
       {error && (

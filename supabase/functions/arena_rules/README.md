@@ -83,3 +83,30 @@ The client (in `lib/arena/ai-rules.js`) does a second-pass full validation inclu
 ## Schema
 
 The system prompt embedded in `index.ts` documents the rule object schema the engine consumes (move primitives, win conditions, capture effects, byColor asymmetry). It must stay in sync with `src/lib/arena/schema.js` on the client - the validator there is what runs the second-pass check.
+
+## Per-IP rate limiting (operational concern)
+
+The function enforces a **per-user** rate limit via `record_arena_rules_call`. This means one authenticated user can hit the function up to N times in the rolling window. It does NOT prevent:
+
+- A bored attacker creating many accounts and hitting the function from each.
+- A scraper running through TOR exits.
+
+The cost cap (`record_ai_spend_or_block`) is the hard backstop: if a token-burning attack exhausts the global monthly budget, generation pauses for the rest of the month. So the financial damage is bounded.
+
+If you want to harden further, two options:
+
+1. **Vercel/Cloudflare WAF rule** in front of `*.supabase.co/functions/v1/arena_rules`: limit by IP to e.g. 30 requests / 5 min. This needs to live OUTSIDE Supabase (Supabase Edge Functions don't see the original IP through the standard request object).
+2. **Cloudflare Turnstile / hCaptcha** challenge on the lobby's "Generate" button. Adds friction but stops most automated abuse.
+
+Neither is implemented today; the existing per-user + global-cap defenses are deemed sufficient for hobby-app scale. Revisit if Supabase usage logs show abuse.
+
+## Structured logs
+
+Every important decision point emits a JSON line on stdout (see `log()` helper in `index.ts`). Filter in the Supabase Logs Explorer by:
+
+- `event=request_received` — request volume
+- `event=rate_limited` — per-user limit hits
+- `event=cap_exhausted` — monthly cap blocks
+- `event=gemini_call_failed` — Gemini API health
+- `event=validation_failed_after_retry` — variants Gemini couldn't produce cleanly even with retry
+- `event=request_succeeded` — success rate, with `elapsed_ms` for performance tracking

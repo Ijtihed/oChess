@@ -87,12 +87,37 @@ function SoloGame({ variant, navigate, userName }) {
     catch { return resolveRules({ extends: "vanilla" }); }
   }, [variant]);
 
-  const [position, setPosition] = useState(() => Position.fromFen(rules.startingFen || VANILLA_FEN));
+  const [position, setPosition] = useState(() => {
+    // Restore from sessionStorage if the user reloaded mid-game.
+    // Indexed by variant name so two different solo sessions
+    // don't clobber each other (rare but easy to fix).
+    try {
+      const saved = sessionStorage.getItem(`arena_solo_pos:${variant.rules?.name || "v"}`);
+      if (saved) return Position.fromFen(saved);
+    } catch { /* ignore */ }
+    return Position.fromFen(rules.startingFen || VANILLA_FEN);
+  });
+  // Persist position on every change so a reload doesn't lose
+  // the game.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(`arena_solo_pos:${variant.rules?.name || "v"}`, position.toFen());
+    } catch { /* ignore */ }
+  }, [position, variant]);
   const [highlight, setHighlight] = useState({});
   const [castFlash, setCastFlash] = useState(null);
   const [variantError, setVariantError] = useState(null);
   const [gameEnded, setGameEnded] = useState(null);
   const [abilityHighlight, setAbilityHighlight] = useState([]);
+  // Most recent bot move surfaced as a small toast so the user
+  // can see WHAT the bot played (especially abilities, which
+  // are easy to miss). Auto-clears after 2.5s.
+  const [botMoveToast, setBotMoveToast] = useState(null);
+  useEffect(() => {
+    if (!botMoveToast) return undefined;
+    const t = setTimeout(() => setBotMoveToast(null), 2500);
+    return () => clearTimeout(t);
+  }, [botMoveToast]);
 
   // Visual overlay state.
   const compiledVisuals = useMemo(() => {
@@ -173,7 +198,12 @@ function SoloGame({ variant, navigate, userName }) {
     const delay = BOT_THINK_MIN_MS + Math.random() * (BOT_THINK_MAX_MS - BOT_THINK_MIN_MS);
     botTimeoutRef.current = setTimeout(() => {
       const choice = pickBotMove(moves);
-      if (choice) applyAndAdvance({ ...choice, castColor: botColor });
+      if (choice) {
+        const ok = applyAndAdvance({ ...choice, castColor: botColor });
+        if (ok) {
+          setBotMoveToast(formatBotMove(choice));
+        }
+      }
     }, delay);
     return () => {
       if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current);
@@ -242,6 +272,11 @@ function SoloGame({ variant, navigate, userName }) {
                 {variantError}
               </div>
             )}
+            {botMoveToast && !gameEnded && (
+              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-[3] px-3 py-1.5 bg-surface-low/95 border border-white/[0.08] text-on-surface text-[11px] font-mono rounded shadow-xl">
+                Bot: <span className="text-primary font-bold">{botMoveToast}</span>
+              </div>
+            )}
             {gameEnded && (
               <div className="absolute inset-0 z-[5] bg-black/60 flex items-center justify-center">
                 <div className="bg-surface-low border border-white/[0.06] px-6 py-5 text-center max-w-sm">
@@ -254,6 +289,9 @@ function SoloGame({ variant, navigate, userName }) {
                   <div className="flex gap-2 justify-center">
                     <button
                       onClick={() => {
+                        try {
+                          sessionStorage.removeItem(`arena_solo_pos:${variant.rules?.name || "v"}`);
+                        } catch { /* ignore */ }
                         setPosition(Position.fromFen(rules.startingFen || VANILLA_FEN));
                         setGameEnded(null);
                         setHighlight({});
@@ -323,6 +361,24 @@ function pickBotMove(moves) {
     ? abilities
     : normals.length > 0 ? normals : moves;
   return pool[Math.floor(Math.random() * pool.length)];
+}
+
+/**
+ * Compact human-readable summary of a bot move. Not full SAN
+ * (the engine doesn't compute SAN for ability casts), just
+ * enough so the user can see "knight to c6" or "queen casts
+ * fireball on e5".
+ */
+function formatBotMove(move) {
+  if (!move) return "?";
+  if (move.kind === "ability") {
+    const ab = move.abilityId ? `'${move.abilityId}'` : "ability";
+    return `${(move.casterType || "?").toUpperCase()} ${ab} -> ${move.to}`;
+  }
+  // Plain move: piece-letter from-to with capture marker.
+  const piece = move.piece ? move.piece.toUpperCase() : "";
+  const sep = move.captured ? "x" : "-";
+  return piece ? `${piece} ${move.from}${sep}${move.to}` : `${move.from}${sep}${move.to}`;
 }
 
 function findAbility(rules, casterType, abilityId, color) {

@@ -71,7 +71,7 @@ const MAX_VERIFICATION_RETRIES = 1;
  *   repairs?: string[],
  * }>}
  */
-export async function generateArenaRules(prompt) {
+export async function generateArenaRules(prompt, opts = {}) {
   if (!supabase) return { ok: false, error: "Online features not configured." };
   // Pre-flight prompt sanity. Catches obvious bad inputs (empty,
   // ultra-short, emoji-only, single-word) BEFORE we burn an API
@@ -82,9 +82,20 @@ export async function generateArenaRules(prompt) {
     return { ok: false, error: promptError, promptInvalid: true };
   }
 
+  const signal = opts?.signal;
+  // Bail out helper: returns the cancellation outcome without
+  // throwing so callers don't need to wrap in try/catch.
+  function cancelled() {
+    return signal?.aborted
+      ? { ok: false, error: "Cancelled.", cancelled: true }
+      : null;
+  }
+  if (cancelled()) return cancelled();
+
   // First attempt: plain prompt, no retry context.
-  let attempt = await runOneGenerationAttempt(prompt, null);
-  if (!attempt.ok) return attempt; // bail on rate-limit / network / structural errors
+  let attempt = await runOneGenerationAttempt(prompt, null, signal);
+  if (cancelled()) return cancelled();
+  if (!attempt.ok) return attempt;
 
   // Behavioral verification on the AI's output.
   let verified = verifyAndRepair(attempt.rules);
@@ -96,8 +107,10 @@ export async function generateArenaRules(prompt) {
   // Gemini call, this time feeding the verifier errors back
   // as a hint so the model knows what to fix.
   if (MAX_VERIFICATION_RETRIES > 0) {
+    if (cancelled()) return cancelled();
     const retryHint = buildVerificationRetryHint(verified.errors);
-    attempt = await runOneGenerationAttempt(prompt, retryHint);
+    attempt = await runOneGenerationAttempt(prompt, retryHint, signal);
+    if (cancelled()) return cancelled();
     if (!attempt.ok) return attempt;
     verified = verifyAndRepair(attempt.rules);
     if (verified.ok) {
@@ -127,7 +140,7 @@ export async function generateArenaRules(prompt) {
  *   we're asking it to fix a previous failed attempt.
  * @returns {Promise<{ ok: boolean, rules?: object, ...meta }>}
  */
-async function runOneGenerationAttempt(prompt, retryHint) {
+async function runOneGenerationAttempt(prompt, retryHint, abortSignal) {
   const timeoutMs = 30_000;
   const timeout = new Promise((resolve) =>
     setTimeout(() => resolve({ __timeout: true }), timeoutMs),
@@ -142,14 +155,35 @@ async function runOneGenerationAttempt(prompt, retryHint) {
     ? { prompt: prompt.trim(), retryHint }
     : { prompt: prompt.trim() };
 
+  // The user can cancel mid-flight via opts.signal. We can't
+  // truly abort the in-flight HTTP request from supabase-js
+  // (its functions.invoke doesn't accept AbortSignal in all
+  // versions), but we can resolve the race early so the caller
+  // sees the cancellation immediately and we can ignore the
+  // late response when it eventually arrives.
+  const abortPromise = abortSignal
+    ? new Promise((resolve) => {
+        if (abortSignal.aborted) {
+          resolve({ __cancelled: true });
+        } else {
+          abortSignal.addEventListener("abort", () => resolve({ __cancelled: true }), { once: true });
+        }
+      })
+    : null;
+
   let result;
   try {
-    result = await Promise.race([
+    const racers = [
       supabase.functions.invoke("arena_rules", { body }),
       timeout,
-    ]);
+    ];
+    if (abortPromise) racers.push(abortPromise);
+    result = await Promise.race(racers);
   } catch (e) {
     return { ok: false, error: e?.message || "AI request failed." };
+  }
+  if (result?.__cancelled) {
+    return { ok: false, error: "Cancelled.", cancelled: true };
   }
   if (result?.__timeout) {
     return { ok: false, error: "AI took too long. Try again." };

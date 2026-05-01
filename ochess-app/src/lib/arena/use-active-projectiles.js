@@ -43,17 +43,29 @@ export function useActiveProjectiles() {
   const liveRef = useRef([]);
   const [snapshot, setSnapshot] = useState([]);
 
-  // RAF loop that updates progress + drops expired entries.
+  // The RAF loop should only run while there are LIVE
+  // projectiles. Idling at 60fps consumes ~0.5-1% CPU on every
+  // page that mounts the hook, even when nothing's animating.
+  // We start the loop on the first fireProjectile and stop it
+  // when the live list drains to zero.
+  const rafRef = useRef(0);
+  const mountedRef = useRef(true);
+  const tickRef = useRef(null);
   useEffect(() => {
-    let raf = 0;
-    let mounted = true;
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  useEffect(() => () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+  }, []);
 
+  const startTick = useCallback(() => {
+    if (rafRef.current) return; // already running
     function tick() {
-      if (!mounted) return;
+      if (!mountedRef.current) return;
       const now = performance.now();
       const live = liveRef.current;
       let mutated = false;
-      // Recompute each entry's progress; drop expired.
       const next = [];
       for (const p of live) {
         const age = now - p.startedAt;
@@ -61,26 +73,24 @@ export function useActiveProjectiles() {
           mutated = true;
           continue;
         }
-        // We mutate the entry's progress in place - it's
-        // owned by this hook and consumed by the SCENE
-        // build, so safe.
         p.progress = Math.min(1, age / p.ttl);
         p.age = age;
         next.push(p);
       }
       if (mutated || next.length !== live.length) {
         liveRef.current = next;
-        // Re-snapshot ONLY when membership changed.
         setSnapshot(next.slice());
       }
-      raf = requestAnimationFrame(tick);
+      // Stop the loop when nothing's left to animate. Will
+      // restart on the next fireProjectile.
+      if (next.length === 0) {
+        rafRef.current = 0;
+        return;
+      }
+      rafRef.current = requestAnimationFrame(tick);
     }
-    raf = requestAnimationFrame(tick);
-
-    return () => {
-      mounted = false;
-      if (raf) cancelAnimationFrame(raf);
-    };
+    tickRef.current = tick;
+    rafRef.current = requestAnimationFrame(tick);
   }, []);
 
   const fireProjectile = useCallback((from, to, kind = "default", durationMs = DEFAULT_DURATION_MS) => {
@@ -98,7 +108,9 @@ export function useActiveProjectiles() {
     };
     liveRef.current = [...liveRef.current, entry];
     setSnapshot(liveRef.current.slice());
-  }, []);
+    // Kick the RAF loop awake if it's idle.
+    startTick();
+  }, [startTick]);
 
   const clearProjectiles = useCallback(() => {
     liveRef.current = [];

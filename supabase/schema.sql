@@ -2415,3 +2415,79 @@ $$;
 
 revoke all on function save_arena_variant(text, text, text, jsonb) from public;
 grant execute on function save_arena_variant(text, text, text, jsonb) to authenticated;
+
+-- ── Ship #3.2: robustness hygiene ──
+-- (See supabase/migrations/20260501000000_ship3_hygiene.sql for
+-- the focused diff. Mirrored here so a fresh schema apply gets
+-- everything in one shot.)
+
+-- Size cap on saved variant rules. 32KB is ~2x the largest
+-- realistic AI variant we've observed; users won't hit this in
+-- practice but a buggy / malicious client can't fill the
+-- table with multi-MB blobs.
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.table_constraints
+    where table_name = 'arena_saved_variants'
+      and constraint_name = 'arena_saved_variants_rules_size'
+  ) then
+    alter table arena_saved_variants
+      add constraint arena_saved_variants_rules_size
+      check (length(rules::text) <= 32768);
+  end if;
+end $$;
+
+-- ai_settings audit trail. updated_at is maintained on every
+-- UPDATE; updated_by captures the auth user who flipped the
+-- flag (NULL for SQL-editor / service-role changes).
+alter table ai_settings
+  add column if not exists updated_by uuid references profiles(id) on delete set null;
+
+create or replace function ai_settings_audit_touch()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  new.updated_by = auth.uid();
+  return new;
+end;
+$$;
+
+drop trigger if exists ai_settings_audit_touch_trg on ai_settings;
+create trigger ai_settings_audit_touch_trg
+  before update on ai_settings
+  for each row
+  execute function ai_settings_audit_touch();
+
+-- Retention pruning. arena_visual_errors > 30d, arena_moves > 180d.
+create or replace function prune_arena_old_rows()
+returns void
+language plpgsql
+as $$
+begin
+  delete from arena_visual_errors where created_at < now() - interval '30 days';
+  delete from arena_moves where created_at < now() - interval '180 days';
+end;
+$$;
+
+do $$
+begin
+  if exists (select 1 from cron.job where jobname = 'ochess-prune-arena-old-rows') then
+    perform cron.unschedule('ochess-prune-arena-old-rows');
+  end if;
+exception when others then
+  null;
+end $$;
+
+do $$
+begin
+  perform cron.schedule(
+    'ochess-prune-arena-old-rows',
+    '15 3 * * *',
+    $cron$select prune_arena_old_rows()$cron$
+  );
+exception when others then
+  null;
+end $$;

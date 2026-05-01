@@ -52,6 +52,7 @@ import { isVisualsKilled } from "../lib/arena/visuals-kill-switch";
 import { recordVisualError } from "../lib/arena/visuals-audit";
 import { pushVisualError } from "../lib/arena/visuals-error-buffer";
 import { useActiveProjectiles } from "../lib/arena/use-active-projectiles";
+import { useLabFlag } from "../lib/arena/use-lab-flag";
 import {
   colorFor,
   colorPairFor,
@@ -1283,6 +1284,8 @@ function Warmup({ room, setRoom, role, roomId }) {
   // overlay's iframe runtime renders projectile draws as they
   // fly from caster to target.
   const { projectiles, fireProjectile } = useActiveProjectiles();
+  // Lab flag for the debug panel.
+  const isLabUser = useLabFlag();
   // Ability-panel hover highlight. When the user hovers a row in
   // the AbilityPanel, the panel calls back with the squares that
   // hold castable pieces; we paint those squares amber on the
@@ -1606,7 +1609,7 @@ function Warmup({ room, setRoom, role, roomId }) {
               />
               <ArenaVisualDebugPanel
                 roomId={roomId}
-                isLabUser={true}
+                isLabUser={isLabUser}
                 onDisableVisuals={() => {
                   try {
                     localStorage.setItem(`arena_visuals_off:${roomId}`, "1");
@@ -1783,6 +1786,9 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   // In-flight projectile timeline; see warmup component for
   // full rationale.
   const { projectiles, fireProjectile } = useActiveProjectiles();
+  // Lab flag: gates the dev-only debug panel. Non-lab users
+  // never see internal sandbox draw errors / stack traces.
+  const isLabUser = useLabFlag();
   // Cast flash overlay (see warmup component for full
   // rationale). Auto-clears after 700ms.
   const [castFlash, setCastFlash] = useState(null);
@@ -2737,7 +2743,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
               />
               <ArenaVisualDebugPanel
                 roomId={roomId}
-                isLabUser={true}
+                isLabUser={isLabUser}
                 onDisableVisuals={() => {
                   try {
                     localStorage.setItem(`arena_visuals_off:${roomId}`, "1");
