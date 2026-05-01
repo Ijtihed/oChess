@@ -32,6 +32,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RUNTIME_SOURCE, PROTOCOL_VERSION } from "../lib/arena/visual-sandbox/runtime-source";
 
+// Module-level so the iframe element gets a STABLE style prop.
+// A fresh `{ background: "transparent" }` object on every parent
+// render makes React think the prop changed and re-evaluates;
+// not a re-mount, but it adds churn to the reconciler.
+const IFRAME_STYLE = { background: "transparent" };
+
 /**
  * @param {Object} props
  * @param {Object|null} props.compiledDraws  Draw sources keyed by slot.
@@ -64,6 +70,37 @@ export default function ArenaVisualOverlay({
   const [isReady, setIsReady] = useState(false);
   const sentInitRef = useRef(false);
 
+  // Render counter for diagnosing render loops. Renders 50+
+  // times in a single tick is a strong signal something is
+  // setStating in a tight cycle. We log loudly so the next
+  // production occurrence of React error #185 includes a
+  // breadcrumb pointing at THIS component.
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
+  if (renderCountRef.current === 50) {
+    // eslint-disable-next-line no-console
+    console.warn("[ArenaVisualOverlay] hit 50 renders - possible loop. compiledDraws identity stable?", {
+      hasCompiledDraws: !!compiledDraws,
+      seed,
+      shouldMount: undefined, // computed below
+    });
+  }
+
+  // Pin the latest event callbacks in refs so the message-
+  // handler effect doesn't have to depend on them. Parents
+  // typically pass inline arrows, which produce a fresh
+  // identity every render - having those in the effect deps
+  // re-attached the handler on every parent render and
+  // (depending on render frequency) added measurable churn.
+  // Refs let us treat them as "always read the latest" without
+  // triggering any effect re-run.
+  const onDrawErrorRef = useRef(onDrawError);
+  const onSlotDisabledRef = useRef(onSlotDisabled);
+  const onSandboxHaltedRef = useRef(onSandboxHalted);
+  useEffect(() => { onDrawErrorRef.current = onDrawError; }, [onDrawError]);
+  useEffect(() => { onSlotDisabledRef.current = onSlotDisabled; }, [onSlotDisabled]);
+  useEffect(() => { onSandboxHaltedRef.current = onSandboxHalted; }, [onSandboxHalted]);
+
   // Stable srcdoc (don't change between mounts, the runtime
   // doesn't need any environment-specific data baked in).
   const srcdoc = useMemo(() => RUNTIME_SOURCE, []);
@@ -80,7 +117,10 @@ export default function ArenaVisualOverlay({
 
   const shouldMount = !disabled && hasDraws;
 
-  // Listen for messages from the iframe.
+  // Listen for messages from the iframe. Effect deps deliberately
+  // EXCLUDE the callback props - we read them via refs above so
+  // that identity flips on inline-arrow parents don't re-attach
+  // the listener every render.
   useEffect(() => {
     if (!shouldMount) return undefined;
     function handler(ev) {
@@ -95,18 +135,26 @@ export default function ArenaVisualOverlay({
         case "READY":
           setIsReady(true);
           break;
-        case "INIT_ERROR":
-          if (typeof onDrawError === "function") onDrawError({ type: "INIT_ERROR", message: msg.message });
+        case "INIT_ERROR": {
+          const cb = onDrawErrorRef.current;
+          if (typeof cb === "function") cb({ type: "INIT_ERROR", message: msg.message });
           break;
-        case "DRAW_ERROR":
-          if (typeof onDrawError === "function") onDrawError(msg);
+        }
+        case "DRAW_ERROR": {
+          const cb = onDrawErrorRef.current;
+          if (typeof cb === "function") cb(msg);
           break;
-        case "SLOT_DISABLED":
-          if (typeof onSlotDisabled === "function") onSlotDisabled(msg.slot, msg.reason);
+        }
+        case "SLOT_DISABLED": {
+          const cb = onSlotDisabledRef.current;
+          if (typeof cb === "function") cb(msg.slot, msg.reason);
           break;
-        case "SANDBOX_HALTED":
-          if (typeof onSandboxHalted === "function") onSandboxHalted(msg.reason);
+        }
+        case "SANDBOX_HALTED": {
+          const cb = onSandboxHaltedRef.current;
+          if (typeof cb === "function") cb(msg.reason);
           break;
+        }
         case "PAINT_DONE":
           // Currently unused, but useful for perf telemetry later.
           break;
@@ -116,7 +164,7 @@ export default function ArenaVisualOverlay({
     }
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [shouldMount, onDrawError, onSlotDisabled, onSandboxHalted]);
+  }, [shouldMount]);
 
   // When the iframe announces READY, push INIT once.
   useEffect(() => {
@@ -177,8 +225,10 @@ export default function ArenaVisualOverlay({
       // board underneath.
       className="absolute inset-0 w-full h-full pointer-events-none z-[2] border-0"
       // The iframe itself has a transparent background; the
-      // canvas inside paints over it.
-      style={{ background: "transparent" }}
+      // canvas inside paints over it. Style literal is hoisted
+      // (see top of file) so it stays referentially stable
+      // across parent re-renders.
+      style={IFRAME_STYLE}
     />
   );
 }
