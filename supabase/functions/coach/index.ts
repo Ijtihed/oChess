@@ -328,9 +328,11 @@ async function callGemini(prompt: string, model: string, maxTokens = 4000): Prom
   }
 }
 
-// Monthly $-cap shared with arena_rules. Keep this in sync
-// with arena_rules/index.ts. 50 USD = 50_000_000 micro-USD.
-const MONTHLY_CAP_MICRO_USD = 200_000_000; // $200.00 per calendar month (shared with arena_rules)
+// Monthly $-cap is now read from the ai_settings DB table
+// (single source of truth shared with arena_rules). The
+// Edge Function no longer hardcodes a value; this fallback is
+// only used when the DB read fails for some reason.
+const FALLBACK_CAP_MICRO_USD = 100_000_000;
 
 interface SpendCheckResult {
   ok: boolean;
@@ -338,6 +340,7 @@ interface SpendCheckResult {
   usedMicroUsd: number;
   capMicroUsd: number;
   remainingMicroUsd: number;
+  warningActive: boolean;
   error?: string;
 }
 
@@ -353,8 +356,9 @@ async function recordSpendOrBlock(
   if (!supabase) {
     return {
       ok: false, allowed: false, usedMicroUsd: 0,
-      capMicroUsd: MONTHLY_CAP_MICRO_USD,
-      remainingMicroUsd: MONTHLY_CAP_MICRO_USD,
+      capMicroUsd: FALLBACK_CAP_MICRO_USD,
+      remainingMicroUsd: FALLBACK_CAP_MICRO_USD,
+      warningActive: false,
       error: "Supabase client unavailable",
     };
   }
@@ -365,13 +369,14 @@ async function recordSpendOrBlock(
     p_input_tokens: inputTokens,
     p_output_tokens: outputTokens,
     p_micro_usd: microUsd,
-    p_monthly_cap_micro_usd: MONTHLY_CAP_MICRO_USD,
+    p_monthly_cap_micro_usd: 0,   // ignored; SQL reads from ai_settings
   });
   if (error) {
     return {
       ok: false, allowed: false, usedMicroUsd: 0,
-      capMicroUsd: MONTHLY_CAP_MICRO_USD,
-      remainingMicroUsd: MONTHLY_CAP_MICRO_USD,
+      capMicroUsd: FALLBACK_CAP_MICRO_USD,
+      remainingMicroUsd: FALLBACK_CAP_MICRO_USD,
+      warningActive: false,
       error: error.message,
     };
   }
@@ -379,8 +384,9 @@ async function recordSpendOrBlock(
   if (!row) {
     return {
       ok: false, allowed: false, usedMicroUsd: 0,
-      capMicroUsd: MONTHLY_CAP_MICRO_USD,
-      remainingMicroUsd: MONTHLY_CAP_MICRO_USD,
+      capMicroUsd: FALLBACK_CAP_MICRO_USD,
+      remainingMicroUsd: FALLBACK_CAP_MICRO_USD,
+      warningActive: false,
       error: "Empty spend response",
     };
   }
@@ -388,9 +394,21 @@ async function recordSpendOrBlock(
     ok: true,
     allowed: !!row.allowed,
     usedMicroUsd: Number(row.used_micro_usd) || 0,
-    capMicroUsd: Number(row.cap_micro_usd) || MONTHLY_CAP_MICRO_USD,
+    capMicroUsd: Number(row.cap_micro_usd) || FALLBACK_CAP_MICRO_USD,
     remainingMicroUsd: Number(row.remaining_micro_usd) || 0,
+    warningActive: row.warning_active === true,
   };
+}
+
+/**
+ * Friendly user-facing message when the monthly cap has been
+ * exhausted. Includes the date the cap resets.
+ */
+function capExhaustedMessage(): string {
+  const now = new Date();
+  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const day = nextMonth.toLocaleDateString("en-GB", { day: "numeric", month: "long" });
+  return `The AI coach is paused for the rest of the month — the global spending budget has been reached. It will return on ${day}.`;
 }
 
 function parseCoachJson(content: string): CoachResponse | null {
@@ -496,11 +514,11 @@ Deno.serve(async (req) => {
   const model = Deno.env.get("GEMINI_MODEL") || DEFAULT_MODEL;
 
   // Pre-flight $-cap check. Done with a 0-cost row that just
-  // surfaces the current spend; we then estimate THIS call's
-  // worst-case cost and refuse if it would push us over.
+  // surfaces the current spend; the SQL function reads the
+  // global cap from ai_settings.
   const preCheck = await recordSpendOrBlock(req, `coach_${mode}`, model, 0, 0, 0);
   if (preCheck.ok && preCheck.usedMicroUsd >= preCheck.capMicroUsd) {
-    return jsonErr("AI is temporarily unavailable - the monthly spending budget has been reached. Try again next month.", 503);
+    return jsonErr(capExhaustedMessage(), 503);
   }
 
   // ── Explain mode: per-card move explanation ──

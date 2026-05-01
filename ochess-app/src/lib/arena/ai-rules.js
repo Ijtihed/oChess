@@ -179,6 +179,11 @@ async function runOneGenerationAttempt(prompt, retryHint) {
       ok: false,
       error: merged.error || "AI couldn't produce valid rules.",
       validatorErrors: Array.isArray(merged.validatorErrors) ? merged.validatorErrors : undefined,
+      // Hard global cap hit. The Edge Function included a
+      // friendly dated message in `error`; surface a flag so
+      // the lobby can render a calmer "service paused" UI
+      // rather than a generic error toast.
+      capExhausted: merged.capExhausted === true,
     };
   }
   if (!merged.rules || typeof merged.rules !== "object") {
@@ -205,6 +210,11 @@ async function runOneGenerationAttempt(prompt, retryHint) {
     callsInWindow: Number(merged.rate_limit?.calls_in_window) || 0,
     maxCalls: Number(merged.rate_limit?.max_calls) || 0,
     windowSeconds: Number(merged.rate_limit?.window_seconds) || 0,
+    // Soft-cap warning: the global monthly AI budget is past
+    // the soft threshold but not yet exhausted. The lobby
+    // surfaces this so users aren't surprised when generation
+    // eventually hard-blocks.
+    spendWarning: merged.spend_warning === true,
   };
 }
 

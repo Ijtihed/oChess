@@ -1264,27 +1264,78 @@ $$;
 revoke all on function get_crazy_arena_lab() from public, anon;
 grant execute on function get_crazy_arena_lab() to authenticated, service_role;
 
+-- ── ai_settings: single source of truth for the global cap ──
+-- A one-row table that holds the monthly $-cap and soft-warning
+-- threshold. Replaces the previous arrangement where each Edge
+-- Function hardcoded MONTHLY_CAP_MICRO_USD in its own .ts file
+-- (and the two files routinely drifted apart - the README still
+-- claimed $50 while the code said $200).
+--
+-- monthly_cap_micro_usd:    HARD cap. Once month-to-date spend
+--                           reaches this value, every record_ai_
+--                           spend_or_block call returns
+--                           allowed=false and the Edge Functions
+--                           refuse new AI calls until the 1st
+--                           of next month.
+-- soft_warning_micro_usd:   When month-to-date spend exceeds
+--                           this, record_ai_spend_or_block
+--                           returns warning_active=true (and
+--                           still allows the call). The Edge
+--                           Functions surface this to the
+--                           client so the lobby can show a
+--                           "service is approaching its monthly
+--                           cap" notice.
+--
+-- Defaults: 100 EUR hard / 80 EUR soft (in micro-USD; we treat
+-- 1 EUR ~= 1 USD for the purposes of this cap, since the
+-- per-call cost estimation is itself approximate).
+create table if not exists ai_settings (
+  id int primary key default 1,
+  monthly_cap_micro_usd bigint not null default 100000000,
+  soft_warning_micro_usd bigint not null default 80000000,
+  updated_at timestamptz not null default now(),
+  -- Single-row guard: only id=1 is allowed.
+  constraint ai_settings_singleton check (id = 1)
+);
+insert into ai_settings (id, monthly_cap_micro_usd, soft_warning_micro_usd)
+  values (1, 100000000, 80000000)
+  on conflict (id) do nothing;
+
+-- Anyone authenticated can READ the current cap (so the lobby
+-- can show it). Only the service role can update it (so a
+-- compromised user account can't relax the cap).
+alter table ai_settings enable row level security;
+drop policy if exists "Anyone reads ai_settings" on ai_settings;
+create policy "Anyone reads ai_settings" on ai_settings
+  for select using (true);
+
 -- ── record_ai_spend_or_block: monthly $-cap enforcement ──
 -- Every AI Edge Function calls this AFTER its own per-user
 -- rate limit, with the cost it's ABOUT to incur (estimated
 -- from prompt length pre-call) or just incurred (post-call,
--- with actual token counts). Strategy:
+-- with actual token counts).
 --
---   1. Sum current calendar-month spend (in micro-USD).
---   2. If sum + this call's cost > monthly_cap, return
+-- Strategy:
+--   1. Read the global cap + soft-warning thresholds from
+--      ai_settings (single source of truth, not from the
+--      Edge Function caller).
+--   2. Sum current calendar-month spend (in micro-USD).
+--   3. If sum + this call's cost > monthly_cap, return
 --      allowed=false. Caller must NOT make the API call.
---   3. Otherwise, insert the row and return allowed=true.
+--   4. Otherwise, insert the row and return allowed=true.
+--   5. If sum is past the soft threshold, return
+--      warning_active=true so the caller can surface a
+--      "approaching cap" notice. Doesn't block.
 --
 -- Pre-call usage: pass a conservative ESTIMATE; if denied, the
 -- function returns the cap-exceeded error to the client.
--- Post-call usage: pass the ACTUAL cost; this is informational
--- only because the call already happened, but it keeps the
--- ledger accurate.
+-- Post-call usage: pass the ACTUAL cost.
 --
--- Cap is configurable via parameter so tests can set a tiny
--- cap; production callers always pass the constant defined on
--- the Edge Function side. Defaults to 50 USD = 50_000_000
--- micro-USD per calendar month.
+-- The legacy `p_monthly_cap_micro_usd` parameter is IGNORED -
+-- the function now reads from ai_settings instead. We keep it
+-- in the signature for backwards compatibility with deployed
+-- Edge Functions that still pass it; the parameter has no
+-- effect.
 create or replace function record_ai_spend_or_block(
   p_feature text,
   p_provider text,
@@ -1292,13 +1343,14 @@ create or replace function record_ai_spend_or_block(
   p_input_tokens int,
   p_output_tokens int,
   p_micro_usd bigint,
-  p_monthly_cap_micro_usd bigint default 50000000
+  p_monthly_cap_micro_usd bigint default 0   -- IGNORED; kept for backcompat
 )
 returns table (
   allowed boolean,
   used_micro_usd bigint,
   cap_micro_usd bigint,
-  remaining_micro_usd bigint
+  remaining_micro_usd bigint,
+  warning_active boolean
 )
 language plpgsql
 security definer
@@ -1308,10 +1360,22 @@ declare
   v_uid uuid;
   v_used bigint;
   v_remaining bigint;
+  v_cap bigint;
+  v_soft bigint;
 begin
-  -- We accept anonymous calls (e.g. an Edge Function with
-  -- just the service role) but tag user_id when present.
   v_uid := auth.uid();
+
+  -- Single source of truth: ai_settings row.
+  select monthly_cap_micro_usd, soft_warning_micro_usd
+    into v_cap, v_soft
+    from ai_settings
+   where id = 1;
+  if v_cap is null then
+    -- Defensive fallback if the settings row is missing for any
+    -- reason: use a conservative 100 USD to avoid uncapped spend.
+    v_cap := 100000000;
+    v_soft := 80000000;
+  end if;
 
   -- Sum spend in the current calendar month UTC.
   select coalesce(sum(micro_usd), 0)
@@ -1319,18 +1383,19 @@ begin
     from ai_spend_log
    where created_at >= date_trunc('month', now() at time zone 'UTC');
 
-  v_remaining := p_monthly_cap_micro_usd - v_used;
+  v_remaining := v_cap - v_used;
 
   -- Reject if this call would push over the cap.
-  if v_used + p_micro_usd > p_monthly_cap_micro_usd then
-    return query select false, v_used, p_monthly_cap_micro_usd, greatest(0::bigint, v_remaining);
+  if v_used + p_micro_usd > v_cap then
+    return query select false, v_used, v_cap, greatest(0::bigint, v_remaining), true;
     return;
   end if;
 
   insert into ai_spend_log(user_id, feature, provider, model, input_tokens, output_tokens, micro_usd)
     values (v_uid, p_feature, p_provider, p_model, p_input_tokens, p_output_tokens, p_micro_usd);
 
-  return query select true, v_used + p_micro_usd, p_monthly_cap_micro_usd, p_monthly_cap_micro_usd - v_used - p_micro_usd;
+  return query select true, v_used + p_micro_usd, v_cap, v_cap - v_used - p_micro_usd,
+    (v_used + p_micro_usd) >= v_soft;
 end;
 $$;
 revoke all on function record_ai_spend_or_block(text, text, text, int, int, bigint, bigint)

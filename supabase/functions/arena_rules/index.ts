@@ -97,6 +97,20 @@ interface ArenaRulesResponse {
   validatorErrors?: string[];
   error?: string;
   model?: string;
+  /**
+   * True when month-to-date spend has crossed the soft-warning
+   * threshold but not yet the hard cap. The lobby surfaces a
+   * small notice ("AI service is approaching its monthly limit")
+   * so users aren't surprised when the hard cap eventually hits.
+   * Generation still works.
+   */
+  spend_warning?: boolean;
+  /**
+   * True when the request was blocked because the monthly hard
+   * cap is exhausted. The friendly user-facing reason in
+   * `error` includes the date the cap resets.
+   */
+  capExhausted?: boolean;
   rate_limit?: {
     calls_in_window: number;
     max_calls: number;
@@ -821,16 +835,27 @@ interface SpendCheckResult {
   usedMicroUsd: number;
   capMicroUsd: number;
   remainingMicroUsd: number;
+  warningActive: boolean;
   error?: string;
 }
 
-const MONTHLY_CAP_MICRO_USD = 200_000_000; // $200.00 per calendar month (shared with coach)
+// Conservative fallback if the ai_settings table read fails for
+// any reason. The DB row is the source of truth; this is just
+// here so a transient DB hiccup doesn't accidentally let through
+// a $1000 month.
+const FALLBACK_CAP_MICRO_USD = 100_000_000;
 
 /**
  * Atomically check + record an AI spend event. Pre-call use:
  * pass an estimate; if denied, do NOT make the API call.
  * Post-call use: pass the actual cost as a true-up, ignoring
  * the result.
+ *
+ * The cap is read from the ai_settings table (single source of
+ * truth). The legacy p_monthly_cap_micro_usd RPC parameter is
+ * IGNORED by the SQL function but still passed for backwards
+ * compatibility with any older deploy of this Edge Function
+ * that didn't read it from the DB.
  */
 async function recordSpendOrBlock(
   req: Request,
@@ -842,7 +867,7 @@ async function recordSpendOrBlock(
 ): Promise<SpendCheckResult> {
   const supabase = makeAuthedClient(req);
   if (!supabase) {
-    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: MONTHLY_CAP_MICRO_USD, remainingMicroUsd: MONTHLY_CAP_MICRO_USD, error: "Supabase client unavailable" };
+    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: FALLBACK_CAP_MICRO_USD, remainingMicroUsd: FALLBACK_CAP_MICRO_USD, warningActive: false, error: "Supabase client unavailable" };
   }
   const { data, error } = await supabase.rpc("record_ai_spend_or_block", {
     p_feature: feature,
@@ -851,22 +876,35 @@ async function recordSpendOrBlock(
     p_input_tokens: inputTokens,
     p_output_tokens: outputTokens,
     p_micro_usd: microUsd,
-    p_monthly_cap_micro_usd: MONTHLY_CAP_MICRO_USD,
+    p_monthly_cap_micro_usd: 0,   // ignored by the SQL function
   });
   if (error) {
-    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: MONTHLY_CAP_MICRO_USD, remainingMicroUsd: MONTHLY_CAP_MICRO_USD, error: error.message };
+    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: FALLBACK_CAP_MICRO_USD, remainingMicroUsd: FALLBACK_CAP_MICRO_USD, warningActive: false, error: error.message };
   }
   const row = Array.isArray(data) ? data[0] : data;
   if (!row) {
-    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: MONTHLY_CAP_MICRO_USD, remainingMicroUsd: MONTHLY_CAP_MICRO_USD, error: "Empty spend response" };
+    return { ok: false, allowed: false, usedMicroUsd: 0, capMicroUsd: FALLBACK_CAP_MICRO_USD, remainingMicroUsd: FALLBACK_CAP_MICRO_USD, warningActive: false, error: "Empty spend response" };
   }
   return {
     ok: true,
     allowed: !!row.allowed,
     usedMicroUsd: Number(row.used_micro_usd) || 0,
-    capMicroUsd: Number(row.cap_micro_usd) || MONTHLY_CAP_MICRO_USD,
+    capMicroUsd: Number(row.cap_micro_usd) || FALLBACK_CAP_MICRO_USD,
     remainingMicroUsd: Number(row.remaining_micro_usd) || 0,
+    warningActive: row.warning_active === true,
   };
+}
+
+/**
+ * Build a friendly user-facing message when the monthly cap has
+ * been exhausted. Includes the date the cap resets so the user
+ * knows when AI features will return.
+ */
+function capExhaustedMessage(): string {
+  const now = new Date();
+  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const day = nextMonth.toLocaleDateString("en-GB", { day: "numeric", month: "long" });
+  return `AI variant generation is paused for the rest of the month — the global spending budget has been reached. It will return on ${day}.`;
 }
 
 /**
@@ -1647,29 +1685,28 @@ Deno.serve(async (req) => {
   // first response gets truncated and we retry.
   const estMicroUsd = estimateMicroUsdFromPromptChars(promptCharsEst, 16000) * 2;
   const preCheck = await recordSpendOrBlock(req, "arena_rules", model, 0, 0, 0);
-  if (preCheck.ok && !preCheck.allowed && preCheck.usedMicroUsd + estMicroUsd > preCheck.capMicroUsd) {
+  // Hard cap. Either we're already over OR this call would
+  // push us over - both block the same way with a friendly
+  // dated message.
+  if (preCheck.ok && (
+    preCheck.usedMicroUsd >= preCheck.capMicroUsd ||
+    preCheck.usedMicroUsd + estMicroUsd > preCheck.capMicroUsd
+  )) {
     return new Response(JSON.stringify({
       ok: false,
-      error: "AI variant generation is temporarily unavailable - the monthly spending budget has been reached. Try again next month.",
+      error: capExhaustedMessage(),
+      capExhausted: true,
       model,
     }), {
       status: 503,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
   }
-  // Hard pre-block when over cap regardless. The 0-cost row
-  // above just lets us inspect the current spend; the real
-  // cost-bearing record happens after each successful call.
-  if (preCheck.ok && preCheck.usedMicroUsd >= preCheck.capMicroUsd) {
-    return new Response(JSON.stringify({
-      ok: false,
-      error: "AI variant generation is temporarily unavailable - the monthly spending budget has been reached. Try again next month.",
-      model,
-    }), {
-      status: 503,
-      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-    });
-  }
+  // Soft warning: we're past the soft threshold but still under
+  // the hard cap. Stash a flag on the eventual response so the
+  // lobby can show "AI service is approaching its monthly limit"
+  // without blocking generation.
+  const softWarningActive = preCheck.ok && preCheck.warningActive;
 
   // ── Lab flag (Ship #2). Determines whether the composable-
   // primitive vocabulary is available to this user. Outside the
@@ -1772,6 +1809,7 @@ Deno.serve(async (req) => {
       max_calls: rl.maxCalls,
       window_seconds: rl.windowSeconds,
     },
+    spend_warning: softWarningActive,
   };
   return new Response(JSON.stringify(resp), {
     status: 200,

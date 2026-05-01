@@ -7,7 +7,7 @@ AI deck generator + per-card explainer for the Anki review surface.
 
 ## Provider
 
-Gemini 2.5 Flash via Google's OpenAI-compat endpoint. Same provider as `arena_rules`. Both functions share a single global $50/month spending cap enforced by the `record_ai_spend_or_block` RPC.
+Gemini 2.5 Flash via Google's OpenAI-compat endpoint. Same provider as `arena_rules`. Both functions share a single global monthly spending cap configured in the `ai_settings` DB table (default €100/month hard, €80/month soft warning) enforced by the `record_ai_spend_or_block` RPC.
 
 ## Deploy
 
@@ -43,9 +43,15 @@ The Anki review surface (`/review`) exposes this as the AI deck generator and th
 Two layers:
 
 1. **Per-user rolling-window rate limit**: 3 calls / 5 min per user, enforced by `record_coach_call`. Returns 429 with a structured retry countdown.
-2. **Global monthly $-cap**: 50 USD per calendar month, shared with `arena_rules`. Enforced by `record_ai_spend_or_block`. Once hit, every call returns 503 until the next month rolls over.
+2. **Global monthly $-cap**: configured in the `ai_settings` DB table (default €100/month hard, €80/month soft warning), shared with `arena_rules`. Enforced by `record_ai_spend_or_block`. Once hit, every call returns 503 with a friendly user-facing message including the date the cap resets.
 
-The cap is the only line of defense against a runaway bill — Google AI Studio's per-key budget cap is NOT configured separately. If you want to relax / tighten the cap, edit `MONTHLY_CAP_MICRO_USD` in this file AND in `supabase/functions/arena_rules/index.ts` so the constants match.
+The cap is the only line of defense against a runaway bill — Google AI Studio's per-key budget cap is NOT configured separately. To change the cap:
+
+```sql
+update ai_settings set monthly_cap_micro_usd = <micro-usd>,
+                       soft_warning_micro_usd = <micro-usd>
+                where id = 1;
+```
 
 To inspect current monthly spend:
 

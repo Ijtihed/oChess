@@ -24,7 +24,15 @@ AI rule generator for AI Arena. Takes a free-form prompt and returns a structure
 Two layers:
 
 1. **Per-user rolling-window rate limit**: 10 calls / 10 min per user. Enforced server-side by the `record_arena_rules_call` RPC. The client receives a 429 with `retry_after_seconds` when the user hits the cap.
-2. **Global monthly $-cap**: 50 USD per calendar month, shared with the `coach` function. Enforced by the `record_ai_spend_or_block` RPC. Once hit, every call returns 503 until the next month rolls over.
+2. **Global monthly $-cap**: configured in the `ai_settings` DB table (single source of truth shared with the `coach` function). Default `monthly_cap_micro_usd = 100_000_000` (€100/month) and `soft_warning_micro_usd = 80_000_000` (€80). The Edge Function reads from the table on every call; nothing is hardcoded in the Edge Function source any more. To change:
+
+```sql
+update ai_settings set monthly_cap_micro_usd = <micro-usd>,
+                       soft_warning_micro_usd = <micro-usd>
+                where id = 1;
+```
+
+Once month-to-date spend reaches the hard cap, every call returns 503 with a friendly user-facing message that includes the date the cap resets. Once spend crosses the soft warning, the response includes `spend_warning: true` and the lobby surfaces a small notice but generation still works.
 
 The $-cap is the only line of defense against a runaway bill — Google AI Studio's per-key budget cap is NOT configured separately. To inspect current monthly spend:
 

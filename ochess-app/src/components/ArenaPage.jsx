@@ -236,7 +236,12 @@ function CreatePanel({ user, navigate }) {
         }
         return;
       }
-      setGenerated({ rules: result.rules, summary: result.summary, model: result.model });
+      setGenerated({
+        rules: result.rules,
+        summary: result.summary,
+        model: result.model,
+        spendWarning: result.spendWarning === true,
+      });
     } catch (e) {
       setError(e?.message || "AI request failed.");
     } finally {
@@ -328,6 +333,12 @@ function CreatePanel({ user, navigate }) {
 
       {description && (
         <RulePreview description={description} model={generated?.model} />
+      )}
+      {generated?.spendWarning && (
+        <p className="text-[10px] text-amber-400/70 leading-relaxed px-1">
+          Heads up: the AI service is approaching its monthly limit.
+          Variant generation may pause for the rest of the month if usage continues.
+        </p>
       )}
 
       {error && (
