@@ -11,7 +11,6 @@ import { describeRules } from "../lib/arena/rule-preview";
 import { translateValidatorErrors } from "../lib/arena/error-messages";
 import ArenaRoom from "./ArenaRoom";
 import RulePreview from "./RulePreview";
-import ArenaVisualPreview from "./ArenaVisualPreview";
 
 /**
  * ArenaPage - landing for the AI Arena route.
@@ -446,9 +445,6 @@ function CreatePanel({ user, navigate }) {
 
       {description && (
         <RulePreview description={description} model={generated?.model} />
-      )}
-      {generated?.rules?.visuals && (
-        <ArenaVisualPreview visuals={generated.rules.visuals} seed={`preview:${generated?.rules?.name || ""}`} />
       )}
       {generated?.spendWarning && (
         <p className="text-[10px] text-amber-400/70 leading-relaxed px-1">
