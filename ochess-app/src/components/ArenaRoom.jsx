@@ -415,6 +415,20 @@ function useArenaVisualsMode(roomId) {
  * compiledDraws changes, so re-emit costs one re-INIT per change.
  */
 function useCompiledArenaVisuals(mode, rulesDiff) {
+  // Re-memoize ONLY when the visuals BLOCK changes shape, not
+  // when the surrounding rulesDiff object identity flips. The
+  // realtime-postgres replay produces fresh object references
+  // for every UPDATE even when content is identical; without
+  // this stabilization, ArenaVisualOverlay's compiledDraws
+  // prop changes every realtime tick, which triggers its INIT
+  // reset effect, which cascades into a render loop with the
+  // iframe's READY message. React error #185.
+  const visualsKey = useMemo(() => {
+    if (mode !== "ai") return mode; // demo and off don't need a key
+    try { return JSON.stringify(rulesDiff?.visuals || null); }
+    catch { return "null"; }
+  }, [mode, rulesDiff]);
+
   return useMemo(() => {
     if (mode === "off") return null;
     if (mode === "demo") return compileVisuals(DEMO_VISUALS).compiled;
@@ -429,7 +443,8 @@ function useCompiledArenaVisuals(mode, rulesDiff) {
       return null;
     }
     return null;
-  }, [mode, rulesDiff]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, visualsKey]);
 }
 
 /**
