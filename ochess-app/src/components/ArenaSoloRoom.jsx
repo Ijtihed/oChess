@@ -33,6 +33,7 @@ import ArenaVisualOverlay from "./ArenaVisualOverlay";
 import ArenaAbilityPanel from "./ArenaAbilityPanel";
 import { compileVisuals } from "../lib/arena/visual-sandbox/compile-draws";
 import { useActiveProjectiles } from "../lib/arena/use-active-projectiles";
+import { repairVisualsForRules } from "../lib/arena/visual-repair";
 import {
   Position,
   resolveRules,
@@ -121,8 +122,9 @@ function SoloGame({ variant, navigate, userName }) {
 
   // Visual overlay state.
   const compiledVisuals = useMemo(() => {
-    if (!variant.rules?.visuals) return null;
-    return compileVisuals(variant.rules.visuals).compiled;
+    const repaired = repairVisualsForRules(variant.rules);
+    if (!repaired?.visuals) return null;
+    return compileVisuals(repaired.visuals).compiled;
   }, [variant]);
   const { projectiles, fireProjectile } = useActiveProjectiles();
 

@@ -53,6 +53,7 @@ import { recordVisualError } from "../lib/arena/visuals-audit";
 import { pushVisualError } from "../lib/arena/visuals-error-buffer";
 import { useActiveProjectiles } from "../lib/arena/use-active-projectiles";
 import { useLabFlag } from "../lib/arena/use-lab-flag";
+import { repairVisualsForRules } from "../lib/arena/visual-repair";
 import {
   colorFor,
   colorPairFor,
@@ -426,7 +427,11 @@ function useCompiledArenaVisuals(mode, rulesDiff) {
   // iframe's READY message. React error #185.
   const visualsKey = useMemo(() => {
     if (mode !== "ai") return mode; // demo and off don't need a key
-    try { return JSON.stringify(rulesDiff?.visuals || null); }
+    // Include the whole rules diff, not just rulesDiff.visuals:
+    // the repair pass derives visuals from abilities when
+    // visuals are missing, so ability changes must invalidate
+    // this memo too.
+    try { return JSON.stringify(rulesDiff || null); }
     catch { return "null"; }
   }, [mode, rulesDiff]);
 
@@ -439,7 +444,8 @@ function useCompiledArenaVisuals(mode, rulesDiff) {
       // overlay component short-circuits and we don't even
       // mount the iframe (saves ~1MB of inline source +
       // postMessage chatter for vanilla-ish variants).
-      const v = rulesDiff?.visuals;
+      const repairedRules = repairVisualsForRules(rulesDiff);
+      const v = repairedRules?.visuals;
       if (v && typeof v === "object") {
         const compiled = compileVisuals(v);
         if (compiled.errors?.length > 0 && typeof console !== "undefined") {

@@ -40,6 +40,7 @@
 import { supabase } from "../supabase";
 import { validateRules } from "./validator";
 import { compileVisuals } from "./visual-sandbox/compile-draws";
+import { repairVisualsForRules } from "./visual-repair";
 import { verifyRules } from "./verification";
 import { repairRules } from "./repair";
 import { checkPromptSanity } from "./error-messages";
@@ -245,6 +246,7 @@ async function runOneGenerationAttempt(prompt, retryHint, abortSignal) {
   // the stored shape readable for debugging and lets the
   // compile pipeline evolve without invalidating older rows.
   let visualErrors = [];
+  merged.rules = repairVisualsForRules(merged.rules);
   if (merged.rules.visuals && typeof merged.rules.visuals === "object") {
     const filtered = filterValidVisuals(merged.rules.visuals);
     visualErrors = filtered.errors;
