@@ -10,32 +10,31 @@ import { injectLoopGuard } from "./inject-loop-guard";
  * This is the key correctness test: not just "is the source
  * structurally correct" but "does it actually catch infinite
  * loops at runtime."
+ *
+ * The wrapper signature is now (guardCtx, guardFn, ...userParams)
+ * - both are explicit parameters because the iframe runtime
+ * evaluates draws via new Function() which breaks any closure
+ * over the runtime's guard helpers.
  */
 function executeWithGuard(injected, params, maxIters, ...args) {
-  // The wrapper takes (guardCtx, ...userParams).
-  // We pass a guardCtx + a guard fn that increments + throws
-  // after maxIters.
   const guardCtx = { count: 0 };
   const guard = (ctx) => {
     ctx.count += 1;
     if (ctx.count > maxIters) throw new Error("MAX_ITERS");
   };
-  // The injected source defines `__draw__`. We need to make
-  // `__arenaGuard__` resolvable inside it. Easiest: pass it
-  // through an enclosing wrapper.
+  // eslint-disable-next-line no-new-func
   const wrapper = new Function(
-    "__arenaGuard__",
     "args",
-    `${injected}; return __draw__(args[0], ...args.slice(1));`,
+    `${injected}; return __draw__(args[0], args[1], ...args.slice(2));`,
   );
-  return wrapper(guard, [guardCtx, ...args]);
+  return wrapper([guardCtx, guard, ...args]);
 }
 
 describe("injectLoopGuard - source rewriting", () => {
-  it("wraps the body in a __draw__ function with the guard ctx as the first param", () => {
+  it("wraps the body in a __draw__ function with both guard ctx and guard fn as leading params", () => {
     const r = injectLoopGuard(`ctx.fillRect(0, 0, 1, 1);`, ["ctx"]);
     expect(r.ok).toBe(true);
-    expect(r.source).toMatch(/^function __draw__\(__arenaGuardCtx__, ctx\)/);
+    expect(r.source).toMatch(/^function __draw__\(__arenaGuardCtx__, __arenaGuard__, ctx\)/);
   });
 
   it("injects a guard call into a for loop's block body", () => {
@@ -44,11 +43,18 @@ describe("injectLoopGuard - source rewriting", () => {
     expect(r.source).toMatch(/__arenaGuard__\(__arenaGuardCtx__\);/);
   });
 
+  // Helper: count the number of guard-CALL invocations in the
+  // output (parameter declarations don't count). The injected
+  // call shape is `__arenaGuard__(__arenaGuardCtx__);` so we
+  // grep for that exact shape.
+  function countGuardCalls(src) {
+    return (src.match(/__arenaGuard__\(__arenaGuardCtx__\);/g) || []).length;
+  }
+
   it("injects a guard call into a while loop", () => {
     const r = injectLoopGuard(`let i = 0; while (i < 3) { i++; }`, []);
     expect(r.ok).toBe(true);
-    // Count of guard calls in output should match number of loops.
-    expect((r.source.match(/__arenaGuard__/g) || []).length).toBe(1);
+    expect(countGuardCalls(r.source)).toBe(1);
   });
 
   it("wraps a bare-statement loop body in a block + guard", () => {
@@ -62,17 +68,17 @@ describe("injectLoopGuard - source rewriting", () => {
   it("handles do-while", () => {
     const r = injectLoopGuard(`let i = 0; do { i++; } while (i < 3);`, []);
     expect(r.ok).toBe(true);
-    expect((r.source.match(/__arenaGuard__/g) || []).length).toBe(1);
+    expect(countGuardCalls(r.source)).toBe(1);
   });
 
   it("handles for-in and for-of", () => {
     const r1 = injectLoopGuard(`for (const k in {a:1, b:2}) { k.toString(); }`, []);
     expect(r1.ok).toBe(true);
-    expect((r1.source.match(/__arenaGuard__/g) || []).length).toBe(1);
+    expect(countGuardCalls(r1.source)).toBe(1);
 
     const r2 = injectLoopGuard(`for (const v of [1,2,3]) { v.toString(); }`, []);
     expect(r2.ok).toBe(true);
-    expect((r2.source.match(/__arenaGuard__/g) || []).length).toBe(1);
+    expect(countGuardCalls(r2.source)).toBe(1);
   });
 
   it("injects into nested loops independently", () => {
@@ -81,13 +87,13 @@ describe("injectLoopGuard - source rewriting", () => {
       ["ctx"],
     );
     expect(r.ok).toBe(true);
-    expect((r.source.match(/__arenaGuard__/g) || []).length).toBe(2);
+    expect(countGuardCalls(r.source)).toBe(2);
   });
 
   it("doesn't inject for non-loop blocks", () => {
     const r = injectLoopGuard(`if (true) { ctx.fillRect(0, 0, 1, 1); } else { ctx.fillRect(2, 2, 1, 1); }`, ["ctx"]);
     expect(r.ok).toBe(true);
-    expect(r.source).not.toMatch(/__arenaGuard__/);
+    expect(countGuardCalls(r.source)).toBe(0);
   });
 
   it("handles inner functions with their own loops", () => {
@@ -96,7 +102,7 @@ describe("injectLoopGuard - source rewriting", () => {
       [],
     );
     expect(r.ok).toBe(true);
-    expect((r.source.match(/__arenaGuard__/g) || []).length).toBe(1);
+    expect(countGuardCalls(r.source)).toBe(1);
   });
 });
 

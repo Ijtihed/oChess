@@ -44,6 +44,9 @@ import { describeRules } from "../lib/arena/rule-preview";
 import { translateValidatorErrors } from "../lib/arena/error-messages";
 import RulePreview from "./RulePreview";
 import ArenaAbilityPanel from "./ArenaAbilityPanel";
+import ArenaVisualOverlay from "./ArenaVisualOverlay";
+import { compileVisuals } from "../lib/arena/visual-sandbox/compile-draws";
+import { DEMO_VISUALS } from "../lib/arena/visual-sandbox/demo-draws";
 import {
   colorFor,
   colorPairFor,
@@ -331,6 +334,70 @@ function CrazyStateBadges({ position, orientation }) {
 // timeout in the parent's setState. Deliberately ugly so we
 // don't forget to clean it up in Ship #3 once visuals land and
 // most variant errors become impossible.
+/**
+ * Read the Ship #3 visual-overlay feature flag from localStorage.
+ *
+ *   "off"   - render nothing extra (default; current Ship #2 UX)
+ *   "demo"  - render the hand-coded DEMO_VISUALS (auras + vignette)
+ *             so you can verify the iframe sandbox + paint loop
+ *             work end-to-end before AI integration lands.
+ *   "ai"    - render whatever the variant's AI-emitted visuals
+ *             produced (wired up in Phase 4).
+ *
+ * Set via DevTools console:
+ *   localStorage.setItem("arena_visuals_mode", "demo")
+ *
+ * Reading from localStorage means you can turn it on without a
+ * redeploy. Stored as a small string so the read cost is trivial.
+ */
+function useArenaVisualsMode() {
+  const [mode, setMode] = useState(() => {
+    try {
+      const v = localStorage.getItem("arena_visuals_mode");
+      if (v === "demo" || v === "ai") return v;
+    } catch { /* ignore */ }
+    return "off";
+  });
+  // Refresh on the same custom event our prefs system uses, so
+  // toggling the flag picks up immediately without a page reload.
+  useEffect(() => {
+    function handler() {
+      try {
+        const v = localStorage.getItem("arena_visuals_mode");
+        setMode(v === "demo" || v === "ai" ? v : "off");
+      } catch { /* ignore */ }
+    }
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
+  }, []);
+  return mode;
+}
+
+/**
+ * Compile the visuals to render into the sandbox. Returns the
+ * compiled-source object the iframe accepts via INIT.drawSources,
+ * or null when no visuals should render.
+ *
+ * Memoized on the visuals input so the iframe doesn't re-compile
+ * every render. The iframe ALSO resets its INIT-sent flag when
+ * compiledDraws changes, so re-emit costs one re-INIT per change.
+ */
+function useCompiledArenaVisuals(mode, rulesDiff) {
+  return useMemo(() => {
+    if (mode === "off") return null;
+    if (mode === "demo") return compileVisuals(DEMO_VISUALS).compiled;
+    if (mode === "ai") {
+      // Phase 4: pull rulesDiff.visuals once the AI emits it.
+      // For now, fall back to demo so the iframe still has
+      // something to paint.
+      const v = rulesDiff?.visuals;
+      if (v && typeof v === "object") return compileVisuals(v).compiled;
+      return compileVisuals(DEMO_VISUALS).compiled;
+    }
+    return null;
+  }, [mode, rulesDiff]);
+}
+
 /**
  * Merge a base highlightSquares object (used by InteractiveBoard
  * for last-move tints, premove indicators, etc) with:
@@ -1158,6 +1225,10 @@ function Warmup({ room, setRoom, role, roomId }) {
   const [position, setPosition] = useState(() => Position.fromFen(rules.startingFen || VANILLA_FEN));
   const [highlight, setHighlight] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(WARMUP_DURATION_S);
+  // Ship #3 visual overlay (sandboxed iframe). No-op unless the
+  // localStorage feature flag is set; see useArenaVisualsMode.
+  const visualsMode = useArenaVisualsMode();
+  const compiledVisuals = useCompiledArenaVisuals(visualsMode, rulesDiff);
   // Ability-panel hover highlight. When the user hovers a row in
   // the AbilityPanel, the panel calls back with the squares that
   // hold castable pieces; we paint those squares amber on the
@@ -1456,6 +1527,20 @@ function Warmup({ room, setRoom, role, roomId }) {
                 highlightSquares={mergeHighlight(highlight, abilityHighlight, castFlash)}
                 legalMovesProvider={legalMovesProvider}
               />
+              {/* Ship #3 visual overlay (sandboxed iframe). No-op
+                  unless `arena_visuals_mode` localStorage flag is
+                  set to "demo" or "ai". */}
+              <ArenaVisualOverlay
+                compiledDraws={compiledVisuals}
+                seed={`${roomId}:warmup:${round}`}
+                position={position}
+                orientation={orientation}
+                disabled={visualsMode === "off"}
+                onDrawError={(err) => {
+                  // eslint-disable-next-line no-console
+                  console.warn("[arena-visuals] draw error:", err);
+                }}
+              />
               <CrazyStateBadges position={position} orientation={orientation} />
               <VariantErrorToast
                 message={variantError}
@@ -1618,6 +1703,10 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   // Hover-highlight from the AbilityPanel (see warmup component
   // for the full rationale).
   const [abilityHighlight, setAbilityHighlight] = useState([]);
+  // Ship #3 visual overlay (sandboxed iframe). No-op unless the
+  // localStorage feature flag is set.
+  const visualsMode = useArenaVisualsMode();
+  const compiledVisuals = useCompiledArenaVisuals(visualsMode, rulesDiff);
   // Cast flash overlay (see warmup component for full
   // rationale). Auto-clears after 700ms.
   const [castFlash, setCastFlash] = useState(null);
@@ -2550,6 +2639,18 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                     setPremove(null);
                     premoveRef.current = null;
                   }
+                }}
+              />
+              {/* Ship #3 visual overlay (sandboxed iframe). */}
+              <ArenaVisualOverlay
+                compiledDraws={compiledVisuals}
+                seed={`${roomId}:${roundLabel}`}
+                position={position}
+                orientation={orientation}
+                disabled={visualsMode === "off"}
+                onDrawError={(err) => {
+                  // eslint-disable-next-line no-console
+                  console.warn("[arena-visuals] draw error:", err);
                 }}
               />
               <CrazyStateBadges position={position} orientation={orientation} />

@@ -55,9 +55,9 @@
 
 import { parse } from "acorn";
 
-const GUARD_VAR = "__arenaGuardCtx__";
-const GUARD_FN = "__arenaGuard__";
-const GUARD_CALL = `${GUARD_FN}(${GUARD_VAR});`;
+const GUARD_CTX_VAR = "__arenaGuardCtx__";
+const GUARD_FN_VAR = "__arenaGuard__";
+const GUARD_CALL = `${GUARD_FN_VAR}(${GUARD_CTX_VAR});`;
 
 /**
  * Inject loop-guard calls into a user-provided draw source.
@@ -136,10 +136,14 @@ export function injectLoopGuard(source, userParams) {
     }
   }
 
-  // Wrap the whole thing in a function that takes the guard ctx
-  // as an extra leading parameter. The runtime will call this with
-  // a fresh ctx per frame.
-  const fnSource = `function __draw__(${GUARD_VAR}, ${params.join(", ")}) {\n${out}\n}`;
+  // Wrap the whole thing in a function that takes the guard
+  // CONTEXT and the guard FUNCTION as the two leading parameters,
+  // followed by the user-facing draw params. Both guard slots are
+  // explicit parameters (not closures) because the iframe runtime
+  // evaluates the function source via `new Function(...)`, which
+  // breaks any closure over the runtime's guard helpers. The
+  // runtime calls the result with (guardCtx, guardFn, ...userArgs).
+  const fnSource = `function __draw__(${GUARD_CTX_VAR}, ${GUARD_FN_VAR}, ${params.join(", ")}) {\n${out}\n}`;
 
   return { ok: true, source: fnSource };
 }
