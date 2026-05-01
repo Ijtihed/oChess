@@ -49,6 +49,29 @@ describe("validateDraw - happy path (typical AI draws)", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("accepts an effect-style draw using e.* fields", () => {
+    const r = validateDraw(`
+      const alpha = 1 - e.progress;
+      ctx.fillStyle = "rgba(255,120,0," + alpha + ")";
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, 8 + e.progress * 20, 0, Math.PI * 2);
+      ctx.fill();
+    `, { params: ["ctx", "e", "t"] });
+    expect(r.ok).toBe(true);
+  });
+
+  it("accepts brain hooks spawning cosmetic effects/projectiles", () => {
+    const r = validateDraw(`
+      if (!state.cooldown || state.cooldown <= 0) {
+        world.spawnEffect({ kind: "spark", x: self.x, y: self.y, ttl: 300 });
+        world.spawnProjectile({ kind: "wisp", fromX: self.x, fromY: self.y, toX: self.x + facing * 20, toY: self.y, ttl: 400 });
+        state.cooldown = 5;
+      }
+      state.cooldown = state.cooldown - dt;
+    `, { params: ["self", "world", "dt", "state"] });
+    expect(r.ok).toBe(true);
+  });
+
   it("accepts using owner / facing for color/orientation logic", () => {
     const r = validateDraw(`
       ctx.fillStyle = owner.color === "w" ? "white" : "black";

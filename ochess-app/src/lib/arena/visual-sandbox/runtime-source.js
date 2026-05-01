@@ -92,8 +92,11 @@ export const RUNTIME_SOURCE = `<!doctype html>
   var state = {
     drawsBySlot: {},              // { "q.aura": Function, "n.body": Function, ... }
     projectileDrawsById: {},      // { "fireball": Function, ... }
+    effectDrawsById: {},          // { "impact": Function, "smoke": Function, ... }
     overlayDraws: [],             // [Function, ...]
     brainDraws: {},               // { "q": Function, ... }  (cosmetic per-piece hooks)
+    activeProjectiles: [],        // spawned by brain hooks
+    activeEffects: [],            // spawned by brain hooks
     errorCounts: {},              // { "q.aura": 5, ... }
     disabledSlots: {},            // { "q.aura": true, ... }
     perfBuckets: {},              // { "q.aura": [3.2, 4.1, ...], ... }
@@ -101,6 +104,7 @@ export const RUNTIME_SOURCE = `<!doctype html>
     seededRandom: Math.random,
     pieceState: {},               // per-piece state map for brain hooks
     lastSceneT: 0,
+    lastBrainT: 0,
   };
 
   var MAX_ERRORS_PER_SLOT = 30;
@@ -110,6 +114,9 @@ export const RUNTIME_SOURCE = `<!doctype html>
   var GUARD_MAX_MS = 40;
   var SLOW_SLOT_MS = 5;            // a single draw exceeding this is "slow"
   var SLOW_FRAMES_TO_DOWNGRADE = 10;
+  var BRAIN_INTERVAL_MS = 120;     // ~8Hz, similar to WarriorFactory brains
+  var MAX_BRAIN_PROJECTILES = 32;
+  var MAX_BRAIN_EFFECTS = 64;
 
   // ── Seeded PRNG (xoshiro128+) ─────────────────────────
   // Inlined here because the iframe can't import; same algo
@@ -241,6 +248,82 @@ export const RUNTIME_SOURCE = `<!doctype html>
     }
   }
 
+  // ── Brain hooks (WarriorFactory-style cosmetic scheduler) ─
+  // Brains run at low frequency and can spawn purely-visual
+  // projectiles/effects. They CANNOT change chess state.
+  function runBrains(scene, sqSize, orientation) {
+    var nowT = scene.t || 0;
+    if (nowT - state.lastBrainT < BRAIN_INTERVAL_MS) return;
+    var dt = state.lastBrainT ? (nowT - state.lastBrainT) / 1000 : BRAIN_INTERVAL_MS / 1000;
+    state.lastBrainT = nowT;
+
+    for (var i = 0; i < (scene.pieces || []).length; i++) {
+      var piece = scene.pieces[i];
+      var brain = state.brainDraws[piece.type];
+      if (!brain) continue;
+      var sx = squareToScreen(piece.square, sqSize, orientation);
+      if (!sx) continue;
+      var selfState = state.pieceState[piece.square] = state.pieceState[piece.square] || {};
+      var self = {
+        type: piece.type,
+        color: piece.color,
+        square: piece.square,
+        x: sx.x,
+        y: sx.y,
+        facing: piece.color === "w" ? 1 : -1,
+        t: nowT,
+        state: selfState,
+      };
+      var world = makeBrainWorld(nowT);
+      var g = makeGuardCtx();
+      try {
+        brain(g, guardFn, self, world, dt);
+      } catch (err) {
+        handleDrawError("brain." + piece.type, err, []);
+      }
+    }
+  }
+
+  function makeBrainWorld(nowT) {
+    return {
+      spawnProjectile: function (payload) {
+        if (!payload || typeof payload !== "object") return;
+        if (state.activeProjectiles.length >= MAX_BRAIN_PROJECTILES) state.activeProjectiles.shift();
+        var ttl = clampNumber(payload.ttl || payload.ttlMs || 500, 80, 2000);
+        state.activeProjectiles.push({
+          kind: String(payload.kind || "default"),
+          fromX: Number(payload.fromX) || Number(payload.x) || 0,
+          fromY: Number(payload.fromY) || Number(payload.y) || 0,
+          toX: Number(payload.toX) || Number(payload.x) || 0,
+          toY: Number(payload.toY) || Number(payload.y) || 0,
+          age: 0,
+          ttl: ttl,
+          startedAt: nowT,
+        });
+      },
+      spawnEffect: function (payload) {
+        if (!payload || typeof payload !== "object") return;
+        if (state.activeEffects.length >= MAX_BRAIN_EFFECTS) state.activeEffects.shift();
+        var ttl = clampNumber(payload.ttl || payload.ttlMs || 600, 80, 3000);
+        state.activeEffects.push({
+          kind: String(payload.kind || "default"),
+          x: Number(payload.x) || 0,
+          y: Number(payload.y) || 0,
+          age: 0,
+          ttl: ttl,
+          data: payload.data && typeof payload.data === "object" ? payload.data : {},
+          startedAt: nowT,
+        });
+      },
+    };
+  }
+
+  function clampNumber(n, min, max) {
+    n = Number(n);
+    if (!isFinite(n)) return min;
+    return Math.max(min, Math.min(max, n));
+  }
+
   // ── Scene paint ───────────────────────────────────────
   function paintScene(scene) {
     if (!scene) return;
@@ -284,17 +367,25 @@ export const RUNTIME_SOURCE = `<!doctype html>
       }
     }
 
-    // 2. Active projectiles (absolute coords)
-    for (var k = 0; k < (scene.projectiles || []).length; k++) {
-      var proj = scene.projectiles[k];
+    // 2. Brain hooks can spawn cosmetic projectiles/effects.
+    runBrains(scene, sq, orientation);
+
+    // 3. Active projectiles (absolute coords). Includes chess-
+    // event projectiles from the parent plus visual-only brain
+    // spawned projectiles.
+    var activeProjectiles = updateBrainProjectiles(scene.t || 0);
+    var projectiles = (scene.projectiles || []).concat(activeProjectiles);
+    for (var k = 0; k < projectiles.length; k++) {
+      var proj = projectiles[k];
       if (!proj) continue;
       var fn = state.projectileDrawsById[proj.kind];
       if (!fn) continue;
       var g = makeGuardCtx();
       var pt0 = performance.now();
       try {
-        var fromS = squareToScreen(proj.from, sq, orientation);
-        var toS = squareToScreen(proj.to, sq, orientation);
+        var fromS = proj.fromX != null ? { x: proj.fromX, y: proj.fromY } : squareToScreen(proj.from, sq, orientation);
+        var toS = proj.toX != null ? { x: proj.toX, y: proj.toY } : squareToScreen(proj.to, sq, orientation);
+        if (!fromS || !toS) continue;
         var p = {
           x: fromS.x + (toS.x - fromS.x) * proj.progress,
           y: fromS.y + (toS.y - fromS.y) * proj.progress,
@@ -311,7 +402,23 @@ export const RUNTIME_SOURCE = `<!doctype html>
       trackPerf("proj." + proj.kind, performance.now() - pt0);
     }
 
-    // 3. Full-board overlays
+    // 4. Brain-spawned effects (absolute coords)
+    var effects = updateBrainEffects(scene.t || 0);
+    for (var ei = 0; ei < effects.length; ei++) {
+      var eff = effects[ei];
+      var efn = state.effectDrawsById[eff.kind];
+      if (!efn) continue;
+      var eg = makeGuardCtx();
+      var et0 = performance.now();
+      try {
+        efn(eg, guardFn, ctx, eff, scene.t || 0);
+      } catch (err) {
+        handleDrawError("effect." + eff.kind, err, []);
+      }
+      trackPerf("effect." + eff.kind, performance.now() - et0);
+    }
+
+    // 5. Full-board overlays
     for (var m = 0; m < state.overlayDraws.length; m++) {
       var ofn = state.overlayDraws[m];
       var og = makeGuardCtx();
@@ -336,6 +443,34 @@ export const RUNTIME_SOURCE = `<!doctype html>
       ply: scene.ply,
       ms: frameMs,
     });
+  }
+
+  function updateBrainProjectiles(nowT) {
+    var next = [];
+    for (var i = 0; i < state.activeProjectiles.length; i++) {
+      var p = state.activeProjectiles[i];
+      var age = nowT - p.startedAt;
+      if (age >= p.ttl) continue;
+      p.age = age;
+      p.progress = Math.max(0, Math.min(1, age / p.ttl));
+      next.push(p);
+    }
+    state.activeProjectiles = next;
+    return next;
+  }
+
+  function updateBrainEffects(nowT) {
+    var next = [];
+    for (var i = 0; i < state.activeEffects.length; i++) {
+      var e = state.activeEffects[i];
+      var age = nowT - e.startedAt;
+      if (age >= e.ttl) continue;
+      e.age = age;
+      e.progress = Math.max(0, Math.min(1, age / e.ttl));
+      next.push(e);
+    }
+    state.activeEffects = next;
+    return next;
   }
 
   // ── Helpers ───────────────────────────────────────────
@@ -376,6 +511,7 @@ export const RUNTIME_SOURCE = `<!doctype html>
         // The drawSources object is shaped as:
         //   { slots: { "q.aura": "<source>", ... },
         //     projectiles: { "fireball": "<source>", ... },
+        //     effects: { "impact": "<source>", ... },
         //     overlays: ["<source>", ...],
         //     brains: { "q": "<source>", ... } }
         // Each source is a complete function declaration string
@@ -386,6 +522,9 @@ export const RUNTIME_SOURCE = `<!doctype html>
         }
         for (var pk in (sources.projectiles || {})) {
           state.projectileDrawsById[pk] = compileDraw(sources.projectiles[pk], "proj." + pk);
+        }
+        for (var ek in (sources.effects || {})) {
+          state.effectDrawsById[ek] = compileDraw(sources.effects[ek], "effect." + ek);
         }
         for (var oi = 0; oi < (sources.overlays || []).length; oi++) {
           var compiled = compileDraw(sources.overlays[oi], "overlay." + oi);

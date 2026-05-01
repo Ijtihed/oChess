@@ -69,7 +69,7 @@ const ALLOWED_GLOBAL_IDENTIFIERS = new Set([
  */
 const ALLOWED_PARAM_IDENTIFIERS = new Set([
   "ctx", "x", "y", "facing", "owner", "t", "random", "state",
-  "p", "scene", "self", "world", "dt",
+  "p", "e", "scene", "self", "world", "dt",
 ]);
 
 /**
@@ -107,12 +107,15 @@ const ALLOWED_MEMBER_PATHS = new Set([
   "p.x", "p.y", "p.progress",
   "p.fromX", "p.fromY", "p.toX", "p.toY",
   "p.age", "p.ttl", "p.ageMs", "p.ttlMs",
+  // Effect shape
+  "e.x", "e.y", "e.age", "e.ttl", "e.progress", "e.kind", "e.data",
   // Scene shape (overlay draws)
   "scene.width", "scene.height",
   "scene.marks", "scene.lastCast", "scene.t",
   // Brain (cosmetic)
   "self.type", "self.color", "self.square",
   "self.x", "self.y", "self.facing",
+  "self.t",
   "world.spawnEffect", "world.spawnProjectile",
 ]);
 

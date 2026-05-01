@@ -646,7 +646,9 @@ The functions run in a sandboxed iframe with no network/storage access. Emit Jav
 The visuals object accepts these keys:
 - "slots": object keyed by "<pieceType>.<slotName>". E.g. "q.aura" paints under EVERY queen on the board (both colors). Slot names are: body, head, back, weapon_R, weapon_L, feet, aura. Each value is a JavaScript function body string receiving (ctx, x, y, facing, owner, t, random, state).
 - "projectiles": object keyed by projectile id. The key SHOULD match an ability id. If an ability id is "fireball", emit visuals.projectiles.fireball. Each value receives (ctx, p) where p has {x, y, fromX, fromY, toX, toY, progress, age, ttl}.
+- "effects": object keyed by cosmetic effect id. These are spawned by visual brains with world.spawnEffect({kind,x,y,ttl,data}). Each value receives (ctx, e, t) where e has {x,y,age,ttl,progress,kind,data}.
 - "overlays": array of full-board JS function body strings receiving (ctx, scene) where scene has {width, height, marks, lastCast, t}. Use overlays for board-wide weather, frozen-square crystals, curse smoke, post-cast shockwaves, and status marks.
+- "brains": object keyed by piece type ("p","n","b","r","q","k"). Each value is a JavaScript function body receiving (self, world, dt). Runs about 8 times per second. It can set fields on self.state, call world.spawnProjectile({kind,fromX,fromY,toX,toY,ttl}), and call world.spawnEffect({kind,x,y,ttl,data}). It must not try to change game rules or piece positions.
 
 Parameter contract:
 - ctx: a canvas 2D context, pre-translated to the slot's center for slot draws. Position (0,0) is the piece's center.
@@ -658,6 +660,8 @@ Parameter contract:
 - state: a per-piece persistent object you can read/write across frames.
 - scene.lastCast: null or {from,to,abilityId}. Use it to draw a one-frame shockwave / burn ring / frost burst at the target.
 - scene.marks: object keyed by square. Use this for status effects like freeze/burn/curse/shield when your rules emit effect.kind = "mark".
+- self in brain hooks: {type,color,square,x,y,facing,t,state}. x/y are absolute board pixels, so brain-spawned effects/projectiles can use them directly.
+- world in brain hooks: {spawnProjectile, spawnEffect}. Use these for idle embers, charge sparks, ghost wisps, lightning arcs, smoke puffs. They are cosmetic only.
 
 Allowed canvas API (everything else is rejected by the validator):
 - Setters: fillStyle, strokeStyle, lineWidth, lineCap, lineJoin, globalAlpha, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY
@@ -682,6 +686,7 @@ Performance: each per-frame draw has a 15ms budget. For per-piece slots that mea
 
 Visual quality requirements:
 - If you define an active ability, emit at least one slot draw on the caster piece type AND, when the ability travels from caster to target, a projectile draw whose key equals the ability id.
+- If the visual needs ambient particles or temporary effects, emit a brain hook plus matching effects/projectiles. Example: visuals.brains.q spawns "ember" effects; visuals.effects.ember draws fading sparks.
 - For a themed caster piece, prefer 3-5 slots, not just aura. Example for a fireball queen: q.aura for heat shimmer, q.weapon_R for flame staff, q.back for cape sparks, q.feet for ember trail, q.body for molten core.
 - Do NOT draw letters or text. Do NOT use generic circles only. Combine gradients, arcs, triangles, jagged lines, particles, alpha, rotation, and time-based pulsing.
 - Slot drawings are centered on the piece. Keep most marks within radius 35 so they sit around the chess sprite, not over the whole board.
@@ -711,6 +716,10 @@ Overlay (last-cast fire burst):
 
 Overlay (marked frozen squares):
   "const sq=scene.width/8; const files='abcdefgh'; for(const key of Object.keys(scene.marks||{})){ const marks=scene.marks[key]||[]; let frozen=false; for(let i=0;i<marks.length;i++){ if(String(marks[i].tag||'').includes('freeze')||String(marks[i].tag||'').includes('ice')) frozen=true; } if(!frozen) continue; const f=files.indexOf(key[0]); const r=parseInt(key[1],10)-1; if(f<0) continue; const x=f*sq+sq/2, y=(7-r)*sq+sq/2; ctx.strokeStyle='rgba(170,230,255,0.65)'; ctx.lineWidth=1.5; for(let i=0;i<6;i++){ const a=i*Math.PI/3+scene.t*0.002; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+Math.cos(a)*22,y+Math.sin(a)*22); ctx.stroke(); } }"
+
+Brain + effect (idle ember sparks around a fire queen):
+  "brains": { "q": "if(!state.nextSpark||state.nextSpark<=0){ world.spawnEffect({kind:'ember',x:self.x+(random()*24-12),y:self.y+(random()*24-12),ttl:500,data:{rise:10+random()*12}}); state.nextSpark=0.25; } state.nextSpark=state.nextSpark-dt;" },
+  "effects": { "ember": "const a=1-e.progress; const rise=e.data&&e.data.rise?e.data.rise:14; ctx.fillStyle='rgba(255,120,0,'+a+')'; ctx.beginPath(); ctx.arc(e.x,e.y-rise*e.progress,2+2*(1-e.progress),0,Math.PI*2); ctx.fill();" }
 
 If the user prompts for a "fireball queen" or "freezing bishop" or "neon knights" or anything visual, MATCH the visual to the ability. Examples:
 - "freezing" -> ice crystals: sharp blue-white spokes, faceted polygons, slow shimmer, overlay on marked frozen squares
@@ -1388,6 +1397,7 @@ const PROJECTILE_ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const MAX_DRAW_SOURCE_LEN = 8192;
 const MAX_SLOTS = 28;
 const MAX_PROJECTILES = 12;
+const MAX_EFFECTS = 12;
 const MAX_OVERLAYS = 6;
 
 export function validateVisualsBlock(v: unknown, errors: string[]): void {
@@ -1451,6 +1461,33 @@ export function validateVisualsBlock(v: unknown, errors: string[]): void {
     }
   }
 
+  // effects (brain-spawned cosmetic effects)
+  if (block.effects !== undefined) {
+    if (!block.effects || typeof block.effects !== "object" || Array.isArray(block.effects)) {
+      errors.push("visuals.effects: must be an object");
+    } else {
+      const effs = block.effects as Record<string, unknown>;
+      const keys = Object.keys(effs);
+      if (keys.length > MAX_EFFECTS) {
+        errors.push(`visuals.effects: too many entries (${keys.length} > ${MAX_EFFECTS})`);
+      }
+      for (const k of keys) {
+        if (!PROJECTILE_ID_RE.test(k)) {
+          errors.push(`visuals.effects.${k}: id must match ${PROJECTILE_ID_RE}`);
+          continue;
+        }
+        const src = effs[k];
+        if (typeof src !== "string" || src.length === 0) {
+          errors.push(`visuals.effects.${k}: must be a non-empty string`);
+          continue;
+        }
+        if (src.length > MAX_DRAW_SOURCE_LEN) {
+          errors.push(`visuals.effects.${k}: source too long (${src.length} > ${MAX_DRAW_SOURCE_LEN})`);
+        }
+      }
+    }
+  }
+
   // overlays
   if (block.overlays !== undefined) {
     if (!Array.isArray(block.overlays)) {
@@ -1472,11 +1509,26 @@ export function validateVisualsBlock(v: unknown, errors: string[]): void {
     }
   }
 
-  // brains (cosmetic per-piece hooks - Phase 5+ for now we
-  // accept the field but don't render it client-side yet).
+  // brains (cosmetic per-piece hooks)
   if (block.brains !== undefined) {
     if (!block.brains || typeof block.brains !== "object" || Array.isArray(block.brains)) {
       errors.push("visuals.brains: must be an object");
+    } else {
+      const brains = block.brains as Record<string, unknown>;
+      for (const k of Object.keys(brains)) {
+        if (!ALL_PIECE_TYPES.has(k)) {
+          errors.push(`visuals.brains.${k}: key must be one of p/n/b/r/q/k`);
+          continue;
+        }
+        const src = brains[k];
+        if (typeof src !== "string" || src.length === 0) {
+          errors.push(`visuals.brains.${k}: must be a non-empty string`);
+          continue;
+        }
+        if (src.length > MAX_DRAW_SOURCE_LEN) {
+          errors.push(`visuals.brains.${k}: source too long (${src.length} > ${MAX_DRAW_SOURCE_LEN})`);
+        }
+      }
     }
   }
 }

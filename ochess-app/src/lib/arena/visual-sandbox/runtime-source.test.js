@@ -115,6 +115,19 @@ describe("RUNTIME_SOURCE - embedded JS is parseable", () => {
     expect(script).toMatch(/function runSlotDraw\b/);
   });
 
+  it("defines the visual brain scheduler and world spawn API", () => {
+    expect(script).toMatch(/function runBrains\b/);
+    expect(script).toMatch(/function makeBrainWorld\b/);
+    expect(script).toMatch(/spawnProjectile/);
+    expect(script).toMatch(/spawnEffect/);
+  });
+
+  it("supports effect draw sources and active effect ticking", () => {
+    expect(script).toMatch(/effectDrawsById/);
+    expect(script).toMatch(/activeEffects/);
+    expect(script).toMatch(/function updateBrainEffects\b/);
+  });
+
   it("validates the message protocol version on inbound messages", () => {
     expect(script).toMatch(/protocolVersion/);
   });

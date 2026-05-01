@@ -18,6 +18,7 @@
  *
  *   slot draw       (ctx, x, y, facing, owner, t, random, state)
  *   projectile draw (ctx, p)                  // p has { x, y, fromX, ... }
+ *   effect draw     (ctx, e, t)               // e has { x, y, age, ttl, progress, data }
  *   overlay draw    (ctx, scene)              // scene has { width, height, ... }
  *   brain (cosmetic)(self, world, dt)
  *
@@ -60,6 +61,7 @@ export function compileDraw(rawSource, params) {
  *   {
  *     slots: { "q.aura": "<source>", "n.body": "<source>", ... },
  *     projectiles: { "fireball": "<source>", ... },
+ *     effects: { "impact": "<source>", ... },
  *     overlays: ["<source>", ...],
  *     brains: { "q": "<source>", ... }
  *   }
@@ -76,11 +78,12 @@ export function compileDraw(rawSource, params) {
  */
 export function compileVisuals(visualBlock) {
   if (!visualBlock || typeof visualBlock !== "object") {
-    return { ok: true, compiled: { slots: {}, projectiles: {}, overlays: [], brains: {} }, errors: [] };
+    return { ok: true, compiled: { slots: {}, projectiles: {}, effects: {}, overlays: [], brains: {} }, errors: [] };
   }
   const compiled = {
     slots: {},
     projectiles: {},
+    effects: {},
     overlays: [],
     brains: {},
   };
@@ -106,6 +109,18 @@ export function compileVisuals(visualBlock) {
         compiled.projectiles[key] = r.source;
       } else {
         errors.push({ kind: "projectile", key, reason: r.reason, line: r.line, col: r.col });
+      }
+    }
+  }
+
+  // Effect draws — params: ctx, e, t
+  if (visualBlock.effects && typeof visualBlock.effects === "object") {
+    for (const [key, src] of Object.entries(visualBlock.effects)) {
+      const r = compileDraw(src, ["ctx", "e", "t"]);
+      if (r.ok) {
+        compiled.effects[key] = r.source;
+      } else {
+        errors.push({ kind: "effect", key, reason: r.reason, line: r.line, col: r.col });
       }
     }
   }

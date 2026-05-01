@@ -303,6 +303,13 @@ export function filterValidVisuals(raw) {
       for (const k of okKeys) cleaned.projectiles[k] = raw.projectiles[k];
     }
   }
+  if (compiled.compiled.effects && raw.effects) {
+    const okKeys = Object.keys(compiled.compiled.effects);
+    if (okKeys.length > 0) {
+      cleaned.effects = {};
+      for (const k of okKeys) cleaned.effects[k] = raw.effects[k];
+    }
+  }
   if (Array.isArray(compiled.compiled.overlays) && Array.isArray(raw.overlays)) {
     // Overlays are positional. The compiled array preserves
     // input order with bad ones dropped, but we don't get an

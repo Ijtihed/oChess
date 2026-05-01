@@ -57,6 +57,17 @@ describe("filterValidVisuals - roundtrip cleaning of AI-emitted visuals", () => 
     expect(r.cleaned.projectiles.fireball).toBe(raw.projectiles.fireball);
   });
 
+  it("preserves a clean effect draw", () => {
+    const raw = {
+      effects: {
+        ember: `ctx.fillStyle = "rgba(255,120,0," + (1 - e.progress) + ")"; ctx.fillRect(e.x, e.y, 2, 2);`,
+      },
+    };
+    const r = filterValidVisuals(raw);
+    expect(r.errors).toEqual([]);
+    expect(r.cleaned.effects.ember).toBe(raw.effects.ember);
+  });
+
   it("drops projectiles using forbidden APIs", () => {
     const raw = {
       projectiles: {
@@ -113,16 +124,17 @@ describe("filterValidVisuals - roundtrip cleaning of AI-emitted visuals", () => 
     const raw = {
       slots: { "q.aura": `eval("1");` },
       projectiles: { x: `fetch("/y");` },
+      effects: { smoke: `document.body.innerHTML = "x";` },
       overlays: [`document.body.innerHTML = "x";`],
       brains: { k: `requestAnimationFrame(() => 1);` },
     };
     const r = filterValidVisuals(raw);
     expect(r.cleaned).toBeUndefined();
-    expect(r.errors.length).toBe(4);
+    expect(r.errors.length).toBe(5);
   });
 
   it("returns cleaned: undefined when input was just empty containers", () => {
-    const raw = { slots: {}, projectiles: {}, overlays: [], brains: {} };
+    const raw = { slots: {}, projectiles: {}, effects: {}, overlays: [], brains: {} };
     const r = filterValidVisuals(raw);
     expect(r.cleaned).toBeUndefined();
     expect(r.errors).toEqual([]);
@@ -135,6 +147,7 @@ describe("filterValidVisuals - roundtrip cleaning of AI-emitted visuals", () => 
     const raw = {
       slots: { "q.aura": `ctx.fillRect(0, 0, 1, 1);` },
       projectiles: {},
+      effects: {},
       overlays: [],
       brains: {},
     };
@@ -162,11 +175,12 @@ describe("filterValidVisuals - roundtrip cleaning of AI-emitted visuals", () => 
     const raw = {
       slots:       { "q.aura": `eval("x");` },
       projectiles: { fb: `eval("y");` },
+      effects:     { boom: `eval("effect");` },
       overlays:    [`eval("z");`],
       brains:      { q: `eval("w");` },
     };
     const r = filterValidVisuals(raw);
     const kinds = r.errors.map((e) => e.kind).sort();
-    expect(kinds).toEqual(["brain", "overlay", "projectile", "slot"]);
+    expect(kinds).toEqual(["brain", "effect", "overlay", "projectile", "slot"]);
   });
 });
