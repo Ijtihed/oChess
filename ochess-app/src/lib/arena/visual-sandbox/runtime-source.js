@@ -330,10 +330,14 @@ export const RUNTIME_SOURCE = `<!doctype html>
     state.lastScenePly = scene.ply;
     state.lastSceneT = scene.t || 0;
 
-    // Resize canvas to match the iframe's actual pixel size.
-    // The parent sends boardPx so we know the board's CSS size;
-    // we use devicePixelRatio for crispness.
-    var boardPx = scene.boardPx || 480;
+    // Resize canvas to match the iframe's ACTUAL rendered size.
+    // Earlier versions trusted scene.boardPx=480, which made the
+    // overlay drift or scale wrong whenever the board rendered at
+    // a different responsive size. The iframe already fills the
+    // board, so its client rect is the source of truth.
+    var rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : null;
+    var measuredPx = rect && rect.width ? rect.width : 0;
+    var boardPx = measuredPx || scene.boardPx || 480;
     var dpr = Math.min(window.devicePixelRatio || 1, 2);
     if (canvas.width !== boardPx * dpr || canvas.height !== boardPx * dpr) {
       canvas.width = boardPx * dpr;

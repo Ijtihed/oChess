@@ -61,6 +61,7 @@ export function buildVisualRepairs(rules) {
   }
   if (themes.size > 0) {
     out.overlays.push(LAST_CAST_OVERLAY);
+    out.overlays.push(MARK_STATUS_OVERLAY);
   }
   return out;
 }
@@ -229,3 +230,5 @@ const IMPACT_SPARK_EFFECT = "const a=1-e.progress; ctx.strokeStyle='rgba(255,220
 // Overlay. Uses ability id text at runtime so repaired visuals
 // work for old variants too.
 const LAST_CAST_OVERLAY = "const c=scene.lastCast; if(c&&c.to){ const files='abcdefgh'; const f=files.indexOf(c.to[0]); const r=parseInt(c.to[1],10)-1; if(f>=0){ const sq=scene.width/8; const x=f*sq+sq/2; const y=(7-r)*sq+sq/2; const id=String(c.abilityId||'').toLowerCase(); const age=(scene.t%520)/520; let col='rgba(160,110,255,'; if(id.indexOf('fire')>=0||id.indexOf('burn')>=0||id.indexOf('blast')>=0) col='rgba(255,90,0,'; if(id.indexOf('ice')>=0||id.indexOf('frost')>=0||id.indexOf('freeze')>=0) col='rgba(160,230,255,'; if(id.indexOf('shadow')>=0||id.indexOf('curse')>=0) col='rgba(120,40,180,'; ctx.strokeStyle=col+(0.55*(1-age))+')'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(x,y,12+age*38,0,Math.PI*2); ctx.stroke(); } }";
+
+const MARK_STATUS_OVERLAY = "const sq=scene.width/8; const files='abcdefgh'; const marks=scene.marks||{}; const entries=Object.entries(marks); for(const entry of entries){ const key=entry[0]; const arr=entry[1]||[]; let tag=''; for(const mark of arr){ tag=tag+' '+String(mark.tag||''); } tag=tag.toLowerCase(); const f=files.indexOf(key[0]); const r=parseInt(key[1],10)-1; if(f<0||!tag) continue; const x=f*sq+sq/2,y=(7-r)*sq+sq/2; if(tag.indexOf('freeze')>=0||tag.indexOf('frost')>=0||tag.indexOf('ice')>=0){ ctx.strokeStyle='rgba(170,235,255,0.7)'; ctx.lineWidth=1.5; for(let i=0;i<8;i++){ const a=i*Math.PI/4+scene.t*0.002; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+Math.cos(a)*24,y+Math.sin(a)*24); ctx.stroke(); } } else if(tag.indexOf('burn')>=0||tag.indexOf('fire')>=0||tag.indexOf('doom')>=0){ const flick=Math.sin(scene.t*0.018)*0.5+0.5; const g=ctx.createRadialGradient(x,y,0,x,y,30+flick*8); g.addColorStop(0,'rgba(255,210,80,0.35)'); g.addColorStop(0.5,'rgba(255,90,0,0.25)'); g.addColorStop(1,'rgba(255,0,0,0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,32,0,Math.PI*2); ctx.fill(); } else if(tag.indexOf('curse')>=0||tag.indexOf('shadow')>=0||tag.indexOf('hex')>=0){ ctx.fillStyle='rgba(80,0,120,0.22)'; ctx.beginPath(); ctx.ellipse(x,y,30,18,scene.t*0.001,0,Math.PI*2); ctx.fill(); } }";
