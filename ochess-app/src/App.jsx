@@ -13,6 +13,7 @@ import BotsPage from "./components/BotsPage";
 import VariantsPage from "./components/VariantsPage";
 import ReviewPage from "./components/ReviewPage";
 import ArenaPage from "./components/ArenaPage";
+import ArenaSoloRoom from "./components/ArenaSoloRoom";
 import PresentationPage from "./components/PresentationPage";
 import Profile from "./components/Profile";
 import PublicProfile from "./components/PublicProfile";
@@ -199,6 +200,7 @@ function AppShell() {
             <Route path="/variants" element={<VariantsPage />} />
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/arena" element={<ArenaPage />} />
+            <Route path="/arena/solo" element={<ArenaSoloRoom />} />
             <Route path="/arena/:roomId" element={<ArenaPage />} />
             <Route path="/presentation" element={<PresentationPage />} />
             <Route path="/game" element={<GameRoute />} />

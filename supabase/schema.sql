@@ -2339,3 +2339,79 @@ select cron.schedule(
   '*/5 * * * *',
   $cron$select cleanup_stale_arena_rooms()$cron$
 );
+
+-- ── Ship #3.1: saved variants library ──
+-- Users can save a variant they liked so they can replay it
+-- later (solo or by sharing the link to recreate the room).
+-- Stored verbatim as the AI's rule diff JSON; nothing
+-- evaluated server-side.
+--
+-- Per-user rate-limited softly: max 200 saved variants per
+-- user. Past that, the user must delete some before saving
+-- more. This is a hobby-app cap, easy to bump if needed.
+create table if not exists arena_saved_variants (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references profiles(id) on delete cascade,
+  name text not null,
+  description text,
+  prompt text,                    -- the original prompt the user typed
+  rules jsonb not null,           -- the full AI rule diff (incl. visuals)
+  created_at timestamptz not null default now()
+);
+
+create index if not exists arena_saved_variants_owner_idx
+  on arena_saved_variants (owner_id, created_at desc);
+
+alter table arena_saved_variants enable row level security;
+
+drop policy if exists "Owners read own variants" on arena_saved_variants;
+create policy "Owners read own variants" on arena_saved_variants
+  for select using (owner_id = auth.uid());
+
+drop policy if exists "Owners insert own variants" on arena_saved_variants;
+create policy "Owners insert own variants" on arena_saved_variants
+  for insert with check (owner_id = auth.uid());
+
+drop policy if exists "Owners delete own variants" on arena_saved_variants;
+create policy "Owners delete own variants" on arena_saved_variants
+  for delete using (owner_id = auth.uid());
+
+-- save_arena_variant: enforces the 200-per-user cap server-side
+-- so a malicious client can't bypass it. Returns the new row id.
+create or replace function save_arena_variant(
+  p_name text,
+  p_description text,
+  p_prompt text,
+  p_rules jsonb
+) returns uuid
+language plpgsql security definer
+as $$
+declare
+  v_count int;
+  v_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'must be authenticated';
+  end if;
+  if length(coalesce(p_name, '')) = 0 or length(p_name) > 80 then
+    raise exception 'name must be 1..80 chars';
+  end if;
+  if p_rules is null then
+    raise exception 'rules required';
+  end if;
+  -- Server-side per-user cap.
+  select count(*) into v_count
+  from arena_saved_variants
+  where owner_id = auth.uid();
+  if v_count >= 200 then
+    raise exception 'saved-variants limit reached (200 per user); delete some first';
+  end if;
+  insert into arena_saved_variants (owner_id, name, description, prompt, rules)
+  values (auth.uid(), p_name, p_description, p_prompt, p_rules)
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
+revoke all on function save_arena_variant(text, text, text, jsonb) from public;
+grant execute on function save_arena_variant(text, text, text, jsonb) to authenticated;

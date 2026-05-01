@@ -5,11 +5,13 @@ import SocialPanel from "./SocialPanel";
 import { isOnline } from "../lib/supabase";
 import { createRoom, listActiveRoomsForUser } from "../lib/arena/service";
 import { generateArenaRules, isAIRulesAvailable } from "../lib/arena/ai-rules";
+import { listSavedVariants, saveVariant, deleteSavedVariant } from "../lib/arena/saved-variants";
 import { resolveRules } from "../lib/arena/rules";
 import { describeRules } from "../lib/arena/rule-preview";
 import { translateValidatorErrors } from "../lib/arena/error-messages";
 import ArenaRoom from "./ArenaRoom";
 import RulePreview from "./RulePreview";
+import ArenaVisualPreview from "./ArenaVisualPreview";
 
 /**
  * ArenaPage - landing for the AI Arena route.
@@ -89,6 +91,7 @@ export default function ArenaPage() {
           Describe a chess variant in your own words. AI builds the rules, you and your opponent each design one round, then 1v1.
         </p>
         <RejoinBanner user={user} navigate={navigate} />
+        <SavedVariantsBanner user={user} navigate={navigate} />
         <div className="grid gap-6 md:grid-cols-2">
           <CreatePanel user={user} navigate={navigate} />
           <JoinPanel navigate={navigate} />
@@ -161,6 +164,115 @@ function RejoinBanner({ user, navigate }) {
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Saved variants list. The user's library of variants they
+ * liked enough to save. Each row has:
+ *   - the variant name
+ *   - "Play solo" - drops into the random-bot solo flow
+ *   - "Create room" - same as the lobby create flow but
+ *     pre-loaded with this variant's rules
+ *   - delete affordance
+ *
+ * Hidden when the user has no saved variants.
+ */
+function SavedVariantsBanner({ user, navigate }) {
+  const [variants, setVariants] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    const r = await listSavedVariants();
+    setLoading(false);
+    if (r.ok) setVariants(r.variants || []);
+  }, [user?.id]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  if (loading) return null;
+  if (variants.length === 0) return null;
+
+  return (
+    <div className="anim-fade-up mb-6 p-4 bg-surface-low border border-white/[0.04] space-y-2" style={{ "--delay": "0.09s" }}>
+      <div className="flex items-center justify-between">
+        <h2 className="font-headline text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/55">
+          Saved variants ({variants.length})
+        </h2>
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          className="text-[10px] uppercase tracking-widest text-on-surface-variant/35 hover:text-on-surface transition-colors"
+        >
+          {collapsed ? "Show" : "Hide"}
+        </button>
+      </div>
+      {!collapsed && (
+        <ul className="space-y-1.5">
+          {variants.slice(0, 8).map((v) => (
+            <SavedVariantRow
+              key={v.id}
+              variant={v}
+              navigate={navigate}
+              onDelete={async () => {
+                await deleteSavedVariant(v.id);
+                refresh();
+              }}
+            />
+          ))}
+          {variants.length > 8 && (
+            <li className="text-[10px] text-on-surface-variant/40 italic px-1">
+              &hellip; and {variants.length - 8} more
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function SavedVariantRow({ variant, navigate, onDelete }) {
+  const onPlaySolo = useCallback(() => {
+    try {
+      sessionStorage.setItem("arena_solo_variant", JSON.stringify({
+        rules: variant.rules,
+        summary: variant.description || "",
+      }));
+    } catch { /* ignore */ }
+    navigate("/arena/solo");
+  }, [variant, navigate]);
+
+  return (
+    <li className="flex items-center justify-between gap-2 px-3 py-2 bg-surface-container border border-white/[0.04]">
+      <div className="min-w-0">
+        <p className="font-headline text-[12px] font-bold text-primary truncate">
+          {variant.name}
+        </p>
+        {variant.description && (
+          <p className="text-[10px] text-on-surface-variant/55 truncate">
+            {variant.description}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <button
+          onClick={onPlaySolo}
+          className="text-[10px] font-headline uppercase tracking-widest text-on-surface-variant/55 hover:text-primary transition-colors px-2 py-1 border border-white/[0.06] hover:border-primary/30"
+        >
+          Play solo
+        </button>
+        <button
+          onClick={onDelete}
+          title="Delete"
+          className="text-[10px] text-on-surface-variant/30 hover:text-error transition-colors px-1.5"
+        >
+          x
+        </button>
+      </div>
+    </li>
   );
 }
 
@@ -241,6 +353,7 @@ function CreatePanel({ user, navigate }) {
         summary: result.summary,
         model: result.model,
         spendWarning: result.spendWarning === true,
+        visualErrors: Array.isArray(result.visualErrors) ? result.visualErrors : [],
       });
     } catch (e) {
       setError(e?.message || "AI request failed.");
@@ -334,11 +447,21 @@ function CreatePanel({ user, navigate }) {
       {description && (
         <RulePreview description={description} model={generated?.model} />
       )}
+      {generated?.rules?.visuals && (
+        <ArenaVisualPreview visuals={generated.rules.visuals} seed={`preview:${generated?.rules?.name || ""}`} />
+      )}
       {generated?.spendWarning && (
         <p className="text-[10px] text-amber-400/70 leading-relaxed px-1">
           Heads up: the AI service is approaching its monthly limit.
           Variant generation may pause for the rest of the month if usage continues.
         </p>
+      )}
+      {generated?.visualErrors && generated.visualErrors.length > 0 && (
+        <VisualErrorsBanner
+          errors={generated.visualErrors}
+          onRegenerate={onGenerate}
+          regenerating={generating}
+        />
       )}
 
       {error && (
@@ -349,11 +472,27 @@ function CreatePanel({ user, navigate }) {
       )}
 
       {generated && (
-        <button onClick={onCreate}
-          disabled={creating || !online}
-          className="btn btn-primary w-full py-3 text-sm">
-          {creating ? "Loading\u2026 creating room" : "Create room with these rules"}
-        </button>
+        <div className="space-y-2">
+          <button onClick={onCreate}
+            disabled={creating || !online}
+            className="btn btn-primary w-full py-3 text-sm">
+            {creating ? "Loading\u2026 creating room" : "Create room with these rules"}
+          </button>
+          <button
+            onClick={() => {
+              try {
+                sessionStorage.setItem("arena_solo_variant", JSON.stringify(generated));
+              } catch { /* ignore */ }
+              navigate("/arena/solo");
+            }}
+            className="btn btn-secondary w-full py-2.5 text-xs">
+            Play solo (vs random bot)
+          </button>
+          <SaveVariantButton generated={generated} prompt={prompt} />
+          <p className="text-[10px] text-on-surface-variant/35 leading-relaxed text-center px-2">
+            Solo mode uses a random opponent so you can test the variant without finding a partner.
+          </p>
+        </div>
       )}
 
       {!online && (
@@ -434,6 +573,124 @@ function PromptIdeas({ onPick, disabled }) {
  * headline + suggestion in soft amber, with the raw errors
  * tucked behind a "Show details" disclosure for power users.
  */
+/**
+ * Inline save-this-variant button + outcome chip. Click once
+ * to save; subsequent clicks no-op (chip becomes "Saved")
+ * because saving the SAME generation twice is rarely
+ * intentional. To save a remix, regenerate first.
+ */
+function SaveVariantButton({ generated, prompt }) {
+  const [state, setState] = useState("idle"); // "idle" | "saving" | "saved" | "error"
+  const [error, setError] = useState(null);
+
+  const onClick = useCallback(async () => {
+    if (state === "saving" || state === "saved") return;
+    setState("saving");
+    setError(null);
+    const r = await saveVariant({
+      name: generated?.rules?.name || "Untitled variant",
+      description: generated?.summary || generated?.rules?.description || "",
+      prompt: prompt || "",
+      rules: generated.rules,
+    });
+    if (!r.ok) {
+      setState("error");
+      setError(r.error || "Save failed.");
+      return;
+    }
+    setState("saved");
+  }, [state, generated, prompt]);
+
+  // When the underlying generation changes, reset.
+  useEffect(() => {
+    setState("idle");
+    setError(null);
+  }, [generated]);
+
+  return (
+    <div className="space-y-1">
+      <button
+        onClick={onClick}
+        disabled={state === "saving"}
+        className="btn btn-secondary w-full py-2 text-[11px]">
+        {state === "idle" && "Save this variant"}
+        {state === "saving" && "Saving\u2026"}
+        {state === "saved" && "Saved \u2713"}
+        {state === "error" && "Save failed - try again"}
+      </button>
+      {error && (
+        <p className="text-[10px] text-error/80 leading-snug px-2">{error}</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Soft-warning banner for AI visuals that failed our AST
+ * validator. The variant is still PLAYABLE - we drop the bad
+ * draws and keep the rules. We just want the user to know:
+ *   - some visual elements they might have asked for didn't
+ *     make it through (so they're not surprised when the
+ *     game looks plain)
+ *   - they can regenerate to roll for better luck
+ *
+ * NOT shown when visualErrors is empty / undefined.
+ */
+function VisualErrorsBanner({ errors, onRegenerate, regenerating }) {
+  const [expanded, setExpanded] = useState(false);
+  const grouped = useMemo(() => {
+    const m = { slot: 0, projectile: 0, overlay: 0, brain: 0 };
+    for (const e of errors) {
+      if (m[e.kind] !== undefined) m[e.kind]++;
+    }
+    return m;
+  }, [errors]);
+  const summary = Object.entries(grouped)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${n} ${k}${n === 1 ? "" : "s"}`)
+    .join(", ");
+  return (
+    <div className="px-3 py-2.5 bg-amber-500/10 border border-amber-500/20 space-y-2">
+      <p className="text-[12px] text-amber-200/85 leading-relaxed font-headline font-bold">
+        AI visuals were partially dropped
+      </p>
+      <p className="text-[11px] text-amber-200/60 leading-snug">
+        {summary} couldn&apos;t pass our sandbox check, so the variant will look plainer than expected.
+        The game itself works fine. Try regenerating for better visuals.
+      </p>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={regenerating}
+          className="text-[10px] uppercase tracking-widest text-amber-200/85 hover:text-amber-100 underline-offset-2 hover:underline disabled:opacity-30"
+        >
+          {regenerating ? "Regenerating\u2026" : "Regenerate"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="text-[10px] uppercase tracking-widest text-amber-200/45 hover:text-amber-200/80 transition-colors"
+        >
+          {expanded ? "Hide details" : "Show details"}
+        </button>
+      </div>
+      {expanded && (
+        <ul className="mt-1.5 text-[10px] text-amber-200/40 leading-snug space-y-0.5 font-mono">
+          {errors.slice(0, 6).map((e, i) => (
+            <li key={i}>
+              &middot; {e.kind}/{e.key}: {e.reason}
+            </li>
+          ))}
+          {errors.length > 6 && (
+            <li className="italic">&hellip; and {errors.length - 6} more</li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function FriendlyValidatorErrors({ errors }) {
   const [showDetails, setShowDetails] = useState(false);
   const friendly = useMemo(() => translateValidatorErrors(errors), [errors]);

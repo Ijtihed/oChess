@@ -51,6 +51,7 @@ import { DEMO_VISUALS } from "../lib/arena/visual-sandbox/demo-draws";
 import { isVisualsKilled } from "../lib/arena/visuals-kill-switch";
 import { recordVisualError } from "../lib/arena/visuals-audit";
 import { pushVisualError } from "../lib/arena/visuals-error-buffer";
+import { useActiveProjectiles } from "../lib/arena/use-active-projectiles";
 import {
   colorFor,
   colorPairFor,
@@ -354,29 +355,40 @@ function CrazyStateBadges({ position, orientation }) {
  * Reading from localStorage means you can turn it on without a
  * redeploy. Stored as a small string so the read cost is trivial.
  */
+/**
+ * Resolve the effective visuals mode for the current user/room.
+ *
+ * Default policy (the "AI-prompted chess" vision): every arena
+ * room renders AI-emitted visuals when the variant has any.
+ * Users can opt out per-room via the debug panel, or globally
+ * by setting localStorage.arena_visuals_mode = "off".
+ *
+ * Localstorage values:
+ *   - unset       -> "ai" (default; visuals on whenever a variant has them)
+ *   - "ai"        -> AI-emitted visuals from rulesDiff.visuals
+ *   - "demo"      -> hand-coded DEMO_VISUALS (test mode)
+ *   - "off"       -> render nothing extra
+ *
+ * Per-room override: arena_visuals_off:<roomId> = "1" forces
+ * "off" for that single room. The debug panel sets this when
+ * the user clicks "disable visuals" in response to bad draws.
+ */
+function readVisualsMode(roomId) {
+  try {
+    if (roomId && localStorage.getItem(`arena_visuals_off:${roomId}`) === "1") return "off";
+    const v = localStorage.getItem("arena_visuals_mode");
+    if (v === "demo" || v === "ai" || v === "off") return v;
+  } catch { /* ignore */ }
+  return "ai";
+}
+
 function useArenaVisualsMode(roomId) {
-  const [mode, setMode] = useState(() => {
-    try {
-      // Per-room override: the debug panel can disable visuals
-      // for a specific room without touching the global flag.
-      if (roomId && localStorage.getItem(`arena_visuals_off:${roomId}`) === "1") return "off";
-      const v = localStorage.getItem("arena_visuals_mode");
-      if (v === "demo" || v === "ai") return v;
-    } catch { /* ignore */ }
-    return "off";
-  });
+  const [mode, setMode] = useState(() => readVisualsMode(roomId));
   // Refresh on the same custom event our prefs system uses, so
   // toggling the flag picks up immediately without a page reload.
   useEffect(() => {
     function handler() {
-      try {
-        if (roomId && localStorage.getItem(`arena_visuals_off:${roomId}`) === "1") {
-          setMode("off");
-          return;
-        }
-        const v = localStorage.getItem("arena_visuals_mode");
-        setMode(v === "demo" || v === "ai" ? v : "off");
-      } catch { /* ignore */ }
+      setMode(readVisualsMode(roomId));
     }
     window.addEventListener("storage", handler);
     return () => window.removeEventListener("storage", handler);
@@ -407,12 +419,14 @@ function useCompiledArenaVisuals(mode, rulesDiff) {
     if (mode === "off") return null;
     if (mode === "demo") return compileVisuals(DEMO_VISUALS).compiled;
     if (mode === "ai") {
-      // Phase 4: pull rulesDiff.visuals once the AI emits it.
-      // For now, fall back to demo so the iframe still has
-      // something to paint.
+      // Production path: render whatever the variant declares.
+      // When the variant declares nothing, return null so the
+      // overlay component short-circuits and we don't even
+      // mount the iframe (saves ~1MB of inline source +
+      // postMessage chatter for vanilla-ish variants).
       const v = rulesDiff?.visuals;
       if (v && typeof v === "object") return compileVisuals(v).compiled;
-      return compileVisuals(DEMO_VISUALS).compiled;
+      return null;
     }
     return null;
   }, [mode, rulesDiff]);
@@ -1249,6 +1263,11 @@ function Warmup({ room, setRoom, role, roomId }) {
   // localStorage feature flag is set; see useArenaVisualsMode.
   const visualsMode = useArenaVisualsMode(roomId);
   const compiledVisuals = useCompiledArenaVisuals(visualsMode, rulesDiff);
+  // In-flight projectile timeline. Each ability cast pushes one
+  // entry; the hook auto-decays them over their TTL. The
+  // overlay's iframe runtime renders projectile draws as they
+  // fly from caster to target.
+  const { projectiles, fireProjectile } = useActiveProjectiles();
   // Ability-panel hover highlight. When the user hovers a row in
   // the AbilityPanel, the panel calls back with the squares that
   // hold castable pieces; we paint those squares amber on the
@@ -1466,6 +1485,11 @@ function Warmup({ room, setRoom, role, roomId }) {
       const ab = findAbilityInRules(rules, move.casterType, move.abilityId, myColor);
       playAbilityCast(ab);
       setCastFlash({ from: move.from, to: move.to });
+      // If the variant has a projectile draw matching this
+      // ability id, animate it flying from caster to target.
+      // The iframe runtime no-ops gracefully when the kind
+      // doesn't match a registered projectile draw.
+      fireProjectile(move.from, move.to, move.abilityId, 350);
     } else {
       playMoveSound({ flags: move.captured ? "c" : "n" });
     }
@@ -1555,6 +1579,7 @@ function Warmup({ room, setRoom, role, roomId }) {
                 seed={`${roomId}:warmup:${round}`}
                 position={position}
                 orientation={orientation}
+                projectiles={projectiles}
                 disabled={visualsMode === "off"}
                 onDrawError={(err) => {
                   pushVisualError(roomId, err);
@@ -1740,6 +1765,9 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   // localStorage feature flag is set.
   const visualsMode = useArenaVisualsMode(roomId);
   const compiledVisuals = useCompiledArenaVisuals(visualsMode, rulesDiff);
+  // In-flight projectile timeline; see warmup component for
+  // full rationale.
+  const { projectiles, fireProjectile } = useActiveProjectiles();
   // Cast flash overlay (see warmup component for full
   // rationale). Auto-clears after 700ms.
   const [castFlash, setCastFlash] = useState(null);
@@ -1950,6 +1978,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
       const ab = findAbilityInRules(rules, move.casterType, move.abilityId, myColor);
       playAbilityCast(ab);
       setCastFlash({ from: move.from, to: move.to });
+      fireProjectile(move.from, move.to, move.abilityId, 350);
     } else {
       playMoveSound({ flags: move.captured ? "c" : "n" });
     }
@@ -2290,6 +2319,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
       playAbilityCast(ab);
       if (last.move_from && last.move_to) {
         setCastFlash({ from: last.move_from, to: last.move_to });
+        fireProjectile(last.move_from, last.move_to, last.ability_id, 350);
       }
     } else {
       const wasCapture = typeof last.san === "string" && last.san.includes("x");
@@ -2680,6 +2710,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                 seed={`${roomId}:${roundLabel}`}
                 position={position}
                 orientation={orientation}
+                projectiles={projectiles}
                 disabled={visualsMode === "off"}
                 onDrawError={(err) => {
                   pushVisualError(roomId, err);
