@@ -39,6 +39,7 @@
 
 import { supabase } from "../supabase";
 import { validateRules } from "./validator";
+import { compileVisuals } from "./visual-sandbox/compile-draws";
 import { verifyRules } from "./verification";
 import { repairRules } from "./repair";
 import { checkPromptSanity } from "./error-messages";
@@ -201,6 +202,21 @@ async function runOneGenerationAttempt(prompt, retryHint) {
     };
   }
 
+  // Visuals (Ship #3): if the AI emitted any drawn visuals,
+  // run them through the AST validator HERE to surface errors
+  // immediately and DROP invalid draws so we don't even store
+  // them on the rules row. We keep the raw (validated) source
+  // strings on rules.visuals; the iframe overlay re-compiles
+  // them at mount time. Storing raw rather than compiled keeps
+  // the stored shape readable for debugging and lets the
+  // compile pipeline evolve without invalidating older rows.
+  let visualErrors = [];
+  if (merged.rules.visuals && typeof merged.rules.visuals === "object") {
+    const filtered = filterValidVisuals(merged.rules.visuals);
+    visualErrors = filtered.errors;
+    merged.rules.visuals = filtered.cleaned;
+  }
+
   return {
     ok: true,
     rules: merged.rules,
@@ -215,6 +231,64 @@ async function runOneGenerationAttempt(prompt, retryHint) {
     // surfaces this so users aren't surprised when generation
     // eventually hard-blocks.
     spendWarning: merged.spend_warning === true,
+    // Visual draws that failed validation. Empty array on
+    // success or when no visuals were emitted at all.
+    visualErrors,
+  };
+}
+
+/**
+ * Run each draw through compileVisuals (which validates +
+ * loop-guards) and produce a cleaned visuals block containing
+ * only the RAW sources of draws that passed validation. The
+ * actual compiled function-decl strings are NOT stored; the
+ * iframe overlay re-compiles at mount time so the storage shape
+ * stays human-readable.
+ *
+ * Returns { cleaned, errors }. cleaned is undefined if
+ * everything dropped.
+ */
+function filterValidVisuals(raw) {
+  const compiled = compileVisuals(raw);
+  const cleaned = {};
+  // Slots: keep raw source for keys that compiled successfully.
+  if (compiled.compiled.slots && raw.slots) {
+    const okKeys = Object.keys(compiled.compiled.slots);
+    if (okKeys.length > 0) {
+      cleaned.slots = {};
+      for (const k of okKeys) cleaned.slots[k] = raw.slots[k];
+    }
+  }
+  if (compiled.compiled.projectiles && raw.projectiles) {
+    const okKeys = Object.keys(compiled.compiled.projectiles);
+    if (okKeys.length > 0) {
+      cleaned.projectiles = {};
+      for (const k of okKeys) cleaned.projectiles[k] = raw.projectiles[k];
+    }
+  }
+  if (Array.isArray(compiled.compiled.overlays) && Array.isArray(raw.overlays)) {
+    // Overlays are positional. The compiled array preserves
+    // input order with bad ones dropped, but we don't get an
+    // explicit index map back. Recompute by re-validating each.
+    const goodIndices = new Set();
+    for (let i = 0; i < raw.overlays.length; i++) {
+      const r = compileVisuals({ overlays: [raw.overlays[i]] });
+      if (r.errors.length === 0) goodIndices.add(i);
+    }
+    if (goodIndices.size > 0) {
+      cleaned.overlays = raw.overlays.filter((_, i) => goodIndices.has(i));
+    }
+  }
+  if (compiled.compiled.brains && raw.brains) {
+    const okKeys = Object.keys(compiled.compiled.brains);
+    if (okKeys.length > 0) {
+      cleaned.brains = {};
+      for (const k of okKeys) cleaned.brains[k] = raw.brains[k];
+    }
+  }
+  return {
+    cleaned: Object.keys(cleaned).length > 0 ? cleaned : undefined,
+    errors: compiled.errors,
   };
 }
 

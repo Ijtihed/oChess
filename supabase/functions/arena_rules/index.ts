@@ -635,6 +635,71 @@ Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
     }
   }
 
+═══════════════════════════════════════════════════════════
+VISUALS (optional but encouraged for cohesive crazy variants):
+═══════════════════════════════════════════════════════════
+
+You may emit a top-level "visuals" field describing JavaScript canvas-2d draw functions that paint OVER the standard chess board. The functions run in a sandboxed iframe with no network/storage access.
+
+The visuals object accepts these keys:
+- "slots": object keyed by "<pieceType>.<slotName>". E.g. "q.aura" paints under EVERY queen on the board (both colors). Slot names are: body, head, back, weapon_R, weapon_L, feet, aura. Each value is a JavaScript FUNCTION BODY string (not a full function declaration - just the body). It receives parameters (ctx, x, y, facing, owner, t, random, state).
+- "projectiles": object keyed by projectile id (matches abilities that should fire a projectile). Each value is a JS function body receiving (ctx, p) where p has {x, y, fromX, fromY, toX, toY, progress, age, ttl}.
+- "overlays": array of full-board JS function body strings receiving (ctx, scene) where scene has {width, height, marks, lastCast, t}.
+
+Parameter contract:
+- ctx: a canvas 2D context, pre-translated to the slot's center for slot draws. Position (0,0) is the piece's center.
+- x, y: in slot draws, always 0 (the canvas is pre-translated). Use them for offsets if you want.
+- facing: 1 if owner is white, -1 if owner is black. Useful for direction-sensitive sprites.
+- owner: { type: "p"|"n"|"b"|"r"|"q"|"k", color: "w"|"b" }
+- t: monotonic time in milliseconds. Use for animations: Math.sin(t * 0.003) etc.
+- random: a function returning a number in [0,1). Match-seeded so both clients render identical animations. Use this instead of Math.random for replay determinism.
+- state: a per-piece persistent object you can read/write across frames.
+
+Allowed canvas API (everything else is rejected by the validator):
+- Setters: fillStyle, strokeStyle, lineWidth, lineCap, lineJoin, globalAlpha, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY
+- Path methods: beginPath, closePath, moveTo, lineTo, arc, arcTo, ellipse, rect, roundRect, bezierCurveTo, quadraticCurveTo
+- Paint methods: fill, stroke, fillRect, strokeRect, clearRect
+- Transforms: save, restore, translate, rotate, scale, transform, setTransform
+- Gradients: createLinearGradient, createRadialGradient, createConicGradient (the returned object has only addColorStop)
+
+Allowed JS surface: Math.* (PI, E, sin, cos, tan, sqrt, pow, abs, min, max, floor, ceil, round, atan2, hypot, log, exp, random), Number.isFinite, Array.from, Array.isArray, JSON.stringify, JSON.parse, parseInt, parseFloat, Infinity, NaN. Standard control flow (if/else, for/while/do-while, switch). const/let/var. Function expressions / arrow functions. try/catch (catch must be parameterless: `catch {}`).
+
+NEVER do these things (they will be rejected by the validator):
+- fetch, XMLHttpRequest, WebSocket, fetchSync, navigator, Image, Audio
+- eval, Function constructor, setTimeout, setInterval, requestAnimationFrame
+- document, window, globalThis, parent, top
+- localStorage, sessionStorage, indexedDB, cookies, crypto
+- Date, Date.now (use the t parameter instead)
+- ctx.fillText, ctx.strokeText, ctx.drawImage, ctx.measureText
+- this, async/await, classes, generators, import/export
+- Dynamic property access like ctx[someVar] - use ctx.fillStyle directly
+
+Performance: each per-frame draw has a 15ms budget. For per-piece slots that means roughly 1-2ms each. Keep draws lean: <100 lines, no nested loops > 32 iterations total.
+
+═══════════════════════════════════════════════════════════
+Worked visual examples (copy these patterns):
+═══════════════════════════════════════════════════════════
+
+Aura (pulsing halo around a queen):
+  "q.aura": "const phase = Math.sin(t * 0.003) * 0.5 + 0.5; const r = 24 + phase * 6; const g = ctx.createRadialGradient(0,0,0,0,0,r); const c = owner.color === 'w' ? 'rgba(255,220,100,' : 'rgba(150,100,255,'; g.addColorStop(0, c + (0.4 + phase * 0.3) + ')'); g.addColorStop(1, c + '0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();"
+
+Body (rotating shield ring on a knight):
+  "n.aura": "const angle = t * 0.002 * facing; ctx.strokeStyle = owner.color === 'w' ? 'rgba(120,220,255,0.7)' : 'rgba(255,180,120,0.7)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0,0,18, angle, angle + Math.PI * 1.4); ctx.stroke();"
+
+Projectile (fireball trail):
+  "fireball": "const dx = p.toX - p.fromX, dy = p.toY - p.fromY; const len = Math.sqrt(dx*dx + dy*dy) || 1; for (let i = 0; i < 6; i++) { const back = i / 6; const tx = p.x - (dx/len) * back * 12; const ty = p.y - (dy/len) * back * 12; ctx.fillStyle = 'rgba(255,' + (180 - i*20) + ',0,' + (0.8 - back) + ')'; ctx.beginPath(); ctx.arc(tx, ty, 6 - i*0.6, 0, Math.PI*2); ctx.fill(); }"
+
+Overlay (subtle vignette):
+  "ctx.fillStyle = 'rgba(0,0,0,0.15)'; const g = ctx.createRadialGradient(scene.width/2, scene.height/2, scene.width*0.35, scene.width/2, scene.height/2, scene.width*0.7); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.18)'); ctx.fillStyle = g; ctx.fillRect(0, 0, scene.width, scene.height);"
+
+If the user prompts for a "fireball queen" or "freezing bishop" or "neon knights" or anything visual, MATCH the visual to the ability. Examples:
+- "freezing" -> ctx.strokeStyle = 'rgba(150,200,255,0.7)' + draw frost crystals + slow pulse
+- "burning" -> ctx.fillStyle = orange/red gradient + fast flicker
+- "stone" -> grey + chunky rectangles
+- "shadow" -> dark + low alpha + slow drift
+
+Visuals are OPTIONAL. If you can't think of something good, omit the "visuals" field entirely. A variant with no visuals still works fine. NEVER emit a "visuals" field with empty contents - either omit it entirely or fill it with at least one slot/projectile/overlay.
+
 Reply with ONLY a JSON object, no prose around it.`;
 
 function buildPrompt(
@@ -1239,7 +1304,121 @@ function validateStructure(rules: Record<string, unknown>, labMode: boolean = tr
     errors.push("description must be a string");
   }
 
+  // Visuals (Ship #3, lab-only). Server-side does structural
+  // checks: keys are well-formed, draws are non-empty strings,
+  // sizes are sane. Full AST validation runs client-side
+  // (visual-sandbox/ast-validator.js) before any draw reaches
+  // the iframe - that's the actual security boundary. The
+  // server check is just to block obviously-bad payloads from
+  // being persisted on a room row.
+  if (rules.visuals !== undefined) {
+    if (!labMode) {
+      errors.push("visuals are not available outside the crazy-arena lab");
+    } else {
+      validateVisualsBlock(rules.visuals, errors);
+    }
+  }
+
   return errors;
+}
+
+const SLOT_NAMES = new Set(["body", "head", "back", "weapon_R", "weapon_L", "feet", "aura"]);
+const SLOT_KEY_RE = /^([pnbrqk])\.(body|head|back|weapon_R|weapon_L|feet|aura)$/;
+const PROJECTILE_ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const MAX_DRAW_SOURCE_LEN = 8192;
+const MAX_SLOTS = 28;
+const MAX_PROJECTILES = 12;
+const MAX_OVERLAYS = 6;
+
+function validateVisualsBlock(v: unknown, errors: string[]): void {
+  if (!v || typeof v !== "object" || Array.isArray(v)) {
+    errors.push("visuals: must be an object");
+    return;
+  }
+  const block = v as Record<string, unknown>;
+
+  // slots
+  if (block.slots !== undefined) {
+    if (!block.slots || typeof block.slots !== "object" || Array.isArray(block.slots)) {
+      errors.push("visuals.slots: must be an object");
+    } else {
+      const slots = block.slots as Record<string, unknown>;
+      const keys = Object.keys(slots);
+      if (keys.length > MAX_SLOTS) {
+        errors.push(`visuals.slots: too many entries (${keys.length} > ${MAX_SLOTS})`);
+      }
+      for (const k of keys) {
+        if (!SLOT_KEY_RE.test(k)) {
+          errors.push(`visuals.slots.${k}: key must match <pieceType>.<slot> where slot is one of body/head/back/weapon_R/weapon_L/feet/aura`);
+          continue;
+        }
+        const src = slots[k];
+        if (typeof src !== "string" || src.length === 0) {
+          errors.push(`visuals.slots.${k}: must be a non-empty string`);
+          continue;
+        }
+        if (src.length > MAX_DRAW_SOURCE_LEN) {
+          errors.push(`visuals.slots.${k}: source too long (${src.length} > ${MAX_DRAW_SOURCE_LEN})`);
+        }
+      }
+    }
+  }
+
+  // projectiles
+  if (block.projectiles !== undefined) {
+    if (!block.projectiles || typeof block.projectiles !== "object" || Array.isArray(block.projectiles)) {
+      errors.push("visuals.projectiles: must be an object");
+    } else {
+      const projs = block.projectiles as Record<string, unknown>;
+      const keys = Object.keys(projs);
+      if (keys.length > MAX_PROJECTILES) {
+        errors.push(`visuals.projectiles: too many entries (${keys.length} > ${MAX_PROJECTILES})`);
+      }
+      for (const k of keys) {
+        if (!PROJECTILE_ID_RE.test(k)) {
+          errors.push(`visuals.projectiles.${k}: id must match ${PROJECTILE_ID_RE}`);
+          continue;
+        }
+        const src = projs[k];
+        if (typeof src !== "string" || src.length === 0) {
+          errors.push(`visuals.projectiles.${k}: must be a non-empty string`);
+          continue;
+        }
+        if (src.length > MAX_DRAW_SOURCE_LEN) {
+          errors.push(`visuals.projectiles.${k}: source too long (${src.length} > ${MAX_DRAW_SOURCE_LEN})`);
+        }
+      }
+    }
+  }
+
+  // overlays
+  if (block.overlays !== undefined) {
+    if (!Array.isArray(block.overlays)) {
+      errors.push("visuals.overlays: must be an array");
+    } else {
+      if (block.overlays.length > MAX_OVERLAYS) {
+        errors.push(`visuals.overlays: too many entries (${block.overlays.length} > ${MAX_OVERLAYS})`);
+      }
+      for (let i = 0; i < block.overlays.length; i++) {
+        const src = block.overlays[i];
+        if (typeof src !== "string" || src.length === 0) {
+          errors.push(`visuals.overlays[${i}]: must be a non-empty string`);
+          continue;
+        }
+        if (src.length > MAX_DRAW_SOURCE_LEN) {
+          errors.push(`visuals.overlays[${i}]: source too long (${src.length} > ${MAX_DRAW_SOURCE_LEN})`);
+        }
+      }
+    }
+  }
+
+  // brains (cosmetic per-piece hooks - Phase 5+ for now we
+  // accept the field but don't render it client-side yet).
+  if (block.brains !== undefined) {
+    if (!block.brains || typeof block.brains !== "object" || Array.isArray(block.brains)) {
+      errors.push("visuals.brains: must be an object");
+    }
+  }
 }
 
 function validatePieceSpec(path: string, spec: unknown, errors: string[], labMode: boolean = true): void {
