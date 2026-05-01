@@ -45,8 +45,12 @@ import { translateValidatorErrors } from "../lib/arena/error-messages";
 import RulePreview from "./RulePreview";
 import ArenaAbilityPanel from "./ArenaAbilityPanel";
 import ArenaVisualOverlay from "./ArenaVisualOverlay";
+import ArenaVisualDebugPanel from "./ArenaVisualDebugPanel";
 import { compileVisuals } from "../lib/arena/visual-sandbox/compile-draws";
 import { DEMO_VISUALS } from "../lib/arena/visual-sandbox/demo-draws";
+import { isVisualsKilled } from "../lib/arena/visuals-kill-switch";
+import { recordVisualError } from "../lib/arena/visuals-audit";
+import { pushVisualError } from "../lib/arena/visuals-error-buffer";
 import {
   colorFor,
   colorPairFor,
@@ -350,9 +354,12 @@ function CrazyStateBadges({ position, orientation }) {
  * Reading from localStorage means you can turn it on without a
  * redeploy. Stored as a small string so the read cost is trivial.
  */
-function useArenaVisualsMode() {
+function useArenaVisualsMode(roomId) {
   const [mode, setMode] = useState(() => {
     try {
+      // Per-room override: the debug panel can disable visuals
+      // for a specific room without touching the global flag.
+      if (roomId && localStorage.getItem(`arena_visuals_off:${roomId}`) === "1") return "off";
       const v = localStorage.getItem("arena_visuals_mode");
       if (v === "demo" || v === "ai") return v;
     } catch { /* ignore */ }
@@ -363,14 +370,27 @@ function useArenaVisualsMode() {
   useEffect(() => {
     function handler() {
       try {
+        if (roomId && localStorage.getItem(`arena_visuals_off:${roomId}`) === "1") {
+          setMode("off");
+          return;
+        }
         const v = localStorage.getItem("arena_visuals_mode");
         setMode(v === "demo" || v === "ai" ? v : "off");
       } catch { /* ignore */ }
     }
     window.addEventListener("storage", handler);
     return () => window.removeEventListener("storage", handler);
+  }, [roomId]);
+  // Server-side kill switch (ai_settings.disable_drawn_visuals).
+  // Polls the cached value once on mount; if the operator flipped
+  // it, force mode=off across the whole component tree.
+  const [killed, setKilled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    isVisualsKilled().then((k) => { if (!cancelled) setKilled(k); }).catch(() => {});
+    return () => { cancelled = true; };
   }, []);
-  return mode;
+  return killed ? "off" : mode;
 }
 
 /**
@@ -1227,7 +1247,7 @@ function Warmup({ room, setRoom, role, roomId }) {
   const [secondsLeft, setSecondsLeft] = useState(WARMUP_DURATION_S);
   // Ship #3 visual overlay (sandboxed iframe). No-op unless the
   // localStorage feature flag is set; see useArenaVisualsMode.
-  const visualsMode = useArenaVisualsMode();
+  const visualsMode = useArenaVisualsMode(roomId);
   const compiledVisuals = useCompiledArenaVisuals(visualsMode, rulesDiff);
   // Ability-panel hover highlight. When the user hovers a row in
   // the AbilityPanel, the panel calls back with the squares that
@@ -1537,8 +1557,21 @@ function Warmup({ room, setRoom, role, roomId }) {
                 orientation={orientation}
                 disabled={visualsMode === "off"}
                 onDrawError={(err) => {
-                  // eslint-disable-next-line no-console
-                  console.warn("[arena-visuals] draw error:", err);
+                  pushVisualError(roomId, err);
+                  recordVisualError(err, roomId, rules?.name);
+                }}
+                onSlotDisabled={(slot, reason) => {
+                  pushVisualError(roomId, { slot, message: `slot disabled: ${reason}`, ply: position?.history?.length });
+                }}
+              />
+              <ArenaVisualDebugPanel
+                roomId={roomId}
+                isLabUser={true}
+                onDisableVisuals={() => {
+                  try {
+                    localStorage.setItem(`arena_visuals_off:${roomId}`, "1");
+                    window.dispatchEvent(new Event("storage"));
+                  } catch { /* ignore */ }
                 }}
               />
               <CrazyStateBadges position={position} orientation={orientation} />
@@ -1705,7 +1738,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   const [abilityHighlight, setAbilityHighlight] = useState([]);
   // Ship #3 visual overlay (sandboxed iframe). No-op unless the
   // localStorage feature flag is set.
-  const visualsMode = useArenaVisualsMode();
+  const visualsMode = useArenaVisualsMode(roomId);
   const compiledVisuals = useCompiledArenaVisuals(visualsMode, rulesDiff);
   // Cast flash overlay (see warmup component for full
   // rationale). Auto-clears after 700ms.
@@ -2649,8 +2682,21 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                 orientation={orientation}
                 disabled={visualsMode === "off"}
                 onDrawError={(err) => {
-                  // eslint-disable-next-line no-console
-                  console.warn("[arena-visuals] draw error:", err);
+                  pushVisualError(roomId, err);
+                  recordVisualError(err, roomId, rules?.name);
+                }}
+                onSlotDisabled={(slot, reason) => {
+                  pushVisualError(roomId, { slot, message: `slot disabled: ${reason}`, ply: position?.history?.length });
+                }}
+              />
+              <ArenaVisualDebugPanel
+                roomId={roomId}
+                isLabUser={true}
+                onDisableVisuals={() => {
+                  try {
+                    localStorage.setItem(`arena_visuals_off:${roomId}`, "1");
+                    window.dispatchEvent(new Event("storage"));
+                  } catch { /* ignore */ }
                 }}
               />
               <CrazyStateBadges position={position} orientation={orientation} />

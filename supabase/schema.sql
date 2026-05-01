@@ -1307,6 +1307,15 @@ insert into ai_settings (id, monthly_cap_micro_usd, soft_warning_micro_usd)
   values (1, 100000000, 80000000)
   on conflict (id) do nothing;
 
+-- Ship #3: kill switch for the sandboxed AI-painted visuals.
+-- Default false (visuals enabled when the variant emits them).
+-- Flip to true via SQL editor if a bad deploy lands and we need
+-- to immediately turn off all drawn visuals across every active
+-- room without redeploying client code. Clients read this on
+-- room mount; flipping it doesn't retroactively kill renders
+-- already in flight (those need a page reload).
+alter table ai_settings add column if not exists disable_drawn_visuals boolean not null default false;
+
 -- Anyone authenticated can READ the current cap (so the lobby
 -- can show it). Only the service role can update it (so a
 -- compromised user account can't relax the cap).
@@ -1314,6 +1323,101 @@ alter table ai_settings enable row level security;
 drop policy if exists "Anyone reads ai_settings" on ai_settings;
 create policy "Anyone reads ai_settings" on ai_settings
   for select using (true);
+
+-- ── arena_visual_errors: audit log of sandbox draw failures ──
+-- Every time the iframe sandbox catches an error inside a
+-- user-rendered AI draw, the client posts it here via the
+-- record_arena_visual_error RPC. Used by:
+--   - Per-variant aggregate stats: which prompts produce buggy
+--     draws? Useful for prompt-engineering iteration.
+--   - The debug panel (Phase 5) which fetches recent errors
+--     for the current room and lets the user inspect them.
+--   - Future: spike alerting when a single variant exceeds
+--     N errors per minute, auto-disable that variant.
+--
+-- Volume estimate: most matches produce 0 errors. A bad draw
+-- in a 60-move match might log ~5 errors before the slot
+-- self-disables. Capped per-row/per-call so we don't generate
+-- gigabytes from a single bug.
+create table if not exists arena_visual_errors (
+  id bigserial primary key,
+  room_id uuid references arena_rooms(id) on delete cascade,
+  user_id uuid references profiles(id) on delete set null,
+  slot text not null,                     -- e.g. "q.aura", "proj.fireball", "overlay.0"
+  message text not null,                  -- err.message from the iframe
+  stack text,                             -- top 3 lines of err.stack
+  ply int,                                -- the move-counter when the error fired
+  variant_name text,                      -- snapshot of rules.name for analytics
+  created_at timestamptz not null default now()
+);
+
+create index if not exists arena_visual_errors_room_idx
+  on arena_visual_errors (room_id, created_at desc);
+create index if not exists arena_visual_errors_user_idx
+  on arena_visual_errors (user_id, created_at desc);
+
+-- Authenticated users can SELECT errors for rooms they
+-- participate in (so the debug panel works) and INSERT errors
+-- they observed in their own session.
+alter table arena_visual_errors enable row level security;
+drop policy if exists "Read errors for own rooms" on arena_visual_errors;
+create policy "Read errors for own rooms" on arena_visual_errors
+  for select using (
+    user_id = auth.uid()
+    or exists (
+      select 1 from arena_rooms r
+      where r.id = arena_visual_errors.room_id
+        and (r.creator_id = auth.uid() or r.joiner_id = auth.uid())
+    )
+  );
+drop policy if exists "Insert own errors" on arena_visual_errors;
+create policy "Insert own errors" on arena_visual_errors
+  for insert with check (user_id = auth.uid() or user_id is null);
+
+-- Throughput cap: an attacker / bad code could spam this RPC
+-- and bloat the table. Enforce a soft per-user-per-minute
+-- ceiling at insert time.
+create or replace function record_arena_visual_error(
+  p_room_id uuid,
+  p_slot text,
+  p_message text,
+  p_stack text default null,
+  p_ply int default null,
+  p_variant_name text default null
+) returns bigint
+language plpgsql security definer
+as $$
+declare
+  v_recent_count int;
+  v_id bigint;
+begin
+  if length(coalesce(p_message, '')) = 0 or length(p_message) > 4096 then
+    raise exception 'invalid message length';
+  end if;
+  if length(coalesce(p_slot, '')) = 0 or length(p_slot) > 128 then
+    raise exception 'invalid slot length';
+  end if;
+
+  select count(*) into v_recent_count
+  from arena_visual_errors
+  where user_id = auth.uid()
+    and created_at > now() - interval '1 minute';
+  if v_recent_count > 60 then
+    -- Silently swallow excess inserts. The client doesn't need
+    -- to know it hit the throttle - it will just see a sequence
+    -- of insert returns of NULL.
+    return null;
+  end if;
+
+  insert into arena_visual_errors (room_id, user_id, slot, message, stack, ply, variant_name)
+  values (p_room_id, auth.uid(), p_slot, p_message, p_stack, p_ply, p_variant_name)
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
+revoke all on function record_arena_visual_error(uuid, text, text, text, int, text) from public;
+grant execute on function record_arena_visual_error(uuid, text, text, text, int, text) to authenticated;
 
 -- ── record_ai_spend_or_block: monthly $-cap enforcement ──
 -- Every AI Edge Function calls this AFTER its own per-user

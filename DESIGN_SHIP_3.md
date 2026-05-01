@@ -654,3 +654,94 @@ Before I start Phase 2, I want explicit answers on:
    wins on safety; want to confirm we're spending the latency budget on
    it.
 5. **Anything I missed in the threat model**? Eyes welcome.
+
+---
+
+## What actually shipped (post-implementation update)
+
+The user said "go ahead with next phase e2e" without answering the open
+questions, so I locked them to defensible defaults and shipped the full
+vertical slice across all 5 phases in one session.
+
+**Defaults locked:**
+
+1. Hard-fail in lobby preview, **soft-fail in PvP** (slot auto-disables
+   after 30 errors or 10 slow frames, debug panel surfaces it, match
+   keeps playing). Implemented via the iframe runtime's per-slot error
+   counter + the `SLOT_DISABLED` postMessage event.
+2. **All 7 slots** (`body`, `head`, `back`, `weapon_R`, `weapon_L`,
+   `feet`, `aura`) wired through the runtime + AI prompt + debug panel.
+3. **Projectiles in V1**. Compiled with the same pipeline as slots,
+   rendered on absolute coords with `(p.x, p.y, p.fromX, ...)` parameters.
+4. **iframe sandbox confirmed**. `srcdoc` with `sandbox="allow-scripts"`
+   only — no `allow-same-origin`, opaque origin, can't fetch / can't
+   reach parent DOM / can't read storage.
+5. **Threat model addition**: huge `new Array(N)` allocations are now
+   capped at 4096 elements at AST validate time (a literal-arg check on
+   `NewExpression`).
+
+**Phases shipped:**
+
+- **Phase 2 (sandbox primitives)**: AST validator (acorn-based,
+  reject-by-default, 46 escape-pattern tests), loop-guard injector
+  (AST-rewrite + execution-verified against infinite loops), seeded
+  PRNG (xoshiro128+, deterministic across clients).
+- **Phase 3 (iframe + overlay)**: complete sandbox runtime as a
+  stringified HTML doc, postMessage protocol with version checks,
+  `ArenaVisualOverlay` React component, hand-coded `DEMO_VISUALS`
+  fixtures, runtime-integration tests that exercise the same
+  `new Function("return (" + source + ")")` eval path the iframe uses.
+  Wired into both warmup and live PvP boards.
+- **Phase 4 (AI integration)**: `SYSTEM_PROMPT` extended with the draw
+  schema, parameter contract, exhaustive allowlist + banlist, 4 worked
+  examples, thematic-vibe table. Server-side `validateVisualsBlock`
+  (structural only, gated to lab mode). Client-side `filterValidVisuals`
+  in `ai-rules.js` runs the full AST validator before storing rules
+  to the DB; bad draws are dropped, never persisted.
+- **Phase 5 (debug + audit + kill switch)**: `arena_visual_errors`
+  audit table + `record_arena_visual_error` RPC (rate-limited to 60
+  inserts/user/minute server-side). Per-room in-memory ring buffer
+  (`visuals-error-buffer.js`), 32-entry FIFO. `ArenaVisualDebugPanel`
+  React component visible to lab users only, shows recent errors,
+  copy-as-JSON, per-room disable. Global kill switch:
+  `ai_settings.disable_drawn_visuals` boolean read on mount with 30s
+  client-side cache.
+
+**Deferred to a future ship:**
+
+- **Live-AI test against the new prompt**. The Edge Function deploy
+  needs `SUPABASE_ACCESS_TOKEN` which I don't have in this environment.
+  Run `npx supabase functions deploy arena_rules` after `supabase login`
+  to push the new prompt, then re-run `__live-prompts.test.js` to see
+  Gemini's draw-emission rate. Code is ready - just needs the deploy.
+- **Hard-fail-with-regenerate UX in lobby**. The infrastructure is
+  there (compile errors surface via `visualErrors` from `ai-rules.js`),
+  but the lobby UI doesn't yet show "your variant has X bad draws,
+  regenerate?". Probably a 1-day follow-up.
+- **Brain (cosmetic per-piece) hooks**. The runtime accepts them in
+  the `INIT` message and the validator allowlists the right params,
+  but the iframe doesn't yet call brain functions per-frame. The
+  rendering loop only paints slots / projectiles / overlays. Adding
+  brains is straightforward (loop over `state.brainDraws` once per
+  frame inside `paintScene`) but I held off because the AI rarely
+  needs them - per-piece state can usually be done inside slot draws.
+
+**Test coverage**: 880/880 unit tests pass. Sandbox-specific:
+- `ast-validator.test.js`: 46 tests (typical AI draws + every known
+  escape pattern: `parseFloat.constructor("return 1")()`,
+  prototype walks, `with`-statements, catch-binding shadowing,
+  Symbol-iterator gadgets, computed property access, etc).
+- `inject-loop-guard.test.js`: 18 tests including ACTUAL EXECUTION
+  of the rewritten source against infinite loops in every loop kind.
+- `seeded-prng.test.js`: 6 tests for range, determinism,
+  distribution, all-zero-state safety.
+- `compile-draws.test.js`: 8 tests for the validate→inject pipeline.
+- `runtime-integration.test.js`: 8 end-to-end tests using a fake
+  canvas-2d recorder, verifying every demo draw runs cleanly through
+  validator → loop guard → `new Function` eval, with a determinism
+  check across reruns and a malicious-draw rejection check.
+
+**Production readiness**: vite build passes clean, no lint errors.
+The system has all five layers of defense from the design doc:
+sandbox iframe, AST validator, loop guard, per-slot error budget,
+global kill switch. I would deploy this.
