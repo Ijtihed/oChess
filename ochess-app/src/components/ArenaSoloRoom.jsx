@@ -169,7 +169,7 @@ function SoloGame({ variant, navigate, userName }) {
       const ab = findAbility(rules, move.casterType, move.abilityId, move.castColor || position.turn);
       playAbilityCast(ab);
       setCastFlash({ from: move.from, to: move.to, abilityId: move.abilityId });
-      fireProjectile(move.from, move.to, move.abilityId, 350);
+      fireProjectile(move.from, move.to, move.abilityId, 900);
     } else {
       playMoveSound({ flags: move.captured ? "c" : "n" });
     }

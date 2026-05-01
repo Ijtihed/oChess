@@ -154,7 +154,9 @@ function startScenes() {
   const t0 = performance.now();
   function frame() {
     const t = performance.now() - t0;
-    const progress = (Math.sin(t / 650) + 1) / 2;
+    // Linear looping travel so screenshot frames clearly show
+    // projectile motion from caster -> target.
+    const progress = (t % 1600) / 1600;
     iframe.contentWindow.postMessage({
       protocolVersion: 1,
       type: "SCENE",
@@ -188,7 +190,18 @@ for (const v of variants) {
   page.on("console", (msg) => consoleLines.push(`[${msg.type()}] ${msg.text()}`));
   page.on("pageerror", (err) => consoleLines.push(`[pageerror] ${err.message}`));
   await page.goto("file://" + htmlPath, { waitUntil: "load" });
-  await page.waitForTimeout(2200);
+  if (v.slug === "fireball") {
+    // Explicit motion proof frames: the projectile should move
+    // upward between these images.
+    await page.waitForTimeout(350);
+    await page.screenshot({ path: resolve(outDir, "arena-fireball-motion-1.png"), fullPage: true });
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: resolve(outDir, "arena-fireball-motion-2.png"), fullPage: true });
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: resolve(outDir, "arena-fireball-motion-3.png"), fullPage: true });
+  } else {
+    await page.waitForTimeout(1350);
+  }
   await page.screenshot({ path: screenshotPath, fullPage: true });
   const messages = await page.evaluate(() => window.__messages || []);
   await page.close();

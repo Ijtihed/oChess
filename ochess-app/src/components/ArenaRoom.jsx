@@ -1524,7 +1524,7 @@ function Warmup({ room, setRoom, role, roomId }) {
       // ability id, animate it flying from caster to target.
       // The iframe runtime no-ops gracefully when the kind
       // doesn't match a registered projectile draw.
-      fireProjectile(move.from, move.to, move.abilityId, 350);
+      fireProjectile(move.from, move.to, move.abilityId, 900);
     } else {
       playMoveSound({ flags: move.captured ? "c" : "n" });
     }
@@ -2017,7 +2017,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
       const ab = findAbilityInRules(rules, move.casterType, move.abilityId, myColor);
       playAbilityCast(ab);
       setCastFlash({ from: move.from, to: move.to, abilityId: move.abilityId });
-      fireProjectile(move.from, move.to, move.abilityId, 350);
+      fireProjectile(move.from, move.to, move.abilityId, 900);
     } else {
       playMoveSound({ flags: move.captured ? "c" : "n" });
     }
@@ -2358,7 +2358,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
       playAbilityCast(ab);
       if (last.move_from && last.move_to) {
         setCastFlash({ from: last.move_from, to: last.move_to, abilityId: last.ability_id });
-        fireProjectile(last.move_from, last.move_to, last.ability_id, 350);
+        fireProjectile(last.move_from, last.move_to, last.ability_id, 900);
       }
     } else {
       const wasCapture = typeof last.san === "string" && last.san.includes("x");

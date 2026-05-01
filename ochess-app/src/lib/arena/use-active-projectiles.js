@@ -24,7 +24,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const DEFAULT_DURATION_MS = 350;
+const DEFAULT_DURATION_MS = 900;
 
 /**
  * @returns {{
