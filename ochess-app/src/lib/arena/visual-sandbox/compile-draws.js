@@ -20,7 +20,7 @@
  *   projectile draw (ctx, p)                  // p has { x, y, fromX, ... }
  *   effect draw     (ctx, e, t)               // e has { x, y, age, ttl, progress, data }
  *   overlay draw    (ctx, scene)              // scene has { width, height, ... }
- *   brain (cosmetic)(self, world, dt)
+ *   brain (cosmetic)(self, world, dt, state)
  *
  * The validator's allowlist permits all these param names so the
  * AI can use any of them in any draw kind without confusion. The
@@ -137,10 +137,10 @@ export function compileVisuals(visualBlock) {
     }
   }
 
-  // Brain (cosmetic) hooks — params: self, world, dt
+  // Brain (cosmetic) hooks — params: self, world, dt, state
   if (visualBlock.brains && typeof visualBlock.brains === "object") {
     for (const [key, src] of Object.entries(visualBlock.brains)) {
-      const r = compileDraw(src, ["self", "world", "dt"]);
+      const r = compileDraw(src, ["self", "world", "dt", "state"]);
       if (r.ok) {
         compiled.brains[key] = r.source;
       } else {

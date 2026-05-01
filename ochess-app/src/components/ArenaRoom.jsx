@@ -440,7 +440,18 @@ function useCompiledArenaVisuals(mode, rulesDiff) {
       // mount the iframe (saves ~1MB of inline source +
       // postMessage chatter for vanilla-ish variants).
       const v = rulesDiff?.visuals;
-      if (v && typeof v === "object") return compileVisuals(v).compiled;
+      if (v && typeof v === "object") {
+        const compiled = compileVisuals(v);
+        if (compiled.errors?.length > 0 && typeof console !== "undefined") {
+          console.warn("[arena-visuals] dropped invalid visual draws", compiled.errors);
+        }
+        return compiled.compiled;
+      }
+      if (typeof console !== "undefined" && rulesDiff && mode === "ai") {
+        console.warn("[arena-visuals] variant has no rules.visuals block; overlay will not mount", {
+          variant: rulesDiff?.name,
+        });
+      }
       return null;
     }
     return null;

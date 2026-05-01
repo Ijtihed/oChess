@@ -648,7 +648,7 @@ The visuals object accepts these keys:
 - "projectiles": object keyed by projectile id. The key SHOULD match an ability id. If an ability id is "fireball", emit visuals.projectiles.fireball. Each value receives (ctx, p) where p has {x, y, fromX, fromY, toX, toY, progress, age, ttl}.
 - "effects": object keyed by cosmetic effect id. These are spawned by visual brains with world.spawnEffect({kind,x,y,ttl,data}). Each value receives (ctx, e, t) where e has {x,y,age,ttl,progress,kind,data}.
 - "overlays": array of full-board JS function body strings receiving (ctx, scene) where scene has {width, height, marks, lastCast, t}. Use overlays for board-wide weather, frozen-square crystals, curse smoke, post-cast shockwaves, and status marks.
-- "brains": object keyed by piece type ("p","n","b","r","q","k"). Each value is a JavaScript function body receiving (self, world, dt). Runs about 8 times per second. It can set fields on self.state, call world.spawnProjectile({kind,fromX,fromY,toX,toY,ttl}), and call world.spawnEffect({kind,x,y,ttl,data}). It must not try to change game rules or piece positions.
+- "brains": object keyed by piece type ("p","n","b","r","q","k"). Each value is a JavaScript function body receiving (self, world, dt, state). Runs about 8 times per second. It can set fields on state, call world.spawnProjectile({kind,fromX,fromY,toX,toY,ttl}), and call world.spawnEffect({kind,x,y,ttl,data}). It must not try to change game rules or piece positions.
 
 Parameter contract:
 - ctx: a canvas 2D context, pre-translated to the slot's center for slot draws. Position (0,0) is the piece's center.
@@ -660,7 +660,8 @@ Parameter contract:
 - state: a per-piece persistent object you can read/write across frames.
 - scene.lastCast: null or {from,to,abilityId}. Use it to draw a one-frame shockwave / burn ring / frost burst at the target.
 - scene.marks: object keyed by square. Use this for status effects like freeze/burn/curse/shield when your rules emit effect.kind = "mark".
-- self in brain hooks: {type,color,square,x,y,facing,t,state}. x/y are absolute board pixels, so brain-spawned effects/projectiles can use them directly.
+- self in brain hooks: {type,color,square,x,y,facing,t}. x/y are absolute board pixels, so brain-spawned effects/projectiles can use them directly.
+- state in brain hooks: persistent object for that piece. Store cooldowns / animation counters there.
 - world in brain hooks: {spawnProjectile, spawnEffect}. Use these for idle embers, charge sparks, ghost wisps, lightning arcs, smoke puffs. They are cosmetic only.
 
 Allowed canvas API (everything else is rejected by the validator):
@@ -1373,7 +1374,7 @@ export function validateStructure(rules: Record<string, unknown>, labMode: boole
     errors.push("description must be a string");
   }
 
-  // Visuals (Ship #3, lab-only). Server-side does structural
+  // Visuals (Ship #3). Server-side does structural
   // checks: keys are well-formed, draws are non-empty strings,
   // sizes are sane. Full AST validation runs client-side
   // (visual-sandbox/ast-validator.js) before any draw reaches
@@ -1381,11 +1382,7 @@ export function validateStructure(rules: Record<string, unknown>, labMode: boole
   // server check is just to block obviously-bad payloads from
   // being persisted on a room row.
   if (rules.visuals !== undefined) {
-    if (!labMode) {
-      errors.push("visuals are not available outside the crazy-arena lab");
-    } else {
-      validateVisualsBlock(rules.visuals, errors);
-    }
+    validateVisualsBlock(rules.visuals, errors);
   }
 
   return errors;

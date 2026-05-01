@@ -104,6 +104,6 @@ describe("compileVisuals - whole visual block", () => {
     expect(r.compiled.projectiles.snap).toContain("ctx, p");
     expect(r.compiled.effects.boom).toContain("ctx, e, t");
     expect(r.compiled.overlays[0]).toContain("ctx, scene");
-    expect(r.compiled.brains.q).toContain("self, world, dt");
+    expect(r.compiled.brains.q).toContain("self, world, dt, state");
   });
 });

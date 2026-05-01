@@ -220,7 +220,9 @@ console.log("\n=== validateVisualsBlock ===\n");
   assert("full variant + visuals passes structural validation in lab mode", errs.length === 0, errs.join("; "));
 }
 
-// 14. Same variant in non-lab mode REJECTS visuals.
+// 14. Same variant in non-lab mode accepts visuals. Mechanics
+//     stay gated, but visual JS is sandboxed/client-validated
+//     and should be available for every prompt user.
 {
   const variant = {
     extends: "vanilla",
@@ -240,7 +242,7 @@ console.log("\n=== validateVisualsBlock ===\n");
     },
   };
   const errs = validateStructure(variant, false);
-  assert("visuals rejected in non-lab mode", errs.some((e) => /visual.*lab/i.test(e)), errs.join("; "));
+  assert("visuals accepted in non-lab mode", errs.length === 0, errs.join("; "));
 }
 
 console.log(`\n=== Results ===\n  ${passed} passed, ${failed} failed\n`);
