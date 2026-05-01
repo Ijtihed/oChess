@@ -414,8 +414,11 @@ function validatePieceAbilities(pathPrefix, abilities, errors, warnings) {
           }
         }
         if (ab.gating.cooldownPlies !== undefined) {
-          if (!Number.isFinite(ab.gating.cooldownPlies) || ab.gating.cooldownPlies < 1 || ab.gating.cooldownPlies > 20) {
-            errors.push(`${path}.gating.cooldownPlies must be 1..20 when set`);
+          // Tolerate 0 as a synonym for "no cooldown" (Gemini
+          // sometimes emits cooldownPlies: 0 instead of omitting
+          // the field). Otherwise require 1..20.
+          if (!Number.isFinite(ab.gating.cooldownPlies) || ab.gating.cooldownPlies < 0 || ab.gating.cooldownPlies > 20) {
+            errors.push(`${path}.gating.cooldownPlies must be 0..20 when set (0 = no cooldown)`);
           }
         }
         if (ab.gating.startsOnCooldown !== undefined && typeof ab.gating.startsOnCooldown !== "boolean") {

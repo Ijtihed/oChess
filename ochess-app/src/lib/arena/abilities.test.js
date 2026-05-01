@@ -110,7 +110,7 @@ describe("ability schema validation", () => {
     const report = validateRules(diff);
     expect(report.valid).toBe(false);
     expect(report.errors.some((e) => /charges must be 1..99/.test(e))).toBe(true);
-    expect(report.errors.some((e) => /cooldownPlies must be 1..20/.test(e))).toBe(true);
+    expect(report.errors.some((e) => /cooldownPlies must be 0\.\.20/.test(e))).toBe(true);
   });
 
   it("warns when an ability is fully ungated (no charges, no cooldown)", () => {

@@ -1399,8 +1399,10 @@ function validateAbilities(path: string, abilities: unknown, errors: string[], l
         }
         if (gating.cooldownPlies !== undefined) {
           const c = Number(gating.cooldownPlies);
-          if (!Number.isFinite(c) || c < 1 || c > 20) {
-            errors.push(`${sub}.gating.cooldownPlies must be 1..20 when set`);
+          // Tolerate 0 as "no cooldown" - Gemini emits this
+          // shape sometimes instead of omitting the field.
+          if (!Number.isFinite(c) || c < 0 || c > 20) {
+            errors.push(`${sub}.gating.cooldownPlies must be 0..20 when set (0 = no cooldown)`);
           }
         }
       }

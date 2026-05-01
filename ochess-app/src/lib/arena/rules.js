@@ -169,12 +169,33 @@ export function resolveRules(input) {
   // Per-color overrides - same deep-merge semantics, scoped to
   // a single color. If both `pieces` and `byColor.{w,b}` set the
   // same field, byColor wins (it's strictly more specific).
+  //
+  // Tolerant input shape: the canonical layout is
+  // `byColor.<color>.<pieceType>`, but Gemini consistently emits
+  // a redundant `pieces` wrapper - `byColor.<color>.pieces.<pt>` -
+  // even with the schema docs explicit otherwise. Without
+  // unwrapping, every asymmetric variant the AI produces is a
+  // silent no-op. Detect the wrapper and unwrap before merging.
   if (input.byColor && typeof input.byColor === "object") {
     merged.byColor = {};
     for (const color of ["w", "b"]) {
-      if (!input.byColor[color] || typeof input.byColor[color] !== "object") continue;
+      let colorEntry = input.byColor[color];
+      if (!colorEntry || typeof colorEntry !== "object") continue;
+      // Tolerate the nested-`pieces` wrapper. If colorEntry has
+      // a `pieces` key whose value is an object AND none of the
+      // other keys are valid piece types, treat the inner
+      // `pieces` as the real entry.
+      if (colorEntry.pieces && typeof colorEntry.pieces === "object" &&
+          !Array.isArray(colorEntry.pieces)) {
+        const validPieceKeys = ["p", "n", "b", "r", "q", "k"];
+        const topLevelKeys = Object.keys(colorEntry).filter((k) => k !== "pieces");
+        const allTopLevelArePieces = topLevelKeys.every((k) => validPieceKeys.includes(k));
+        if (!allTopLevelArePieces || topLevelKeys.length === 0) {
+          colorEntry = colorEntry.pieces;
+        }
+      }
       const colorOverrides = {};
-      for (const [pt, override] of Object.entries(input.byColor[color])) {
+      for (const [pt, override] of Object.entries(colorEntry)) {
         if (!override || typeof override !== "object") continue;
         const baseSpec = merged.pieces[pt] || {};
         colorOverrides[pt] = mergePieceSpec(baseSpec, override);

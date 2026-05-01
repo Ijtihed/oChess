@@ -91,6 +91,26 @@ describe("resolveRules", () => {
     expect(r.pieces.p.moves.length).toBe(4);
   });
 
+  it("tolerates the byColor.<color>.pieces.<pt> wrapper Gemini sometimes emits", () => {
+    // Gemini was consistently emitting a redundant `pieces` key
+    // inside byColor entries even though the schema docs are
+    // explicit about the flat shape. Without unwrapping, every
+    // asymmetric variant the AI produced was a silent no-op.
+    // The resolver now detects the wrapper and unwraps it.
+    const r = resolveRules({
+      extends: "vanilla",
+      byColor: {
+        b: {
+          pieces: {
+            n: { abilities: [{ id: "bolt", target: { kind: "leap", offsets: [[1, 2]] }, effect: { kind: "destroy" }, gating: { charges: 1 } }] },
+          },
+        },
+      },
+    });
+    expect(r.byColor.b.n.abilities).toBeDefined();
+    expect(r.byColor.b.n.abilities[0].id).toBe("bolt");
+  });
+
   it("rejects unknown extends", () => {
     expect(() => resolveRules({ extends: "fairyland" })).toThrow();
   });

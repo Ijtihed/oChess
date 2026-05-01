@@ -1137,6 +1137,11 @@ grant execute on function create_rematch(uuid, uuid) to authenticated;
 -- SECURITY DEFINER + auth.uid() check: the table itself is locked
 -- behind RLS-no-policies, so this RPC is the only sanctioned
 -- read/write path.
+--
+-- DROP first because PostgreSQL refuses CREATE OR REPLACE when the
+-- OUT-parameter row type changes shape between schema revisions, and
+-- this file is meant to be safely re-runnable on existing databases.
+drop function if exists record_coach_call(int, int);
 create or replace function record_coach_call(
   p_window_seconds int default 300,
   p_max_calls int default 3
@@ -1195,6 +1200,7 @@ grant execute on function record_coach_call(int, int) to authenticated, service_
 -- Same shape as record_coach_call but a separate table so arena
 -- and coach budgets don't share. Defaults: 10 calls per 600 s
 -- (10 min). The Edge Function is the only sanctioned caller.
+drop function if exists record_arena_rules_call(int, int);
 create or replace function record_arena_rules_call(
   p_window_seconds int default 600,
   p_max_calls int default 10
@@ -1336,6 +1342,11 @@ create policy "Anyone reads ai_settings" on ai_settings
 -- in the signature for backwards compatibility with deployed
 -- Edge Functions that still pass it; the parameter has no
 -- effect.
+--
+-- DROP first because earlier deployments returned a 4-column row
+-- (no `warning_active`); CREATE OR REPLACE refuses to change the
+-- OUT-parameter shape and would otherwise raise 42P13.
+drop function if exists record_ai_spend_or_block(text, text, text, int, int, bigint, bigint);
 create or replace function record_ai_spend_or_block(
   p_feature text,
   p_provider text,
@@ -1422,6 +1433,7 @@ grant execute on function record_ai_spend_or_block(text, text, text, int, int, b
 -- open a hole. The `room_id`/`round`/`ply` PK on arena_moves
 -- naturally rejects double-writes for the same ply, so a duplicate
 -- call from a flaky network just returns the existing state.
+drop function if exists arena_apply_move(uuid, int, int, text, text, text, text, text, jsonb);
 create or replace function arena_apply_move(
   p_room_id uuid,
   p_round int,
@@ -1510,6 +1522,7 @@ grant execute on function arena_apply_move(uuid, int, int, text, text, text, tex
 -- Both v1 and v2 coexist so an old client deploy keeps working during
 -- the rollout. The client wrapper prefers v2 when crazy_state or
 -- ability metadata is in scope.
+drop function if exists arena_apply_move_v2(uuid, int, int, text, text, text, text, text, jsonb, text, text, jsonb, jsonb);
 create or replace function arena_apply_move_v2(
   p_room_id uuid,
   p_round int,
@@ -1604,6 +1617,7 @@ grant execute on function arena_apply_move_v2(uuid, int, int, text, text, text, 
 --      can use this to skip recordRoundGame.
 --   4. Otherwise apply the writes and return `applied=true` so the
 --      winning client knows it owns the recordRoundGame call.
+drop function if exists arena_advance_round(uuid, text, jsonb, jsonb, text);
 create or replace function arena_advance_round(
   p_room_id uuid,
   p_round_label text,
