@@ -280,8 +280,17 @@ function addAbilityMoves(out, position, rules, piece, fromFR, fromSq, ability) {
 
   const target = ability.target;
   const kind = target.kind;
-  const requireEnemy = target.requireEnemy !== false; // default true
-  const requireEmpty = target.requireEmpty === true;  // default false
+  // Compute final filter constraints by combining the AI's
+  // explicit `requireEnemy`/`requireEmpty` flags with the
+  // requirements implied by the EFFECT kind. Without this,
+  // an ability declared as "spawn" with the AI's flags loose
+  // (or missing) would be offered as a valid cast on enemy
+  // squares too - and then the resolver would throw "spawn:
+  // target is not empty" mid-cast, surfacing as a red error
+  // toast even though the ability is well-formed. Tightening
+  // here means the player never sees "valid" crosshairs that
+  // can't actually fire.
+  const filter = computeTargetFilter(target, ability.effect);
   const flip = piece.color === "b" ? -1 : 1;
   const intensity = ability.intensity === "brief" || ability.intensity === "dramatic"
     ? ability.intensity
@@ -326,11 +335,10 @@ function addAbilityMoves(out, position, rules, piece, fromFR, fromSq, ability) {
     const targetSq = frToSquare([f, r]);
     const targetPc = position.board[f + r * 8];
 
-    if (requireEmpty && targetPc) continue;
-    if (requireEnemy) {
-      if (!targetPc) continue;
-      if (targetPc.color === piece.color) continue;
-    }
+    if (filter.requireEmpty && targetPc) continue;
+    if (filter.requireFilled && !targetPc) continue;
+    if (filter.requireEnemy && targetPc && targetPc.color === piece.color) continue;
+    if (filter.requireFriendly && targetPc && targetPc.color !== piece.color) continue;
 
     out.push({
       from: fromSq,
@@ -341,6 +349,84 @@ function addAbilityMoves(out, position, rules, piece, fromFR, fromSq, ability) {
       intensity,
     });
   }
+}
+
+/**
+ * Combine the ability's declared `target.requireEnemy` /
+ * `requireEmpty` flags with the implied requirements of the
+ * effect itself. Returns a unified filter object the candidate
+ * loop can apply uniformly:
+ *
+ *   { requireEmpty, requireFilled, requireEnemy, requireFriendly }
+ *
+ * Why this exists: the effect resolvers in effects.js have
+ * implicit assumptions ("displace needs a piece at target",
+ * "spawn needs an empty target"). When the AI emits a sloppy
+ * target spec (no requireEnemy / no requireEmpty), move-gen
+ * would otherwise emit unreachable casts that throw mid-resolve
+ * and surface as confusing red error toasts. Tightening here
+ * means the user only sees crosshairs the engine can actually
+ * fulfill.
+ */
+function computeTargetFilter(target, effect) {
+  // Start from the AI's explicit flags. requireEnemy defaults
+  // true on ranged/leap targets (matches Ship #1 behaviour);
+  // requireEmpty defaults false.
+  const aiRequireEnemy = target.requireEnemy !== false;
+  const aiRequireEmpty = target.requireEmpty === true;
+
+  const filter = {
+    requireEmpty: aiRequireEmpty,
+    requireFilled: false,
+    requireEnemy: false,
+    requireFriendly: false,
+  };
+  if (aiRequireEnemy) {
+    filter.requireFilled = true;
+    filter.requireEnemy = true;
+  }
+
+  // Effect-kind implications. Most effects imply something
+  // about whether the target should/shouldn't have a piece.
+  const ek = effect?.kind;
+  if (ek === "spawn") {
+    // Spawn always requires an empty target square.
+    filter.requireEmpty = true;
+    filter.requireFilled = false;
+    filter.requireEnemy = false;
+    filter.requireFriendly = false;
+  } else if (ek === "destroy" || ek === "capture") {
+    // Destroy needs a piece on the target. Honor hitsFriendly
+    // for the AOE inner; the direct-target piece must still
+    // be hittable. Default is hit-enemies-only.
+    filter.requireFilled = true;
+    if (effect.aoe?.hitsFriendly !== true) {
+      filter.requireEnemy = true;
+    }
+  } else if (ek === "displace" || ek === "transform" || ek === "mark") {
+    // These need a piece to act on. We don't strictly require
+    // enemy - a "shield ally" mark or a "swap with friend"
+    // displace could legitimately target a friendly. Honor
+    // the AI's requireEnemy flag here without overriding it.
+    filter.requireFilled = true;
+  } else if (ek === "relocate_self") {
+    // Caster moves to the target. Empty is the safe default
+    // unless requireEnemy is set (capture-on-arrival pattern).
+    if (!aiRequireEnemy) {
+      filter.requireEmpty = true;
+      filter.requireFilled = false;
+      filter.requireEnemy = false;
+    }
+  } else if (ek === "aoe_wrap") {
+    // AOE either acts on existing pieces or spawns; the inner
+    // primitive's filter applies at each AOE square (handled
+    // by resolveAOEWrap), so the centre target's requirement
+    // depends on the inner. Use the inner's filter for the
+    // centre.
+    return computeTargetFilter(target, effect.inner);
+  }
+
+  return filter;
 }
 
 // ── Castling ────────────────────────────────────────────────

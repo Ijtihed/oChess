@@ -31,21 +31,40 @@ export default function RulePreview({ description, model }) {
           {description.description}
         </p>
       )}
-      {description.changes.length > 0 && (
-        <ul className="text-[11px] text-on-surface-variant/65 leading-snug space-y-0.5">
-          {description.changes.slice(0, 8).map((c, i) => (
-            <li key={i} className="flex gap-2">
-              <span className="text-primary/60 shrink-0">&middot;</span>
-              <span>{c.detail}</span>
-            </li>
-          ))}
-          {description.changes.length > 8 && (
-            <li className="text-on-surface-variant/35">
-              &hellip; and {description.changes.length - 8} more
-            </li>
-          )}
-        </ul>
-      )}
+      {description.changes.length > 0 && (() => {
+        // Ship #2.5: abilities are the most important changes for
+        // playability discoverability ("what can I actually DO?").
+        // Hoist them to the top with a distinct visual marker so
+        // the lobby preview always shows the user's abilities,
+        // even if other changes would have pushed them off the
+        // 8-row cap.
+        const abilityChanges = description.changes.filter((c) => c.kind === "ability");
+        const otherChanges = description.changes.filter((c) => c.kind !== "ability");
+        const remainingSlots = Math.max(0, 8 - abilityChanges.length);
+        const shownOthers = otherChanges.slice(0, remainingSlots);
+        const hiddenCount = otherChanges.length - shownOthers.length;
+        return (
+          <ul className="text-[11px] text-on-surface-variant/65 leading-snug space-y-0.5">
+            {abilityChanges.map((c, i) => (
+              <li key={`a${i}`} className="flex gap-2">
+                <span className="text-amber-400 shrink-0 font-bold">★</span>
+                <span>{c.detail}</span>
+              </li>
+            ))}
+            {shownOthers.map((c, i) => (
+              <li key={`o${i}`} className="flex gap-2">
+                <span className="text-primary/60 shrink-0">&middot;</span>
+                <span>{c.detail}</span>
+              </li>
+            ))}
+            {hiddenCount > 0 && (
+              <li className="text-on-surface-variant/35">
+                &hellip; and {hiddenCount} more
+              </li>
+            )}
+          </ul>
+        );
+      })()}
       {description.changes.length === 0 && (
         <p className="text-[11px] text-on-surface-variant/40 italic">
           No changes from standard chess.

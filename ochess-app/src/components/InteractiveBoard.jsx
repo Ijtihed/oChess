@@ -186,6 +186,7 @@ export default function InteractiveBoard({
             promotion: promo,
             ...(target.kind ? { kind: target.kind } : {}),
             ...(target.abilityId ? { abilityId: target.abilityId } : {}),
+            ...(target.casterType ? { casterType: target.casterType } : {}),
           };
           const ok = onMove(movePayload);
           // For ability casts the chess.js sound preview won't

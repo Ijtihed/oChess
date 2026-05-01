@@ -14,6 +14,7 @@ import {
   playLowTime,
   playChatNotify,
   playOfferNotify,
+  playAbilityCast,
 } from "../lib/sounds";
 import {
   getRoom,
@@ -42,6 +43,7 @@ import { generateArenaRules, isAIRulesAvailable } from "../lib/arena/ai-rules";
 import { describeRules } from "../lib/arena/rule-preview";
 import { translateValidatorErrors } from "../lib/arena/error-messages";
 import RulePreview from "./RulePreview";
+import ArenaAbilityPanel from "./ArenaAbilityPanel";
 import {
   colorFor,
   colorPairFor,
@@ -329,6 +331,73 @@ function CrazyStateBadges({ position, orientation }) {
 // timeout in the parent's setState. Deliberately ugly so we
 // don't forget to clean it up in Ship #3 once visuals land and
 // most variant errors become impossible.
+/**
+ * Merge a base highlightSquares object (used by InteractiveBoard
+ * for last-move tints, premove indicators, etc) with:
+ *   - abilitySquares: the AbilityPanel's hover-highlight squares
+ *     (amber tint so the user can find their casters)
+ *   - castFlash: a brief pulse on the most recent ability cast's
+ *     caster + target squares (red/orange tint, cleared after
+ *     ~700ms by the parent state). This is the "something just
+ *     happened!" feedback the user was missing.
+ *
+ * Pure function; all inputs may be empty/null.
+ */
+function mergeHighlight(base, abilitySquares, castFlash) {
+  let out = base ? { ...base } : {};
+  if (Array.isArray(abilitySquares) && abilitySquares.length > 0) {
+    for (const sq of abilitySquares) {
+      out[sq] = { ...(out[sq] || {}), backgroundColor: "rgba(251,191,36,0.32)" };
+    }
+  }
+  if (castFlash && castFlash.from && castFlash.to) {
+    // CSS keyframes named in the project's tailwind / globals
+    // would let us pulse properly, but to keep this self-
+    // contained we use a strong red tint that the existing
+    // last-move-clearing effect will replace 700ms later.
+    // Visually distinct from green/red move/capture highlights.
+    out[castFlash.from] = {
+      ...(out[castFlash.from] || {}),
+      boxShadow: "inset 0 0 0 4px rgba(251,191,36,0.85)",
+      backgroundColor: "rgba(251,191,36,0.25)",
+    };
+    if (castFlash.to !== castFlash.from) {
+      out[castFlash.to] = {
+        ...(out[castFlash.to] || {}),
+        boxShadow: "inset 0 0 0 4px rgba(239,68,68,0.85)",
+        backgroundColor: "rgba(239,68,68,0.30)",
+      };
+    }
+  }
+  return out;
+}
+
+/**
+ * Look up an ability descriptor on a resolved rules object by
+ * the piece-type that owns it and the ability id. Tries
+ * byColor first (asymmetric), falls back to symmetric pieces.
+ *
+ * Used by the ability-cast sound dispatcher: the move object
+ * carries `casterType` + `abilityId`, and we need the full
+ * descriptor (specifically `effect.kind`) to pick the right
+ * sound.
+ */
+function findAbilityInRules(rules, pieceType, abilityId, color) {
+  if (!rules || !pieceType || !abilityId) return null;
+  if (color) {
+    const arr = rules.byColor?.[color]?.[pieceType]?.abilities;
+    if (Array.isArray(arr)) {
+      const m = arr.find((a) => a?.id === abilityId);
+      if (m) return m;
+    }
+  }
+  const arr2 = rules.pieces?.[pieceType]?.abilities;
+  if (Array.isArray(arr2)) {
+    return arr2.find((a) => a?.id === abilityId) || null;
+  }
+  return null;
+}
+
 function VariantErrorToast({ message, onDismiss }) {
   if (!message) return null;
   return (
@@ -1089,6 +1158,20 @@ function Warmup({ room, setRoom, role, roomId }) {
   const [position, setPosition] = useState(() => Position.fromFen(rules.startingFen || VANILLA_FEN));
   const [highlight, setHighlight] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(WARMUP_DURATION_S);
+  // Ability-panel hover highlight. When the user hovers a row in
+  // the AbilityPanel, the panel calls back with the squares that
+  // hold castable pieces; we paint those squares amber on the
+  // board so the user can find their casters at a glance.
+  const [abilityHighlight, setAbilityHighlight] = useState([]);
+  // Cast flash: when an ability fires, the caster's square and
+  // target square pulse briefly so the user gets a visual signal
+  // that something happened. Auto-clears after 700ms.
+  const [castFlash, setCastFlash] = useState(null); // { from, to } | null
+  useEffect(() => {
+    if (!castFlash) return undefined;
+    const t = setTimeout(() => setCastFlash(null), 700);
+    return () => clearTimeout(t);
+  }, [castFlash]);
   // Crazy Arena Ship #2.5: stash the most recent VariantError
   // message so the warmup UI can surface a small toast. Clears
   // automatically after a few seconds via the effect below.
@@ -1250,8 +1333,12 @@ function Warmup({ room, setRoom, role, roomId }) {
         captured: !!position.pieceAt(m.to) || !!m.enPassant,
         // Ship #2.5: forward ability metadata so the board
         // renders ability targets distinctly and `onMove` can
-        // dispatch the cast through applyAbilityMove.
-        ...(m.kind === "ability" ? { kind: "ability", abilityId: m.abilityId } : {}),
+        // dispatch the cast through applyAbilityMove. We also
+        // pass casterType so the sound-dispatcher can find the
+        // ability spec without re-walking the rules.
+        ...(m.kind === "ability"
+          ? { kind: "ability", abilityId: m.abilityId, casterType: m.casterType }
+          : {}),
       }));
   }, [position, rules, myColor]);
 
@@ -1280,7 +1367,17 @@ function Warmup({ room, setRoom, role, roomId }) {
       }
       return false;
     }
-    playMoveSound({ flags: move.captured ? "c" : "n" });
+    // Ship #2.5: ability casts get a thematic sound dispatched
+    // from the ability spec itself (capture / mark / spawn /
+    // etc), not the generic move sound. Plain moves fall back
+    // to the standard sound.
+    if (move.kind === "ability") {
+      const ab = findAbilityInRules(rules, move.casterType, move.abilityId, myColor);
+      playAbilityCast(ab);
+      setCastFlash({ from: move.from, to: move.to });
+    } else {
+      playMoveSound({ flags: move.captured ? "c" : "n" });
+    }
     setPosition(next);
     setHighlight({
       [move.from]: { backgroundColor: "rgba(255,255,255,0.07)" },
@@ -1356,7 +1453,7 @@ function Warmup({ room, setRoom, role, roomId }) {
                 orientation={orientation}
                 playerColor={myColor}
                 interactive={position.turn === myColor && !ready}
-                highlightSquares={highlight}
+                highlightSquares={mergeHighlight(highlight, abilityHighlight, castFlash)}
                 legalMovesProvider={legalMovesProvider}
               />
               <CrazyStateBadges position={position} orientation={orientation} />
@@ -1396,6 +1493,14 @@ function Warmup({ room, setRoom, role, roomId }) {
             </div>
 
             <VariantRulesCard rules={rulesDiff} isTiebreak={false} roundLabel={round} />
+
+            <ArenaAbilityPanel
+              rules={rules}
+              crazyState={position?.crazyState || null}
+              playerColor={myColor}
+              position={position}
+              onHighlight={setAbilityHighlight}
+            />
           </div>
         </div>
       </div>
@@ -1510,6 +1615,17 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     const t = setTimeout(() => setVariantError(null), 6000);
     return () => clearTimeout(t);
   }, [variantError]);
+  // Hover-highlight from the AbilityPanel (see warmup component
+  // for the full rationale).
+  const [abilityHighlight, setAbilityHighlight] = useState([]);
+  // Cast flash overlay (see warmup component for full
+  // rationale). Auto-clears after 700ms.
+  const [castFlash, setCastFlash] = useState(null);
+  useEffect(() => {
+    if (!castFlash) return undefined;
+    const t = setTimeout(() => setCastFlash(null), 700);
+    return () => clearTimeout(t);
+  }, [castFlash]);
   const confirmTimerRef = useRef(null);
   const drawTimerRef = useRef(null);
   useEffect(() => () => {
@@ -1582,7 +1698,9 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
         to: m.to,
         promotion: m.promotion,
         captured: !!livePosition.pieceAt(m.to) || !!m.enPassant,
-        ...(m.kind === "ability" ? { kind: "ability", abilityId: m.abilityId } : {}),
+        ...(m.kind === "ability"
+          ? { kind: "ability", abilityId: m.abilityId, casterType: m.casterType }
+          : {}),
       }));
   }, [rules, myColor]);
 
@@ -1703,9 +1821,16 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     }
 
     // Sound + highlight match OnlineGameScreen so the play
-    // surface feels identical. White tints for the last
-    // move, capture/non-capture variants of the move sound.
-    playMoveSound({ flags: move.captured ? "c" : "n" });
+    // surface feels identical. Ability casts get a thematic
+    // sound dispatched from the ability spec; plain moves use
+    // the standard move/capture cue.
+    if (move.kind === "ability") {
+      const ab = findAbilityInRules(rules, move.casterType, move.abilityId, myColor);
+      playAbilityCast(ab);
+      setCastFlash({ from: move.from, to: move.to });
+    } else {
+      playMoveSound({ flags: move.captured ? "c" : "n" });
+    }
     setHighlight({
       [move.from]: { backgroundColor: "rgba(255,255,255,0.07)" },
       [move.to]:   { backgroundColor: "rgba(255,255,255,0.11)" },
@@ -2024,9 +2149,31 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
         [last.move_to]:   { backgroundColor: "rgba(255,255,255,0.11)" },
       });
     }
-    const wasCapture = typeof last.san === "string" && last.san.includes("x");
-    playMoveSound({ flags: wasCapture ? "c" : "n" });
-  }, [moves, localPosition, localPly]);
+    // Ship #2.5: opponent's ability casts get the same thematic
+    // sound the caster heard. Look up the ability spec from the
+    // rules using the move row's move_kind + ability_id (stored
+    // by arena_apply_move_v2). Falls back to the standard move/
+    // capture sound for non-ability moves.
+    if (last.move_kind === "ability" && last.ability_id) {
+      // We don't know the opponent's color directly here, but
+      // findAbilityInRules tries both byColor sides.
+      const oppColor = myColor === "w" ? "b" : "w";
+      // SAN format for ability casts: "Q!fireball→e5". Pull
+      // the caster's piece letter so we can look it up.
+      const sanFirst = typeof last.san === "string" ? last.san[0] : null;
+      const casterType = sanFirst && /[A-Z]/.test(sanFirst) ? sanFirst.toLowerCase() : null;
+      const ab = casterType
+        ? findAbilityInRules(rules, casterType, last.ability_id, oppColor)
+        : null;
+      playAbilityCast(ab);
+      if (last.move_from && last.move_to) {
+        setCastFlash({ from: last.move_from, to: last.move_to });
+      }
+    } else {
+      const wasCapture = typeof last.san === "string" && last.san.includes("x");
+      playMoveSound({ flags: wasCapture ? "c" : "n" });
+    }
+  }, [moves, localPosition, localPly, rules, myColor]);
 
   // Round-start ping: play the gentle "game start" sound once
   // per round so the transition from warmup -> round 1, round
@@ -2394,7 +2541,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                 // off-turn drags back to onUserMove which
                 // queues them.
                 interactive={liveMode && !gameStatus.ended}
-                highlightSquares={highlight}
+                highlightSquares={mergeHighlight(highlight, abilityHighlight, castFlash)}
                 legalMovesProvider={legalMovesProvider}
                 premoveSquares={premove}
                 onBoardClick={() => {
@@ -2449,6 +2596,13 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                 {offerNotice}
               </div>
             )}
+            <ArenaAbilityPanel
+              rules={rules}
+              crazyState={position?.crazyState || null}
+              playerColor={myColor}
+              position={position}
+              onHighlight={setAbilityHighlight}
+            />
             {!gameStatus.ended && (
               <div className="flex gap-2 shrink-0 flex-wrap">
                 <button onClick={onDrawOffer}

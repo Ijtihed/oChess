@@ -90,6 +90,63 @@ function playOfferNotify() { play("offerNotify",  0.7); }
 function playSocialNotify() { play("socialNotify", 0.6); }
 function playNotify()      { play("notify",       0.6); }
 
+/**
+ * Play a sound when an arena ability is cast. Picks an audible
+ * cue from the existing sound library based on the ability's
+ * `effect` and (for marks) the user-facing `tag` so that a
+ * "frost" mark sounds different from a "fireball" destroy.
+ *
+ * The Lichess sound set we ship doesn't include thematic
+ * spell sounds, so we map by texture:
+ *   - capture-y effects (destroy / displace) -> capture sound
+ *   - status marks -> a "notify" feel (the engine just changed
+ *     state but no piece moved yet)
+ *   - spawn / transform -> the "start" confirmation cue
+ *   - relocate_self -> the standard move sound
+ *
+ * Falls back to the generic notify if no specific mapping fits.
+ *
+ * @param {object} ability  The full ability spec (has `effect.kind` and optional `effect.tag`).
+ */
+function playAbilityCast(ability) {
+  const eff = ability?.effect;
+  if (!eff || typeof eff !== "object") {
+    play("notify", 0.6);
+    return;
+  }
+  switch (eff.kind) {
+    case "capture":
+    case "destroy":
+      play("capture", 0.85);
+      return;
+    case "displace":
+      play("capture", 0.7);
+      return;
+    case "spawn":
+    case "transform":
+      play("start", 0.55);
+      return;
+    case "relocate_self":
+      play("move", 0.75);
+      return;
+    case "mark":
+      play("offerNotify", 0.55);
+      return;
+    case "aoe_wrap":
+      // AOE that destroys feels the most "spell-like" via the
+      // capture sound; AOE that marks (e.g. frost burst) uses
+      // the lighter notify cue.
+      if (eff.inner?.kind === "destroy" || eff.inner?.kind === "capture") {
+        play("capture", 0.95);
+      } else {
+        play("offerNotify", 0.7);
+      }
+      return;
+    default:
+      play("notify", 0.6);
+  }
+}
+
 function setEnabled(v) { enabled = v; }
 function isEnabled() { return enabled; }
 
@@ -113,6 +170,7 @@ export {
   playOfferNotify,
   playSocialNotify,
   playNotify,
+  playAbilityCast,
   setEnabled,
   isEnabled,
   getVolume,

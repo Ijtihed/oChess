@@ -10,18 +10,27 @@
  * Output shape:
  *
  *   {
- *     name,           // e.g. "Atomic-lite" or "AI: Reverse pawns"
+ *     name,           // e.g. "Wizard Queen" or "AI: Reverse pawns"
  *     description,    // 1-2 sentence summary
  *     changes: [
  *       { kind: "starting_position",  detail: "...non-vanilla FEN..." },
  *       { kind: "piece_moves",        piece: "p", detail: "..." },
  *       { kind: "castling",           detail: "Castling disabled for both sides" },
+ *       { kind: "ability",            piece: "q", detail: "...", abilityId, label, gating, effectSummary, targetSummary },  // Ship #2.5
  *       { kind: "capture_effect",     detail: "..." },
  *       { kind: "win_condition",      detail: "..." },
  *       { kind: "byColor",            detail: "..." },
  *       { kind: "ply_cap",            detail: "..." },
  *     ],
  *   }
+ *
+ * Ability changes are surfaced explicitly (not just as a
+ * "piece moves changed" generic note) so the lobby preview can
+ * tell the player "Queens can cast Fireball: 3 charges, 4-turn
+ * cooldown, AOE radius 1." Without this, players see the prose
+ * description and zero structured info, then sit at the board
+ * not knowing what they have. That's the #1 discoverability
+ * failure mode.
  *
  * If a section is identical to vanilla, we omit it. If
  * everything matches vanilla, `changes` is empty and the
@@ -98,6 +107,15 @@ export function describeRules(rules) {
         detail: types ? `${PIECE_NAMES[pt] || pt} promotes to: ${types}` : `${PIECE_NAMES[pt] || pt} promotion disabled`,
       });
     }
+    // Ship #2.5: surface abilities so the lobby preview shows
+    // the player WHAT they can do before the match starts. The
+    // structured fields (gating, effectSummary, targetSummary)
+    // also drive the in-match AbilityPanel.
+    if (Array.isArray(userSpec.abilities) && userSpec.abilities.length > 0) {
+      for (const ab of userSpec.abilities) {
+        changes.push(describeAbility(pt, ab));
+      }
+    }
   }
 
   // Per-color asymmetry
@@ -109,6 +127,20 @@ export function describeRules(rules) {
       kind: "byColor",
       detail: `Asymmetric: ${colors.join(" + ")} have unique rules`,
     });
+    // Surface byColor abilities too. We label them so the panel
+    // can scope the right abilities to the right color.
+    for (const color of ["w", "b"]) {
+      const colorSpecs = rules.byColor[color] || {};
+      for (const pt of ["p", "n", "b", "r", "q", "k"]) {
+        const spec = colorSpecs[pt];
+        if (!Array.isArray(spec?.abilities) || spec.abilities.length === 0) continue;
+        for (const ab of spec.abilities) {
+          const change = describeAbility(pt, ab);
+          change.color = color;
+          changes.push(change);
+        }
+      }
+    }
   }
 
   // Capture effects
@@ -238,6 +270,124 @@ function isKingSet(offsets) {
   if (!Array.isArray(offsets) || offsets.length !== 8) return false;
   const king = new Set(["0,1", "1,1", "1,0", "1,-1", "0,-1", "-1,-1", "-1,0", "-1,1"]);
   return offsets.every(([a, b]) => king.has(`${a},${b}`));
+}
+
+// ── Ability descriptions ──────────────────────────────────
+
+/**
+ * Render an ability spec into a structured change-list entry the
+ * UI can hydrate in two ways:
+ *
+ *   - As a one-line summary in the lobby preview (using `detail`)
+ *   - As a structured row in the in-match AbilityPanel
+ *     (using `targetSummary`, `effectSummary`, `gating`, `label`)
+ *
+ * Keep this string-only - no JSX. The React renderer is in
+ * RulePreview / AbilityPanel and does its own layout.
+ */
+function describeAbility(pieceType, ab) {
+  const pieceName = PIECE_NAMES[pieceType] || pieceType;
+  const label = ab.label || ab.id || "ability";
+  const targetSummary = describeAbilityTarget(ab.target);
+  const effectSummary = describeAbilityEffect(ab.effect);
+  const gating = describeGating(ab.gating);
+  // The lobby's one-line summary. Skip the gating clause when
+  // omitted (intentional unlimited use).
+  const parts = [
+    `${pieceName} can cast "${label}":`,
+    `${effectSummary}`,
+    `targets ${targetSummary}.`,
+    gating ? gating : null,
+  ].filter(Boolean);
+  return {
+    kind: "ability",
+    piece: pieceType,
+    abilityId: ab.id,
+    label,
+    targetSummary,
+    effectSummary,
+    gating: ab.gating || null,
+    intensity: ab.intensity || "medium",
+    detail: parts.join(" "),
+  };
+}
+
+function describeAbilityTarget(target) {
+  if (!target || typeof target !== "object") return "anywhere";
+  if (target.kind === "ranged" || target.kind === "leap") {
+    const n = (target.offsets || []).length;
+    const filterParts = [];
+    if (target.requireEmpty) filterParts.push("empty squares");
+    else if (target.requireEnemy === false) filterParts.push("any square");
+    else filterParts.push("enemy pieces");
+    return `${filterParts.join(" / ")} within ${n} positions`;
+  }
+  if (target.kind === "slide") {
+    const dirCount = (target.dirs || []).length;
+    const range = target.maxRange ? `up to ${target.maxRange} squares` : "any distance";
+    const blockTag = target.blockedByPieces === false ? "(reaches through pieces)" : "(line of sight)";
+    return `${dirCount} sliding directions, ${range} ${blockTag}`;
+  }
+  return target.kind || "unknown";
+}
+
+function describeAbilityEffect(effect) {
+  if (!effect || typeof effect !== "object") return "does nothing";
+  switch (effect.kind) {
+    case "destroy":
+    case "capture": {
+      const aoe = effect.aoe;
+      if (aoe && Number.isFinite(aoe.radius) && aoe.radius > 0) {
+        return `destroys the target and pieces within ${aoe.radius} square(s)`;
+      }
+      return "destroys the target";
+    }
+    case "displace": {
+      if (Array.isArray(effect.delta)) {
+        return `pushes the target by [${effect.delta[0]}, ${effect.delta[1]}]`;
+      }
+      const dist = effect.distance || "?";
+      return `displaces the target ${dist} square(s) ${effect.direction || ""}`.trim();
+    }
+    case "relocate_self":
+      return `teleports the caster (destination: ${effect.destination || "target"})`;
+    case "spawn":
+      return `summons a friendly ${PIECE_NAMES[effect.pieceType] || effect.pieceType}${
+        effect.lifespan ? ` (lasts ${effect.lifespan} plies)` : ""
+      }`;
+    case "transform": {
+      const dur = effect.duration ? ` for ${effect.duration} plies` : "";
+      const what = effect.color === "caster" ? "charms the target" : effect.color === "flip" ? "flips the target's color" : "transforms the target";
+      return `${what}${dur}`;
+    }
+    case "mark": {
+      const tag = effect.tag || "marked";
+      const dur = effect.duration ? ` (${effect.duration} plies)` : "";
+      const verbs = [];
+      if (effect.skipTurns) verbs.push("can't move");
+      if (effect.silenceAbilities) verbs.push("can't cast");
+      if (effect.absorbCaptures) verbs.push(`absorbs ${effect.absorbCaptures} captures`);
+      if (effect.extraMoves) verbs.push(`extra ${effect.extraMoves} move(s)`);
+      if (effect.destroyOnExpire) verbs.push("dies when timer hits 0");
+      const what = verbs.length ? ` (${verbs.join(", ")})` : "";
+      return `marks the target as "${tag}"${dur}${what}`;
+    }
+    case "aoe_wrap": {
+      const inner = describeAbilityEffect(effect.inner);
+      return `for every piece within ${effect.radius || 1} square(s) of the target: ${inner}`;
+    }
+    default:
+      return effect.kind || "unknown effect";
+  }
+}
+
+function describeGating(gating) {
+  if (!gating) return "Unlimited uses (no cooldown).";
+  const parts = [];
+  if (Number.isFinite(gating.charges)) parts.push(`${gating.charges} charge${gating.charges === 1 ? "" : "s"}`);
+  if (Number.isFinite(gating.cooldownPlies)) parts.push(`${gating.cooldownPlies}-ply cooldown`);
+  if (parts.length === 0) return null;
+  return `${parts.join(", ")}.`;
 }
 
 function describeWinCondition(wc) {
