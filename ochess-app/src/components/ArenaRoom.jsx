@@ -1502,7 +1502,7 @@ function Warmup({ room, setRoom, role, roomId }) {
     if (move.kind === "ability") {
       const ab = findAbilityInRules(rules, move.casterType, move.abilityId, myColor);
       playAbilityCast(ab);
-      setCastFlash({ from: move.from, to: move.to });
+      setCastFlash({ from: move.from, to: move.to, abilityId: move.abilityId });
       // If the variant has a projectile draw matching this
       // ability id, animate it flying from caster to target.
       // The iframe runtime no-ops gracefully when the kind
@@ -1598,6 +1598,7 @@ function Warmup({ room, setRoom, role, roomId }) {
                 position={position}
                 orientation={orientation}
                 projectiles={projectiles}
+                lastCast={castFlash}
                 disabled={visualsMode === "off"}
                 onDrawError={(err) => {
                   pushVisualError(roomId, err);
@@ -1998,7 +1999,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     if (move.kind === "ability") {
       const ab = findAbilityInRules(rules, move.casterType, move.abilityId, myColor);
       playAbilityCast(ab);
-      setCastFlash({ from: move.from, to: move.to });
+      setCastFlash({ from: move.from, to: move.to, abilityId: move.abilityId });
       fireProjectile(move.from, move.to, move.abilityId, 350);
     } else {
       playMoveSound({ flags: move.captured ? "c" : "n" });
@@ -2339,7 +2340,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
         : null;
       playAbilityCast(ab);
       if (last.move_from && last.move_to) {
-        setCastFlash({ from: last.move_from, to: last.move_to });
+        setCastFlash({ from: last.move_from, to: last.move_to, abilityId: last.ability_id });
         fireProjectile(last.move_from, last.move_to, last.ability_id, 350);
       }
     } else {
@@ -2732,6 +2733,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                 position={position}
                 orientation={orientation}
                 projectiles={projectiles}
+                lastCast={castFlash}
                 disabled={visualsMode === "off"}
                 onDrawError={(err) => {
                   pushVisualError(roomId, err);

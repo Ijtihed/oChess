@@ -4,6 +4,7 @@ import { resolveRules } from "./rules";
 import { generateLegalMoves } from "./move-gen";
 import { applyMove } from "./apply-move";
 import { validateRules } from "./validator";
+import { checkGameStatus } from "./win-check";
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -83,6 +84,43 @@ describe("primitive: destroy", () => {
     const next = applyMove(pos, cast, rules);
     expect(next.pieceAt("d4")).toBeNull();
     expect(next.captureTally.w).toBe(1);
+  });
+
+  it("ending condition fires when an ability destroys the enemy king, even without explicit capture_king", () => {
+    const rules = resolveRules(variant("q", { kind: "destroy" }));
+    const pos = Position.fromFen("8/8/8/8/3k4/3Q4/8/4K3 w - - 0 1");
+    const moves = generateLegalMoves(pos, rules);
+    const cast = abilityMove(moves, "d3", "d4");
+    expect(cast).toBeDefined();
+    const next = applyMove(pos, cast, rules);
+    expect(next.findKing("b")).toBeNull();
+    expect(checkGameStatus(next, rules)).toMatchObject({
+      ended: true,
+      winner: "w",
+      reason: "captured black king",
+    });
+  });
+
+  it("ending condition fires when an AOE ability destroys a king adjacent to the target", () => {
+    const rules = resolveRules(variant("q", {
+      kind: "aoe_wrap",
+      radius: 1,
+      inner: { kind: "destroy" },
+    }));
+    // White queen targets black queen on d4; the blast also hits
+    // the adjacent black king on d5.
+    const pos = Position.fromFen("8/8/8/3k4/3q4/3Q4/8/4K3 w - - 0 1");
+    const moves = generateLegalMoves(pos, rules);
+    const cast = abilityMove(moves, "d3", "d4");
+    expect(cast).toBeDefined();
+    const next = applyMove(pos, cast, rules);
+    expect(next.pieceAt("d4")).toBeNull();
+    expect(next.findKing("b")).toBeNull();
+    expect(checkGameStatus(next, rules)).toMatchObject({
+      ended: true,
+      winner: "w",
+      reason: "captured black king",
+    });
   });
 });
 

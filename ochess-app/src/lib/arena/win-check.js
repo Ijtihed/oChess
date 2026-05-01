@@ -59,6 +59,15 @@ export function checkGameStatus(position, rules) {
     return { ended: true, winner: null, reason: "ply cap" };
   }
 
+  // Hard safety net for crazy abilities: if any effect removes
+  // a king from the board, the game ends immediately even if
+  // the AI forgot to include an explicit {type:"capture_king"}
+  // win condition. This is intentionally BEFORE user-authored
+  // win conditions so "fireball hits queen and also catches the
+  // king in the blast" can't leave a kingless game running.
+  const missingKing = evaluateCaptureKing(position);
+  if (missingKing?.ended) return missingKing;
+
   // Run the explicit win conditions in declared order.
   for (const wc of rules.winConditions || []) {
     const result = evaluateWinCondition(wc, position, rules);

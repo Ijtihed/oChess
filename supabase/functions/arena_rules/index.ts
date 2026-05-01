@@ -636,15 +636,17 @@ Composable-primitive worked examples (cover the patterns; do NOT copy verbatim):
   }
 
 ═══════════════════════════════════════════════════════════
-VISUALS (optional but encouraged for cohesive crazy variants):
+VISUALS (expected for crazy/lab variants):
 ═══════════════════════════════════════════════════════════
 
-You may emit a top-level "visuals" field describing JavaScript canvas-2d draw functions that paint OVER the standard chess board. The functions run in a sandboxed iframe with no network/storage access.
+For any variant with abilities, fire, ice, explosions, shadows, summons, teleports, status marks, projectiles, or any strong theme, you SHOULD emit a top-level "visuals" field. The goal is not a vague glow. The goal is to make the prompt physically visible on the board: fire should look like fire, freezing should look like ice crystals, bowling should look like motion trails / impact sparks, necromancy should look like green spirit smoke, etc.
+
+The functions run in a sandboxed iframe with no network/storage access. Emit JavaScript FUNCTION BODY strings only. Do not emit a full function declaration.
 
 The visuals object accepts these keys:
-- "slots": object keyed by "<pieceType>.<slotName>". E.g. "q.aura" paints under EVERY queen on the board (both colors). Slot names are: body, head, back, weapon_R, weapon_L, feet, aura. Each value is a JavaScript FUNCTION BODY string (not a full function declaration - just the body). It receives parameters (ctx, x, y, facing, owner, t, random, state).
-- "projectiles": object keyed by projectile id (matches abilities that should fire a projectile). Each value is a JS function body receiving (ctx, p) where p has {x, y, fromX, fromY, toX, toY, progress, age, ttl}.
-- "overlays": array of full-board JS function body strings receiving (ctx, scene) where scene has {width, height, marks, lastCast, t}.
+- "slots": object keyed by "<pieceType>.<slotName>". E.g. "q.aura" paints under EVERY queen on the board (both colors). Slot names are: body, head, back, weapon_R, weapon_L, feet, aura. Each value is a JavaScript function body string receiving (ctx, x, y, facing, owner, t, random, state).
+- "projectiles": object keyed by projectile id. The key SHOULD match an ability id. If an ability id is "fireball", emit visuals.projectiles.fireball. Each value receives (ctx, p) where p has {x, y, fromX, fromY, toX, toY, progress, age, ttl}.
+- "overlays": array of full-board JS function body strings receiving (ctx, scene) where scene has {width, height, marks, lastCast, t}. Use overlays for board-wide weather, frozen-square crystals, curse smoke, post-cast shockwaves, and status marks.
 
 Parameter contract:
 - ctx: a canvas 2D context, pre-translated to the slot's center for slot draws. Position (0,0) is the piece's center.
@@ -654,6 +656,8 @@ Parameter contract:
 - t: monotonic time in milliseconds. Use for animations: Math.sin(t * 0.003) etc.
 - random: a function returning a number in [0,1). Match-seeded so both clients render identical animations. Use this instead of Math.random for replay determinism.
 - state: a per-piece persistent object you can read/write across frames.
+- scene.lastCast: null or {from,to,abilityId}. Use it to draw a one-frame shockwave / burn ring / frost burst at the target.
+- scene.marks: object keyed by square. Use this for status effects like freeze/burn/curse/shield when your rules emit effect.kind = "mark".
 
 Allowed canvas API (everything else is rejected by the validator):
 - Setters: fillStyle, strokeStyle, lineWidth, lineCap, lineJoin, globalAlpha, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY
@@ -676,29 +680,48 @@ NEVER do these things (they will be rejected by the validator):
 
 Performance: each per-frame draw has a 15ms budget. For per-piece slots that means roughly 1-2ms each. Keep draws lean: <100 lines, no nested loops > 32 iterations total.
 
+Visual quality requirements:
+- If you define an active ability, emit at least one slot draw on the caster piece type AND, when the ability travels from caster to target, a projectile draw whose key equals the ability id.
+- For a themed caster piece, prefer 3-5 slots, not just aura. Example for a fireball queen: q.aura for heat shimmer, q.weapon_R for flame staff, q.back for cape sparks, q.feet for ember trail, q.body for molten core.
+- Do NOT draw letters or text. Do NOT use generic circles only. Combine gradients, arcs, triangles, jagged lines, particles, alpha, rotation, and time-based pulsing.
+- Slot drawings are centered on the piece. Keep most marks within radius 35 so they sit around the chess sprite, not over the whole board.
+- Projectile drawings use absolute board coordinates through p.x and p.y; draw a head and a tail using p.progress.
+- Overlay drawings should be subtle but specific: snowflake cracks for freeze, smoky purple corners for curse, red-orange flash rings for explosion.
+
 ═══════════════════════════════════════════════════════════
-Worked visual examples (copy these patterns):
+Worked visual examples (copy these patterns, but theme them to the user prompt):
 ═══════════════════════════════════════════════════════════
 
-Aura (pulsing halo around a queen):
-  "q.aura": "const phase = Math.sin(t * 0.003) * 0.5 + 0.5; const r = 24 + phase * 6; const g = ctx.createRadialGradient(0,0,0,0,0,r); const c = owner.color === 'w' ? 'rgba(255,220,100,' : 'rgba(150,100,255,'; g.addColorStop(0, c + (0.4 + phase * 0.3) + ')'); g.addColorStop(1, c + '0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();"
+Fire caster aura and weapon:
+  "q.aura": "const phase=Math.sin(t*0.006)*0.5+0.5; const r=25+phase*7; const g=ctx.createRadialGradient(0,0,0,0,0,r); g.addColorStop(0,'rgba(255,230,80,0.45)'); g.addColorStop(0.45,'rgba(255,90,0,0.22)'); g.addColorStop(1,'rgba(120,0,0,0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill(); for(let i=0;i<6;i++){ const a=i*Math.PI/3+t*0.004; ctx.strokeStyle='rgba(255,120,0,0.55)'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(Math.cos(a)*15,Math.sin(a)*15); ctx.lineTo(Math.cos(a)*28,Math.sin(a)*28); ctx.stroke(); }"
+  "q.weapon_R": "ctx.save(); ctx.rotate(0.35*facing); const flick=Math.sin(t*0.012)*3; ctx.strokeStyle='rgba(120,45,0,0.9)'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(10*facing,-16); ctx.lineTo(22*facing,-2); ctx.stroke(); const g=ctx.createRadialGradient(25*facing,-2,0,25*facing,-2,9+flick); g.addColorStop(0,'rgba(255,255,180,0.95)'); g.addColorStop(0.4,'rgba(255,110,0,0.75)'); g.addColorStop(1,'rgba(255,0,0,0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(25*facing,-2,10+flick,0,Math.PI*2); ctx.fill(); ctx.restore();"
 
-Body (rotating shield ring on a knight):
-  "n.aura": "const angle = t * 0.002 * facing; ctx.strokeStyle = owner.color === 'w' ? 'rgba(120,220,255,0.7)' : 'rgba(255,180,120,0.7)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0,0,18, angle, angle + Math.PI * 1.4); ctx.stroke();"
+Ice/freeze caster crystals:
+  "b.aura": "const pulse=Math.sin(t*0.003)*0.5+0.5; ctx.strokeStyle='rgba(170,230,255,'+(0.45+pulse*0.25)+')'; ctx.lineWidth=1.5; for(let i=0;i<8;i++){ const a=i*Math.PI/4; const r1=13; const r2=27+pulse*4; ctx.beginPath(); ctx.moveTo(Math.cos(a)*r1,Math.sin(a)*r1); ctx.lineTo(Math.cos(a)*r2,Math.sin(a)*r2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(Math.cos(a)*r2,Math.sin(a)*r2); ctx.lineTo(Math.cos(a+0.22)*(r2-7),Math.sin(a+0.22)*(r2-7)); ctx.moveTo(Math.cos(a)*r2,Math.sin(a)*r2); ctx.lineTo(Math.cos(a-0.22)*(r2-7),Math.sin(a-0.22)*(r2-7)); ctx.stroke(); }"
+  "b.back": "ctx.fillStyle='rgba(180,240,255,0.22)'; for(let i=0;i<4;i++){ const a=t*0.001+i*Math.PI/2; ctx.beginPath(); ctx.ellipse(Math.cos(a)*12,Math.sin(a)*8-6,5,14,a,0,Math.PI*2); ctx.fill(); }"
 
 Projectile (fireball trail):
   "fireball": "const dx = p.toX - p.fromX, dy = p.toY - p.fromY; const len = Math.sqrt(dx*dx + dy*dy) || 1; for (let i = 0; i < 6; i++) { const back = i / 6; const tx = p.x - (dx/len) * back * 12; const ty = p.y - (dy/len) * back * 12; ctx.fillStyle = 'rgba(255,' + (180 - i*20) + ',0,' + (0.8 - back) + ')'; ctx.beginPath(); ctx.arc(tx, ty, 6 - i*0.6, 0, Math.PI*2); ctx.fill(); }"
 
-Overlay (subtle vignette):
-  "ctx.fillStyle = 'rgba(0,0,0,0.15)'; const g = ctx.createRadialGradient(scene.width/2, scene.height/2, scene.width*0.35, scene.width/2, scene.height/2, scene.width*0.7); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.18)'); ctx.fillStyle = g; ctx.fillRect(0, 0, scene.width, scene.height);"
+Projectile (ice shard):
+  "freeze": "const dx=p.toX-p.fromX, dy=p.toY-p.fromY; const a=Math.atan2(dy,dx); ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(a); ctx.fillStyle='rgba(190,240,255,0.9)'; ctx.beginPath(); ctx.moveTo(12,0); ctx.lineTo(-8,-5); ctx.lineTo(-3,0); ctx.lineTo(-8,5); ctx.closePath(); ctx.fill(); ctx.strokeStyle='rgba(80,180,255,0.55)'; ctx.lineWidth=1; ctx.stroke(); ctx.restore();"
+
+Overlay (last-cast fire burst):
+  "const c=scene.lastCast; if(c){ const files='abcdefgh'; const f=files.indexOf(c.to[0]); const r=parseInt(c.to[1],10)-1; if(f>=0){ const sq=scene.width/8; const x=f*sq+sq/2; const y=(7-r)*sq+sq/2; const age=(scene.t%500)/500; ctx.strokeStyle='rgba(255,90,0,'+(0.55*(1-age))+')'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(x,y,12+age*38,0,Math.PI*2); ctx.stroke(); } }"
+
+Overlay (marked frozen squares):
+  "const sq=scene.width/8; const files='abcdefgh'; for(const key of Object.keys(scene.marks||{})){ const marks=scene.marks[key]||[]; let frozen=false; for(let i=0;i<marks.length;i++){ if(String(marks[i].tag||'').includes('freeze')||String(marks[i].tag||'').includes('ice')) frozen=true; } if(!frozen) continue; const f=files.indexOf(key[0]); const r=parseInt(key[1],10)-1; if(f<0) continue; const x=f*sq+sq/2, y=(7-r)*sq+sq/2; ctx.strokeStyle='rgba(170,230,255,0.65)'; ctx.lineWidth=1.5; for(let i=0;i<6;i++){ const a=i*Math.PI/3+scene.t*0.002; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+Math.cos(a)*22,y+Math.sin(a)*22); ctx.stroke(); } }"
 
 If the user prompts for a "fireball queen" or "freezing bishop" or "neon knights" or anything visual, MATCH the visual to the ability. Examples:
-- "freezing" -> ctx.strokeStyle = 'rgba(150,200,255,0.7)' + draw frost crystals + slow pulse
-- "burning" -> ctx.fillStyle = orange/red gradient + fast flicker
-- "stone" -> grey + chunky rectangles
-- "shadow" -> dark + low alpha + slow drift
+- "freezing" -> ice crystals: sharp blue-white spokes, faceted polygons, slow shimmer, overlay on marked frozen squares
+- "burning" -> flame: orange/yellow gradients, flicker, smoke particles, ember trails, target impact ring
+- "stone" -> grey slab armor, cracks, angular rectangles, dust on movement
+- "shadow" -> purple/black low-alpha smoke, crescent shapes, slow drift, fading afterimages
+- "necromancy" -> green spirit wisps, bone-white arcs, grave-smoke at summoned pieces
+- "bowling/throwing" -> motion streaks, impact sparks, dust trail, projectile keyed to ability id
+- "lightning" -> jagged cyan/white lines, branching arcs, fast flicker
 
-Visuals are OPTIONAL. If you can't think of something good, omit the "visuals" field entirely. A variant with no visuals still works fine. NEVER emit a "visuals" field with empty contents - either omit it entirely or fill it with at least one slot/projectile/overlay.
+Do not omit visuals for crazy arena lab variants unless the prompt is extremely plain and has no theme. If you emit a "visuals" field, make it useful: at minimum one caster slot AND one projectile or overlay for each active ability theme. NEVER emit a "visuals" field with empty contents.
 
 Reply with ONLY a JSON object, no prose around it.`;
 

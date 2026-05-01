@@ -166,7 +166,7 @@ function SoloGame({ variant, navigate, userName }) {
     if (move.kind === "ability") {
       const ab = findAbility(rules, move.casterType, move.abilityId, move.castColor || position.turn);
       playAbilityCast(ab);
-      setCastFlash({ from: move.from, to: move.to });
+      setCastFlash({ from: move.from, to: move.to, abilityId: move.abilityId });
       fireProjectile(move.from, move.to, move.abilityId, 350);
     } else {
       playMoveSound({ flags: move.captured ? "c" : "n" });
@@ -265,6 +265,7 @@ function SoloGame({ variant, navigate, userName }) {
               position={position}
               orientation={orientation}
               projectiles={projectiles}
+              lastCast={castFlash}
               disabled={!compiledVisuals}
             />
             {variantError && (
