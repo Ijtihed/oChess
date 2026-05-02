@@ -33,7 +33,7 @@
   },
   "dependencies": {
     "@sentry/react": "^10.50.0",
-    "@supabase/supabase-js": "^2.101.1",
+    "@supabase/supabase-js": "^2.105.1",
     "acorn": "^8.16.0",
     "chess.js": "^1.4.0",
     "howler": "^2.2.4",
