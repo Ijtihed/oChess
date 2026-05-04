@@ -339,6 +339,11 @@ function addAbilityMoves(out, position, rules, piece, fromFR, fromSq, ability) {
     if (filter.requireFilled && !targetPc) continue;
     if (filter.requireEnemy && targetPc && targetPc.color === piece.color) continue;
     if (filter.requireFriendly && targetPc && targetPc.color !== piece.color) continue;
+    // Kings are not valid direct targets for lethal / converting
+    // abilities. The resolver also enforces this, but filtering
+    // here prevents the UI from offering a red crosshair on the
+    // king in the first place.
+    if (targetPc?.type === "k" && abilityHarmsKing(ability.effect)) continue;
 
     out.push({
       from: fromSq,
@@ -349,6 +354,21 @@ function addAbilityMoves(out, position, rules, piece, fromFR, fromSq, ability) {
       intensity,
     });
   }
+}
+
+function abilityHarmsKing(effect) {
+  if (!effect || typeof effect !== "object") return false;
+  const k = effect.kind;
+  if (k === "destroy" || k === "capture" || k === "transform") return true;
+  if (k === "displace") {
+    const destructive = effect.onCollision === "destroy_target" ||
+      effect.onCollision === "destroy_both" ||
+      effect.bounceOffEdge !== true;
+    return destructive;
+  }
+  if (k === "mark") return effect.destroyOnExpire === true;
+  if (k === "aoe_wrap") return abilityHarmsKing(effect.inner);
+  return false;
 }
 
 /**

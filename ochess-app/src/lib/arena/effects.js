@@ -92,7 +92,7 @@ export function resolveEffect(next, ctx, effect) {
 function resolveDestroy(next, ctx, effect) {
   const target = next.pieceAt(ctx.targetSquare);
   let captures = 0;
-  if (target) {
+  if (target && !isKing(target)) {
     next.setSquare(ctx.targetSquare, null);
     next.captureTally[ctx.caster.color] += 1;
     captures += 1;
@@ -130,6 +130,12 @@ function resolveDisplace(next, ctx, effect) {
   if (!target) {
     return { ok: false, error: `displace: no piece at target ${ctx.targetSquare}` };
   }
+  // Kings are immune to destructive ability displacement. A
+  // push/throw can move a king around the board, but it must not
+  // delete the king by knocking it off-board or colliding with a
+  // destroy mode. This keeps "kill the king with fireball/yeet"
+  // from bypassing chess's objective.
+  const targetIsKing = isKing(target);
   const targetFR = ctx.targetFR;
 
   // Compute the unit direction + max distance.
@@ -193,7 +199,7 @@ function resolveDisplace(next, ctx, effect) {
     const nextFR = [currentFR[0] + stepF, currentFR[1] + stepR];
     if (!inBounds(nextFR)) {
       // Pushed off the edge.
-      if (bounceOffEdge) {
+      if (bounceOffEdge || targetIsKing) {
         landingFR = currentFR; // stay at last in-bounds square
       } else {
         // Destroy the target.
@@ -214,7 +220,7 @@ function resolveDisplace(next, ctx, effect) {
       landingFR = currentFR;
       break;
     }
-    if (onCollision === "destroy_target") {
+    if (onCollision === "destroy_target" && !targetIsKing) {
       targetDestroyed = true;
       captures += 1;
       next.captureTally[ctx.caster.color] += 1;
@@ -228,7 +234,7 @@ function resolveDisplace(next, ctx, effect) {
       landingFR = nextFR;
       continue; // bowling-style: continue down the line through the new gap
     }
-    if (onCollision === "destroy_both") {
+    if (onCollision === "destroy_both" && !targetIsKing) {
       next.setSquare(frToSquare(nextFR), null);
       captures += 1;
       next.captureTally[ctx.caster.color] += 1;
@@ -237,7 +243,8 @@ function resolveDisplace(next, ctx, effect) {
       next.captureTally[ctx.caster.color] += 1;
       break;
     }
-    // Unknown mode → safe fallback to stop.
+    // King + destructive collision mode, or unknown mode → safe
+    // fallback to stop.
     landingFR = currentFR;
     break;
   }
@@ -302,9 +309,13 @@ function resolveRelocateSelf(next, ctx, effect) {
     if (occupant.color === ctx.caster.color) {
       return { ok: false, error: `relocate_self: destination ${destSquare} is occupied by friendly` };
     }
-    next.setSquare(destSquare, null);
-    captures += 1;
-    next.captureTally[ctx.caster.color] += 1;
+    if (!isKing(occupant)) {
+      next.setSquare(destSquare, null);
+      captures += 1;
+      next.captureTally[ctx.caster.color] += 1;
+    } else {
+      return { ok: false, error: `relocate_self: destination ${destSquare} occupied by king` };
+    }
   }
 
   // Move the caster.
@@ -359,6 +370,13 @@ function resolveTransform(next, ctx, effect) {
   const target = next.pieceAt(ctx.targetSquare);
   if (!target) {
     return { ok: false, error: `transform: no piece at target ${ctx.targetSquare}` };
+  }
+  if (isKing(target)) {
+    // Abilities may not polymorph/charm/convert kings by
+    // default. This preserves normal king objective semantics:
+    // you can pressure the king, not remove or recolor it with
+    // a spell.
+    return { ok: true, captures: 0 };
   }
 
   const original = { type: target.type, color: target.color };
@@ -443,7 +461,7 @@ function resolveMark(next, ctx, effect) {
     }
     mark.extraMoves = effect.extraMoves;
   }
-  if (effect.destroyOnExpire === true) mark.destroyOnExpire = true;
+  if (effect.destroyOnExpire === true && !isKing(target)) mark.destroyOnExpire = true;
   if (effect.expireOnCapture === true) mark.expireOnCapture = true;
 
   // No behavioral fields = bare cosmetic mark. That's fine; visuals in
@@ -690,6 +708,7 @@ function applyAOE(next, ctx, aoe, _innerHandler) {
       if (sq === ctx.casterSquare) continue;
       const pc = next.pieceAt(sq);
       if (!pc) continue;
+      if (isKing(pc)) continue;
       if (!hitsFriendly && pc.color === ctx.caster.color) continue;
       if (!hitsPawns && pc.type === "p") continue;
       next.setSquare(sq, null);
@@ -699,4 +718,8 @@ function applyAOE(next, ctx, aoe, _innerHandler) {
     }
   }
   return { captures };
+}
+
+function isKing(piece) {
+  return piece && piece.type === "k";
 }

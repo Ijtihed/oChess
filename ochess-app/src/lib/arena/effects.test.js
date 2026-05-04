@@ -86,22 +86,15 @@ describe("primitive: destroy", () => {
     expect(next.captureTally.w).toBe(1);
   });
 
-  it("ending condition fires when an ability destroys the enemy king, even without explicit capture_king", () => {
+  it("does not emit direct destroy abilities targeting kings", () => {
     const rules = resolveRules(variant("q", { kind: "destroy" }));
     const pos = Position.fromFen("8/8/8/8/3k4/3Q4/8/4K3 w - - 0 1");
     const moves = generateLegalMoves(pos, rules);
     const cast = abilityMove(moves, "d3", "d4");
-    expect(cast).toBeDefined();
-    const next = applyMove(pos, cast, rules);
-    expect(next.findKing("b")).toBeNull();
-    expect(checkGameStatus(next, rules)).toMatchObject({
-      ended: true,
-      winner: "w",
-      reason: "captured black king",
-    });
+    expect(cast).toBeUndefined();
   });
 
-  it("ending condition fires when an AOE ability destroys a king adjacent to the target", () => {
+  it("AOE destroy removes adjacent pieces but never removes kings", () => {
     const rules = resolveRules(variant("q", {
       kind: "aoe_wrap",
       radius: 1,
@@ -115,12 +108,8 @@ describe("primitive: destroy", () => {
     expect(cast).toBeDefined();
     const next = applyMove(pos, cast, rules);
     expect(next.pieceAt("d4")).toBeNull();
-    expect(next.findKing("b")).toBeNull();
-    expect(checkGameStatus(next, rules)).toMatchObject({
-      ended: true,
-      winner: "w",
-      reason: "captured black king",
-    });
+    expect(next.findKing("b")).toBe("d5");
+    expect(checkGameStatus(next, rules).ended).toBe(false);
   });
 });
 

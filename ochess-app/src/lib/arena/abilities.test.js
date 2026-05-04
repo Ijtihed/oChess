@@ -139,6 +139,19 @@ describe("ability move generation", () => {
     expect(abilityMoves.some((m) => m.from === "d3" && m.to === "d5" && m.abilityId === "fireball")).toBe(true);
   });
 
+  it("only emits ability moves for the side to move", () => {
+    const rules = resolveRules(wizardQueenDiff());
+    const whiteTurn = Position.fromFen(dualQueenFen());
+    const whiteMoves = generateLegalMoves(whiteTurn, rules);
+    expect(whiteMoves.some((m) => m.kind === "ability" && m.from === "d3")).toBe(true);
+    expect(whiteMoves.some((m) => m.kind === "ability" && m.from === "d5")).toBe(false);
+
+    const blackTurn = Position.fromFen(dualQueenFen().replace(" w ", " b "));
+    const blackMoves = generateLegalMoves(blackTurn, rules);
+    expect(blackMoves.some((m) => m.kind === "ability" && m.from === "d5")).toBe(true);
+    expect(blackMoves.some((m) => m.kind === "ability" && m.from === "d3")).toBe(false);
+  });
+
   it("does not emit ability moves targeting friendly pieces", () => {
     const rules = resolveRules(wizardQueenDiff());
     // Two white queens, black king parked on b6 (a non-ray
@@ -201,6 +214,7 @@ describe("ability resolution in applyMove", () => {
     expect(next.pieceAt("d3")).toMatchObject({ type: "q", color: "w" }); // caster stays
     expect(next.captureTally.w).toBe(1);
     expect(next.turn).toBe("b");
+    expect(next.history.length).toBe(pos.history.length + 1);
   });
 
   it("decrements charges and starts a cooldown after a cast", () => {
