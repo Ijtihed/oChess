@@ -36,6 +36,8 @@ export default function ArenaAbilityPanel({
   playerColor,
   position,
   onHighlight,
+  selectedAbility,
+  onSelectAbility,
 }) {
   if (!rules) return null;
 
@@ -57,7 +59,13 @@ export default function ArenaAbilityPanel({
       </p>
       <ul className="space-y-1.5">
         {rows.map((row) => (
-          <AbilityRow key={row.key} row={row} onHighlight={onHighlight} />
+          <AbilityRow
+            key={row.key}
+            row={row}
+            onHighlight={onHighlight}
+            selected={selectedAbility?.abilityId === row.abilityId && selectedAbility?.pieceType === row.pieceType}
+            onSelectAbility={onSelectAbility}
+          />
         ))}
       </ul>
     </div>
@@ -66,7 +74,7 @@ export default function ArenaAbilityPanel({
 
 // ── Row ────────────────────────────────────────────────────
 
-function AbilityRow({ row, onHighlight }) {
+function AbilityRow({ row, onHighlight, selected, onSelectAbility }) {
   const handleEnter = () => onHighlight && onHighlight(row.casterSquares);
   const handleLeave = () => onHighlight && onHighlight([]);
 
@@ -80,14 +88,28 @@ function AbilityRow({ row, onHighlight }) {
       onMouseLeave={handleLeave}
       onTouchStart={handleEnter}
       onTouchEnd={handleLeave}
-      className="px-2 py-1.5 bg-surface-low border border-white/[0.04] hover:border-amber-500/30 transition-colors cursor-default"
+      className={`px-2 py-1.5 bg-surface-low border transition-colors ${
+        selected ? "border-amber-400/70 ring-1 ring-amber-400/50" : "border-white/[0.04] hover:border-amber-500/30"
+      }`}
     >
-      <div className="flex items-baseline justify-between gap-2 mb-0.5">
-        <span className="font-headline text-[12px] font-bold text-on-surface">
-          {row.label}
-        </span>
-        <StatusPill status={status} />
-      </div>
+      <button
+        type="button"
+        disabled={status.kind !== "READY" || row.casterSquares.length === 0}
+        onClick={() => onSelectAbility?.({
+          abilityId: row.abilityId,
+          pieceType: row.pieceType,
+          label: row.label,
+          casterSquares: row.casterSquares,
+        })}
+        className="w-full text-left disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <div className="flex items-baseline justify-between gap-2 mb-0.5">
+          <span className="font-headline text-[12px] font-bold text-on-surface">
+            {selected ? "Casting: " : ""}{row.label}
+          </span>
+          <StatusPill status={status} />
+        </div>
+      </button>
       <div className="text-[10px] text-on-surface-variant/55 leading-tight mb-1">
         On your{" "}
         <span className="font-mono text-on-surface-variant/80">
@@ -198,6 +220,7 @@ function buildRow(rules, crazyState, position, playerColor, pieceType, ab, scope
     key: `${scopedColor || "both"}.${pieceType}.${ab.id}`,
     label: ab.label || ab.id,
     pieceName: PIECE_NAMES[pieceType] || pieceType,
+    pieceType,
     casterSquares,
     perCaster,
     effectSummary,

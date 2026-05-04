@@ -545,6 +545,29 @@ function ArenaInputModeToggle({ mode, onChange, disabled }) {
   );
 }
 
+function CastingBanner({ selectedAbility, onCancel }) {
+  if (!selectedAbility) return null;
+  return (
+    <div className="mb-2 px-3 py-2 bg-amber-500/15 border border-amber-500/35 text-amber-100 flex items-center justify-between gap-3">
+      <div>
+        <div className="font-headline text-[11px] font-bold uppercase tracking-widest text-amber-300">
+          Casting {selectedAbility.label || selectedAbility.abilityId}
+        </div>
+        <div className="text-[11px] text-amber-100/70">
+          Click one of your highlighted casters, then click a red target.
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="text-[10px] uppercase tracking-widest text-amber-200/70 hover:text-amber-100"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 /**
  * Look up an ability descriptor on a resolved rules object by
  * the piece-type that owns it and the ability id. Tries
@@ -1348,6 +1371,7 @@ function Warmup({ room, setRoom, role, roomId }) {
   // board so the user can find their casters at a glance.
   const [abilityHighlight, setAbilityHighlight] = useState([]);
   const [inputMode, setInputMode] = useState("move");
+  const [selectedAbility, setSelectedAbility] = useState(null);
   // Cast flash: when an ability fires, the caster's square and
   // target square pulse briefly so the user gets a visual signal
   // that something happened. Auto-clears after 700ms.
@@ -1508,6 +1532,9 @@ function Warmup({ room, setRoom, role, roomId }) {
     return generateLegalMoves(position, rules)
       .filter((m) => m.from === square)
       .filter((m) => inputMode === "ability" ? m.kind === "ability" : m.kind !== "ability")
+      .filter((m) => inputMode !== "ability" || !selectedAbility || (
+        m.abilityId === selectedAbility.abilityId && m.casterType === selectedAbility.pieceType
+      ))
       .map((m) => ({
         to: m.to,
         promotion: m.promotion,
@@ -1526,7 +1553,7 @@ function Warmup({ room, setRoom, role, roomId }) {
           ? { kind: "ability", abilityId: m.abilityId, casterType: m.casterType }
           : {}),
       }));
-  }, [position, rules, myColor, inputMode]);
+  }, [position, rules, myColor, inputMode, selectedAbility]);
 
   // When the user makes a legal move, apply it then ask the
   // bot for a reply. The async bot respects an abort signal
@@ -1639,8 +1666,18 @@ function Warmup({ room, setRoom, role, roomId }) {
             />
             <ArenaInputModeToggle
               mode={inputMode}
-              onChange={setInputMode}
+              onChange={(mode) => {
+                setInputMode(mode);
+                if (mode === "move") setSelectedAbility(null);
+              }}
               disabled={ready}
+            />
+            <CastingBanner
+              selectedAbility={inputMode === "ability" ? selectedAbility : null}
+              onCancel={() => {
+                setSelectedAbility(null);
+                setInputMode("move");
+              }}
             />
             <div className="w-full mx-auto relative" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
               <InteractiveBoard
@@ -1726,6 +1763,12 @@ function Warmup({ room, setRoom, role, roomId }) {
               crazyState={position?.crazyState || null}
               playerColor={myColor}
               position={position}
+              selectedAbility={selectedAbility}
+              onSelectAbility={(ability) => {
+                setSelectedAbility(ability);
+                setInputMode("ability");
+                setAbilityHighlight(ability.casterSquares || []);
+              }}
               onHighlight={setAbilityHighlight}
             />
           </div>
@@ -1846,6 +1889,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   // for the full rationale).
   const [abilityHighlight, setAbilityHighlight] = useState([]);
   const [inputMode, setInputMode] = useState("move");
+  const [selectedAbility, setSelectedAbility] = useState(null);
   // Ship #3 visual overlay (sandboxed iframe). No-op unless the
   // localStorage feature flag is set.
   const visualsMode = useArenaVisualsMode(roomId);
@@ -1933,6 +1977,9 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     return generateLegalMoves(livePosition, rules)
       .filter((m) => m.from === square)
       .filter((m) => inputMode === "ability" ? m.kind === "ability" : m.kind !== "ability")
+      .filter((m) => inputMode !== "ability" || !selectedAbility || (
+        m.abilityId === selectedAbility.abilityId && m.casterType === selectedAbility.pieceType
+      ))
       .map((m) => ({
         to: m.to,
         promotion: m.promotion,
@@ -1941,7 +1988,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
           ? { kind: "ability", abilityId: m.abilityId, casterType: m.casterType }
           : {}),
       }));
-  }, [rules, myColor, inputMode]);
+  }, [rules, myColor, inputMode, selectedAbility]);
 
   // Local clock snapshot for live rendering. Re-renders every
   // 250ms so the seconds visibly count down without burning
@@ -2771,8 +2818,18 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
             />
             <ArenaInputModeToggle
               mode={inputMode}
-              onChange={setInputMode}
+              onChange={(mode) => {
+                setInputMode(mode);
+                if (mode === "move") setSelectedAbility(null);
+              }}
               disabled={!liveMode || gameStatus.ended}
+            />
+            <CastingBanner
+              selectedAbility={inputMode === "ability" ? selectedAbility : null}
+              onCancel={() => {
+                setSelectedAbility(null);
+                setInputMode("move");
+              }}
             />
             <div className="w-full mx-auto relative" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
               <InteractiveBoard
@@ -2876,6 +2933,12 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
               crazyState={position?.crazyState || null}
               playerColor={myColor}
               position={position}
+              selectedAbility={selectedAbility}
+              onSelectAbility={(ability) => {
+                setSelectedAbility(ability);
+                setInputMode("ability");
+                setAbilityHighlight(ability.casterSquares || []);
+              }}
               onHighlight={setAbilityHighlight}
             />
             {!gameStatus.ended && (
