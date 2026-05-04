@@ -506,6 +506,45 @@ function mergeHighlight(base, abilitySquares, castFlash) {
   return out;
 }
 
+function ArenaInputModeToggle({ mode, onChange, disabled }) {
+  const isAbility = mode === "ability";
+  return (
+    <div className="mb-2 p-2 bg-surface-low border border-white/[0.04]">
+      <div className="grid grid-cols-2 gap-1">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange("move")}
+          className={`px-3 py-2 text-[10px] font-headline font-bold uppercase tracking-widest border transition-colors ${
+            !isAbility
+              ? "bg-primary/18 border-primary/35 text-primary"
+              : "bg-surface-container border-white/[0.05] text-on-surface-variant/45 hover:text-on-surface"
+          }`}
+        >
+          Move
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange("ability")}
+          className={`px-3 py-2 text-[10px] font-headline font-bold uppercase tracking-widest border transition-colors ${
+            isAbility
+              ? "bg-amber-500/18 border-amber-500/40 text-amber-300"
+              : "bg-surface-container border-white/[0.05] text-on-surface-variant/45 hover:text-amber-300"
+          }`}
+        >
+          Ability
+        </button>
+      </div>
+      <p className="mt-1.5 text-[10px] text-on-surface-variant/45 leading-snug">
+        {isAbility
+          ? "Ability mode: left-click a caster, then left-click a red target. Dragging is disabled."
+          : "Move mode: drag or left-click pieces normally. Abilities are hidden until you switch modes."}
+      </p>
+    </div>
+  );
+}
+
 /**
  * Look up an ability descriptor on a resolved rules object by
  * the piece-type that owns it and the ability id. Tries
@@ -1308,6 +1347,7 @@ function Warmup({ room, setRoom, role, roomId }) {
   // hold castable pieces; we paint those squares amber on the
   // board so the user can find their casters at a glance.
   const [abilityHighlight, setAbilityHighlight] = useState([]);
+  const [inputMode, setInputMode] = useState("move");
   // Cast flash: when an ability fires, the caster's square and
   // target square pulse briefly so the user gets a visual signal
   // that something happened. Auto-clears after 700ms.
@@ -1467,6 +1507,7 @@ function Warmup({ room, setRoom, role, roomId }) {
     if (position.turn !== myColor) return [];
     return generateLegalMoves(position, rules)
       .filter((m) => m.from === square)
+      .filter((m) => inputMode === "ability" ? m.kind === "ability" : m.kind !== "ability")
       .map((m) => ({
         to: m.to,
         promotion: m.promotion,
@@ -1485,7 +1526,7 @@ function Warmup({ room, setRoom, role, roomId }) {
           ? { kind: "ability", abilityId: m.abilityId, casterType: m.casterType }
           : {}),
       }));
-  }, [position, rules, myColor]);
+  }, [position, rules, myColor, inputMode]);
 
   // When the user makes a legal move, apply it then ask the
   // bot for a reply. The async bot respects an abort signal
@@ -1596,6 +1637,11 @@ function Warmup({ room, setRoom, role, roomId }) {
               pieceColor={myColor === "w" ? "b" : "w"}
               active={position.turn !== myColor && !ready}
             />
+            <ArenaInputModeToggle
+              mode={inputMode}
+              onChange={setInputMode}
+              disabled={ready}
+            />
             <div className="w-full mx-auto relative" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
               <InteractiveBoard
                 fen={position.toFen()}
@@ -1603,6 +1649,8 @@ function Warmup({ room, setRoom, role, roomId }) {
                 orientation={orientation}
                 playerColor={myColor}
                 interactive={position.turn === myColor && !ready}
+                dragEnabled={inputMode !== "ability"}
+                selectionKey={inputMode}
                 highlightSquares={mergeHighlight(highlight, abilityHighlight, castFlash)}
                 legalMovesProvider={legalMovesProvider}
               />
@@ -1797,6 +1845,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
   // Hover-highlight from the AbilityPanel (see warmup component
   // for the full rationale).
   const [abilityHighlight, setAbilityHighlight] = useState([]);
+  const [inputMode, setInputMode] = useState("move");
   // Ship #3 visual overlay (sandboxed iframe). No-op unless the
   // localStorage feature flag is set.
   const visualsMode = useArenaVisualsMode(roomId);
@@ -1883,6 +1932,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
     if (livePosition.turn !== myColor) return [];
     return generateLegalMoves(livePosition, rules)
       .filter((m) => m.from === square)
+      .filter((m) => inputMode === "ability" ? m.kind === "ability" : m.kind !== "ability")
       .map((m) => ({
         to: m.to,
         promotion: m.promotion,
@@ -1891,7 +1941,7 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
           ? { kind: "ability", abilityId: m.abilityId, casterType: m.casterType }
           : {}),
       }));
-  }, [rules, myColor]);
+  }, [rules, myColor, inputMode]);
 
   // Local clock snapshot for live rendering. Re-renders every
   // 250ms so the seconds visibly count down without burning
@@ -2719,6 +2769,11 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
               time={oppTime}
               active={oppActive && !gameStatus.ended}
             />
+            <ArenaInputModeToggle
+              mode={inputMode}
+              onChange={setInputMode}
+              disabled={!liveMode || gameStatus.ended}
+            />
             <div className="w-full mx-auto relative" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
               <InteractiveBoard
                 fen={displayFen}
@@ -2731,7 +2786,9 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
                 // InteractiveBoard's drop handler funnels
                 // off-turn drags back to onUserMove which
                 // queues them.
-                interactive={liveMode && !gameStatus.ended}
+                interactive={liveMode && !gameStatus.ended && (inputMode !== "ability" || myTurn)}
+                dragEnabled={inputMode !== "ability"}
+                selectionKey={inputMode}
                 highlightSquares={mergeHighlight(highlight, abilityHighlight, castFlash)}
                 legalMovesProvider={legalMovesProvider}
                 premoveSquares={premove}

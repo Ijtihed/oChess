@@ -50,6 +50,8 @@ export default function InteractiveBoard({
   allowDrawingArrows = true,
   onBoardClick,
   squareAnnotation,
+  dragEnabled = true,
+  selectionKey,
   // Optional override for legal-move hints. When provided, the
   // board uses this to compute the dot-hint targets instead of
   // chess.js's `moves({ square, verbose: true })`. The override
@@ -83,7 +85,7 @@ export default function InteractiveBoard({
   useEffect(() => {
     setSelectedSq(null);
     setLegalTargets([]);
-  }, [fen]);
+  }, [fen, selectionKey]);
 
   const RC_COLORS = useMemo(() => ["rgba(235,97,80,0.8)", "rgba(82,176,220,0.8)", "rgba(172,206,89,0.8)", "rgba(218,174,74,0.8)"], []);
 
@@ -225,18 +227,19 @@ export default function InteractiveBoard({
   }, [interactive, onMove, selectedSq, legalTargets, selectSquare, chess, flashIllegal, soundForMove, isPlayerTurn, playerColor, clearAnnotations]);
 
   const handleDrag = useCallback(({ square }) => {
+    if (!dragEnabled) return;
     selectSquare(square);
-  }, [selectSquare]);
+  }, [selectSquare, dragEnabled]);
 
   const canDrag = useCallback(({ piece }) => {
-    if (!interactive) return false;
+    if (!interactive || !dragEnabled) return false;
     const pt = typeof piece === "string" ? piece : (piece?.pieceType || piece?.type || "");
     const color = pt[0]?.toLowerCase() === "b" ? "b" : "w";
     return color === playerColor;
-  }, [interactive, playerColor]);
+  }, [interactive, dragEnabled, playerColor]);
 
   const handleDrop = useCallback(({ sourceSquare, targetSquare, piece }) => {
-    if (!interactive || !onMove) return false;
+    if (!interactive || !dragEnabled || !onMove) return false;
     setSelectedSq(null);
     setLegalTargets([]);
 
@@ -265,7 +268,7 @@ export default function InteractiveBoard({
       }
       return false;
     }
-  }, [interactive, onMove, soundForMove, isPlayerTurn, playerColor]);
+  }, [interactive, dragEnabled, onMove, soundForMove, isPlayerTurn, playerColor]);
 
   const sqStyles = useMemo(() => {
     const styles = { ...highlightSquares };

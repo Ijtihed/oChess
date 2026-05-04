@@ -52,6 +52,9 @@ export default function ArenaAbilityPanel({
           {rows.length} ability{rows.length === 1 ? "" : "s"}
         </span>
       </div>
+      <p className="text-[10px] text-on-surface-variant/45 leading-snug">
+        Switch the board to <span className="text-amber-300 font-bold">Ability</span> mode, then left-click a caster and a red target.
+      </p>
       <ul className="space-y-1.5">
         {rows.map((row) => (
           <AbilityRow key={row.key} row={row} onHighlight={onHighlight} />
