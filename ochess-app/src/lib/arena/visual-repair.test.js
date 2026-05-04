@@ -79,6 +79,34 @@ describe("visual repair", () => {
     expect(compileVisuals(visuals).errors).toEqual([]);
   });
 
+  it("uses explicit visualTheme over effect kind", () => {
+    const rules = rulesWithAbility("poison_dart", "Dart", { kind: "destroy" }, "b");
+    rules.pieces.b.abilities[0].visualTheme = "poison";
+    rules.pieces.b.abilities[0].visualIntent = "a green toxic dart with bubbling acid smoke";
+    const repaired = repairVisualsForRules(rules);
+    expect(repaired.visuals.projectiles.poison_dart).toContain("80,255,90");
+    expect(repaired.visuals.effects.poison_spark).toBeTruthy();
+    expect(repaired.visuals.slots["b.weapon_R"]).toBeTruthy();
+    expect(compileVisuals(repaired.visuals).errors).toEqual([]);
+  });
+
+  it("infers non-fire freeform themes from id/label/intent", () => {
+    const cases = [
+      ["holy_beam", "Holy Beam", "holy"],
+      ["gravity_pull", "Black Hole Pull", "gravity"],
+      ["tidal_wave", "Tidal Wave", "water"],
+      ["time_stop", "Chrono Freeze", "time"],
+      ["thorn_root", "Vine Root", "nature"],
+    ];
+    for (const [id, label, expected] of cases) {
+      const rules = rulesWithAbility(id, label, { kind: "mark", tag: expected, duration: 2 }, "q");
+      const repaired = repairVisualsForRules(rules);
+      expect(repaired.visuals.effects[`${expected}_spark`]).toBeTruthy();
+      expect(repaired.visuals.projectiles[id]).toBeTruthy();
+      expect(compileVisuals(repaired.visuals).errors).toEqual([]);
+    }
+  });
+
   it("does nothing for variants with no abilities", () => {
     const rules = { extends: "vanilla", name: "Plain" };
     expect(repairVisualsForRules(rules)).toBe(rules);

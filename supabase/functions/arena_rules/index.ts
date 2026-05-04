@@ -259,7 +259,9 @@ Ability shape:
     "cooldownPlies": 1..20,                      // plies between casts. Recommended.
     "startsOnCooldown": false                    // optional
   },
-  "intensity": "brief" | "medium" | "dramatic"   // animation tier; default "medium"
+  "intensity": "brief" | "medium" | "dramatic",  // animation tier; default "medium"
+  "visualTheme": "fire|ice|shadow|lightning|poison|holy|shield|teleport|gravity|water|wind|time|nature|impact|magic",
+  "visualIntent": "short prose describing exactly what it should look like"
 }
 
 EFFECT PRIMITIVES (composable - the AI's vocabulary for crazy mechanics):
@@ -333,6 +335,12 @@ PROMPT INTERPRETATION GUIDE:
 - "Sniper / long-range kill" → kind:"slide" with destroy effect (line-of-sight is part of the fantasy).
 - "Black hole" → aoe_wrap with inner displace toward_caster.
 - "Teleport / blink" → relocate_self with target.requireEmpty=true.
+
+VISUAL INTENT ON ABILITIES:
+- Always set ability.visualTheme and ability.visualIntent for active abilities.
+- visualTheme is a compact machine-readable hint used by the client repair layer if your visuals are missing or invalid.
+- visualIntent is prose for future debug / remix UI and should be specific: "a blue ice shard flies from bishop to target and frost crystals grow on frozen squares" is good; "cool" is bad.
+- Pick the theme that best matches the user's words, not necessarily the effect.kind. Example: effect.kind="destroy" with label "Poison Dart" should visualTheme="poison", not "impact".
 
 NON-CAPTURE ABILITIES are usually more interesting than capture abilities on slide pieces (queens, rooks, bishops) because the slide piece can already capture via a normal move. Prefer mark/displace/transform/spawn for those, or pair capture with AOE so it hits multiple targets.
 

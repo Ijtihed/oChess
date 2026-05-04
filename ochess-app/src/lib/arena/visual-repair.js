@@ -59,6 +59,10 @@ export function buildVisualRepairs(rules) {
   if (themes.has("impact")) {
     out.effects.impact_spark = IMPACT_SPARK_EFFECT;
   }
+  for (const theme of themes) {
+    if (["fire", "ice", "shadow", "impact", "lightning"].includes(theme)) continue;
+    out.effects[`${theme}_spark`] = themedEffect(theme);
+  }
   if (themes.size > 0) {
     out.overlays.push(LAST_CAST_OVERLAY);
     out.overlays.push(MARK_STATUS_OVERLAY);
@@ -96,21 +100,75 @@ function collectAbilities(rules) {
 }
 
 function classifyAbilityTheme(ability) {
+  const explicitTheme = normalizeTheme(ability.visualTheme || ability.visual_theme || ability.theme);
+  if (explicitTheme) return explicitTheme;
+
   const text = [
     ability.id,
     ability.label,
+    ability.visualIntent,
+    ability.visual_intent,
     ability.effect?.kind,
     ability.effect?.tag,
+    ability.effect?.direction,
+    ability.effect?.pieceType,
+    ability.effect?.color,
     ability.effect?.inner?.kind,
     ability.effect?.inner?.tag,
+    ability.effect?.inner?.direction,
+    ability.effect?.inner?.pieceType,
+    ability.effect?.inner?.color,
   ].filter(Boolean).join(" ").toLowerCase();
+  if (/poison|acid|venom|toxic|plague|rot|slime|ooze/.test(text)) return "poison";
+  if (/heal|holy|light|sun|bless|angel|divine|radiant|restore/.test(text)) return "holy";
+  if (/shield|barrier|ward|protect|absorb|armor|guard/.test(text)) return "shield";
+  if (/teleport|blink|portal|warp|phase|rift/.test(text)) return "teleport";
+  if (/gravity|black hole|singular|void pull|pull|magnet/.test(text)) return "gravity";
+  if (/water|wave|tide|ocean|splash|bubble|aqua/.test(text)) return "water";
+  if (/wind|gust|storm|air|cyclone|tornado|whirl/.test(text)) return "wind";
+  if (/time|chrono|rewind|haste|slow|clock|temporal/.test(text)) return "time";
+  if (/nature|vine|root|thorn|forest|plant|leaf|growth/.test(text)) return "nature";
   if (/fire|flame|burn|ember|inferno|blast|explod|doom/.test(text)) return "fire";
   if (/ice|frost|freeze|frozen|crystal|snow|chill/.test(text)) return "ice";
   if (/shadow|curse|void|dark|doom|hex/.test(text)) return "shadow";
   if (/push|pull|throw|bowl|displace|knock|yeet|impact|slam/.test(text)) return "impact";
   if (/lightning|shock|storm|thunder|zap|electric/.test(text)) return "lightning";
   if (/summon|spawn|necro|raise|ghost|spirit|bone/.test(text)) return "shadow";
+  if (/charm|mind|control|possess|polymorph|transform/.test(text)) return "magic";
   return "magic";
+}
+
+function normalizeTheme(value) {
+  if (!value || typeof value !== "string") return null;
+  const v = value.toLowerCase().replace(/[^a-z]+/g, "_");
+  const aliases = {
+    flame: "fire",
+    burning: "fire",
+    frost: "ice",
+    frozen: "ice",
+    electric: "lightning",
+    thunder: "lightning",
+    curse: "shadow",
+    void: "shadow",
+    necro: "shadow",
+    necromancy: "shadow",
+    knockback: "impact",
+    bowling: "impact",
+    holy_light: "holy",
+    divine: "holy",
+    acid: "poison",
+    venom: "poison",
+    portal: "teleport",
+    blink: "teleport",
+    black_hole: "gravity",
+    tide: "water",
+    storm: "wind",
+    chrono: "time",
+    vine: "nature",
+  };
+  const direct = ["fire", "ice", "shadow", "lightning", "poison", "holy", "shield", "teleport", "gravity", "water", "wind", "time", "nature", "impact", "magic"];
+  if (direct.includes(v)) return v;
+  return aliases[v] || null;
 }
 
 function addThemeForPiece(out, pt, theme) {
@@ -152,6 +210,13 @@ function addThemeForPiece(out, pt, theme) {
     out.brains[pt] ||= LIGHTNING_BRAIN;
     return;
   }
+  if (["poison", "holy", "shield", "teleport", "gravity", "water", "wind", "time", "nature"].includes(theme)) {
+    out.slots[`${pt}.aura`] ||= themedAura(theme);
+    out.slots[`${pt}.body`] ||= themedBody(theme);
+    out.slots[`${pt}.weapon_R`] ||= themedWeapon(theme);
+    out.brains[pt] ||= themedBrain(theme);
+    return;
+  }
   out.slots[`${pt}.aura`] ||= MAGIC_AURA_SLOT;
   out.slots[`${pt}.body`] ||= MAGIC_BODY_SLOT;
   out.brains[pt] ||= MAGIC_BRAIN;
@@ -163,6 +228,9 @@ function projectileSourceForTheme(theme) {
   if (theme === "shadow") return SHADOW_PROJECTILE;
   if (theme === "impact") return IMPACT_PROJECTILE;
   if (theme === "lightning") return LIGHTNING_PROJECTILE;
+  if (["poison", "holy", "shield", "teleport", "gravity", "water", "wind", "time", "nature"].includes(theme)) {
+    return themedProjectile(theme);
+  }
   return MAGIC_PROJECTILE;
 }
 
@@ -204,6 +272,50 @@ function hasVisualContent(v) {
       (v.brains && Object.keys(v.brains).length > 0) ||
       (Array.isArray(v.overlays) && v.overlays.length > 0))
   );
+}
+
+function palette(theme) {
+  const palettes = {
+    poison: { main: "80,255,90", dark: "20,120,35", glow: "150,255,80" },
+    holy: { main: "255,235,120", dark: "180,130,20", glow: "255,255,210" },
+    shield: { main: "90,180,255", dark: "40,90,180", glow: "190,230,255" },
+    teleport: { main: "190,90,255", dark: "80,20,160", glow: "240,180,255" },
+    gravity: { main: "170,80,255", dark: "20,0,50", glow: "220,150,255" },
+    water: { main: "80,190,255", dark: "20,90,160", glow: "170,230,255" },
+    wind: { main: "190,255,210", dark: "70,150,110", glow: "230,255,240" },
+    time: { main: "255,210,90", dark: "80,160,190", glow: "255,245,170" },
+    nature: { main: "80,220,110", dark: "40,120,45", glow: "180,255,160" },
+  };
+  return palettes[theme] || { main: "160,110,255", dark: "70,40,180", glow: "220,200,255" };
+}
+
+function themedAura(theme) {
+  const p = palette(theme);
+  return `const phase=Math.sin(t*0.004)*0.5+0.5; const g=ctx.createRadialGradient(0,0,0,0,0,34+phase*8); g.addColorStop(0,'rgba(${p.glow},0.35)'); g.addColorStop(0.45,'rgba(${p.main},0.28)'); g.addColorStop(1,'rgba(${p.dark},0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,36+phase*6,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='rgba(${p.main},0.55)'; ctx.lineWidth=1.5; for(let i=0;i<7;i++){ const a=i*0.897+t*0.003; ctx.beginPath(); ctx.moveTo(Math.cos(a)*14,Math.sin(a)*14); ctx.lineTo(Math.cos(a+0.15)*(30+phase*6),Math.sin(a+0.15)*(30+phase*6)); ctx.stroke(); }`;
+}
+
+function themedBody(theme) {
+  const p = palette(theme);
+  return `const g=ctx.createRadialGradient(0,0,0,0,0,27); g.addColorStop(0,'rgba(${p.glow},0.28)'); g.addColorStop(1,'rgba(${p.dark},0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.ellipse(0,0,23,29,Math.sin(t*0.001)*0.2,0,Math.PI*2); ctx.fill();`;
+}
+
+function themedWeapon(theme) {
+  const p = palette(theme);
+  return `ctx.save(); ctx.rotate(0.25*facing); ctx.strokeStyle='rgba(${p.dark},0.9)'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(8*facing,-16); ctx.lineTo(23*facing,4); ctx.stroke(); const g=ctx.createRadialGradient(26*facing,5,0,26*facing,5,14); g.addColorStop(0,'rgba(${p.glow},0.9)'); g.addColorStop(0.5,'rgba(${p.main},0.65)'); g.addColorStop(1,'rgba(${p.dark},0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(26*facing,5,14,0,Math.PI*2); ctx.fill(); ctx.restore();`;
+}
+
+function themedProjectile(theme) {
+  const p = palette(theme);
+  return `const dx=p.toX-p.fromX,dy=p.toY-p.fromY; const len=Math.sqrt(dx*dx+dy*dy)||1; const ux=dx/len,uy=dy/len; for(let i=0;i<9;i++){ const back=i/8; const tx=p.x-ux*back*42-uy*Math.sin(p.age*0.04+i)*6*(1-back); const ty=p.y-uy*back*42+ux*Math.sin(p.age*0.04+i)*6*(1-back); ctx.fillStyle='rgba(${p.main},'+(0.72-back*0.5)+')'; ctx.beginPath(); ctx.arc(tx,ty,12*(1-back)+3,0,Math.PI*2); ctx.fill(); } const g=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,20); g.addColorStop(0,'rgba(${p.glow},0.95)'); g.addColorStop(0.55,'rgba(${p.main},0.7)'); g.addColorStop(1,'rgba(${p.dark},0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(p.x,p.y,20,0,Math.PI*2); ctx.fill();`;
+}
+
+function themedEffect(theme) {
+  const p = palette(theme);
+  return `const a=1-e.progress; const r=7+e.progress*34; const g=ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,r); g.addColorStop(0,'rgba(${p.glow},'+(0.55*a)+')'); g.addColorStop(0.5,'rgba(${p.main},'+(0.38*a)+')'); g.addColorStop(1,'rgba(${p.dark},0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(e.x,e.y,r,0,Math.PI*2); ctx.fill();`;
+}
+
+function themedBrain(theme) {
+  return `if(!state.nextSpark||state.nextSpark<=0){ world.spawnEffect({kind:'${theme}_spark',x:self.x+(random()*26-13),y:self.y+(random()*26-13),ttl:650,data:{}}); state.nextSpark=0.42; } state.nextSpark=state.nextSpark-dt;`;
 }
 
 // Slots
