@@ -62,6 +62,28 @@ export function initMonitoring() {
             )) {
               return null;
             }
+            // Strip query strings from URLs - room ids, share
+            // codes, OAuth fragments, etc. shouldn't end up in
+            // the crash report. We keep the path so we can still
+            // tell which screen broke.
+            try {
+              if (event.request?.url) {
+                event.request.url = event.request.url.split("?")[0].split("#")[0];
+              }
+              if (Array.isArray(event.breadcrumbs)) {
+                for (const b of event.breadcrumbs) {
+                  if (typeof b?.data?.url === "string") {
+                    b.data.url = b.data.url.split("?")[0].split("#")[0];
+                  }
+                  if (typeof b?.data?.from === "string") {
+                    b.data.from = b.data.from.split("?")[0].split("#")[0];
+                  }
+                  if (typeof b?.data?.to === "string") {
+                    b.data.to = b.data.to.split("?")[0].split("#")[0];
+                  }
+                }
+              }
+            } catch { /* never fail inside the reporter */ }
             return event;
           },
         });

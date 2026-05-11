@@ -5,6 +5,7 @@ import {
 } from "../lib/study-plan";
 import { generateAIDecks, isAIAvailable } from "../lib/coach-llm";
 import { addDrillSet, countDrillSetCards, saveDrillSets } from "../lib/drill-sets";
+import { useAuth } from "./AuthProvider";
 
 /**
  * AIDeckSheet - right-side sheet that hosts the AI deck
@@ -33,6 +34,7 @@ export default function AIDeckSheet({
   onDrillSetsChange,
   onOpenDeck,
 }) {
+  const { user: authUser } = useAuth();
   const [query, setQuery] = useState("");
   const [activeChip, setActiveChip] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -191,6 +193,20 @@ export default function AIDeckSheet({
         <p className="text-sm text-on-surface-variant/55 leading-relaxed">
           AI deck generation isn&apos;t available right now. Sign in or check your connection,
           then try again.
+        </p>
+      </SheetShell>
+    );
+  }
+  // The coach Edge Function requires a JWT (`getUser()` is called
+  // server-side and returns 401 without auth). Surface this as a
+  // clear "sign in" prompt instead of letting the Generate button
+  // hit the network and surface a generic error.
+  if (!authUser) {
+    return (
+      <SheetShell onClose={onClose}>
+        <p className="text-sm text-on-surface-variant/55 leading-relaxed">
+          AI deck generation requires an account. Sign in (or create one - it&apos;s free)
+          and try again.
         </p>
       </SheetShell>
     );

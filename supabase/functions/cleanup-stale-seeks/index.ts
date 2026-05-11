@@ -39,8 +39,16 @@ Deno.serve(async (_req) => {
   const elapsedMs = Date.now() - startedAt;
 
   if (error) {
+    // HARDENING: log details server-side, return a generic message
+    // to the caller. Postgres error messages can leak schema /
+    // policy details that aren't useful to legitimate ops callers
+    // and are harmful to attackers probing the function.
+    try {
+      // eslint-disable-next-line no-console
+      console.error("[cleanup-stale-seeks] RPC error", error.code, error.message);
+    } catch { /* swallow */ }
     return new Response(
-      JSON.stringify({ ok: false, elapsedMs, error: error.message }),
+      JSON.stringify({ ok: false, elapsedMs, error: "cleanup failed" }),
       { status: 500, headers: { "Content-Type": "application/json" } },
     );
   }

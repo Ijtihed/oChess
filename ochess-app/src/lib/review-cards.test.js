@@ -6,6 +6,7 @@ import {
   removeCard,
   loadSchedules,
   saveSchedules,
+  saveSchedulesMerged,
   rateCard,
   bumpCardDue,
   isCardDue,
@@ -167,6 +168,41 @@ describe("serializeCardForShare / deserializeSharedCard", () => {
     const noMarker = btoa(JSON.stringify({ fen: "x" }))
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     expect(deserializeSharedCard(noMarker)).toBeNull();
+  });
+});
+
+describe("saveSchedulesMerged", () => {
+  // Multi-tab race: tab A loads schedules { x: oldX, y: oldY },
+  // tab B writes { x: newerX } meanwhile, then tab A saves
+  // { x: oldX, y: newerY }. With a naive write tab B's update is
+  // lost. With saveSchedulesMerged the per-card lastReviewedAt
+  // wins, preserving the most recent rating from each tab.
+  it("preserves a fresher per-card schedule from another tab", () => {
+    const onDisk = {
+      x: { lastReviewedAt: new Date("2026-05-11T12:00:00Z").toISOString(), interval: 5 },
+      y: { lastReviewedAt: new Date("2026-05-11T11:00:00Z").toISOString(), interval: 1 },
+    };
+    saveSchedules(onDisk);
+
+    // This tab still thinks x's schedule is the older one.
+    const myMap = {
+      x: { lastReviewedAt: new Date("2026-05-11T10:00:00Z").toISOString(), interval: 1 },
+      y: { lastReviewedAt: new Date("2026-05-11T13:00:00Z").toISOString(), interval: 7 },
+    };
+    saveSchedulesMerged(myMap);
+
+    const merged = loadSchedules();
+    // x: on-disk version is newer -> wins.
+    expect(merged.x.interval).toBe(5);
+    // y: this tab's version is newer -> wins.
+    expect(merged.y.interval).toBe(7);
+  });
+
+  it("leaves brand-new cards (no lastReviewedAt) from this tab in place", () => {
+    saveSchedules({});
+    const myMap = { z: { interval: 0 } };
+    saveSchedulesMerged(myMap);
+    expect(loadSchedules()).toEqual(myMap);
   });
 });
 

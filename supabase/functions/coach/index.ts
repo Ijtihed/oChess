@@ -310,8 +310,17 @@ async function callGemini(prompt: string, model: string, maxTokens = 4000): Prom
       }),
     });
     if (!resp.ok) {
-      const body = await resp.text();
-      return { ok: false, error: `Gemini returned ${resp.status}: ${body.slice(0, 200)}` };
+      // HARDENING: don't echo the provider response body back to
+      // the client. Provider error payloads can include quota
+      // hints, internal metadata, or even snippets of other
+      // requests in degraded states. Log the full body for the
+      // operator and return a generic message to the user.
+      const body = await resp.text().catch(() => "");
+      try {
+        // eslint-disable-next-line no-console
+        console.error("[coach] gemini upstream error", resp.status, body.slice(0, 500));
+      } catch { /* never throw inside an error path */ }
+      return { ok: false, error: `Coach upstream temporarily unavailable (${resp.status})` };
     }
     const json = await resp.json();
     const content = json?.choices?.[0]?.message?.content;

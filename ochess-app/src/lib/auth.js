@@ -60,6 +60,28 @@ export async function getProfileByUsername(username) {
   return data;
 }
 
+// Allowlist of profile columns clients are permitted to update.
+// Anything else (id, created_at, crazy_arena_lab, etc.) is silently
+// dropped before hitting the network. The DB also enforces this via
+// `profiles_guard_writes` trigger; the client check is a friendlier
+// UI signal so callers can see "tried to set field X" mistakes
+// rather than a generic Postgres error.
+const PROFILE_UPDATABLE_FIELDS = new Set([
+  "username",
+  "display_name",
+  "avatar_url",
+  "bio",
+  "country",
+  "lichess_username",
+  "chesscom_username",
+  "board_prefs",
+]);
+
+// Username format mirrored from AuthModal.jsx so save-time validation
+// matches sign-up validation. Any change here must be mirrored on the
+// DB (`profiles_username_format` check constraint).
+const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
+
 export async function updateProfile(userId, updates) {
   // Refuse silently-succeeding writes when there is no backend. Without
   // this guard the UI would show "Saved!" while the changes vanished
@@ -67,7 +89,18 @@ export async function updateProfile(userId, updates) {
   if (!supabase) throw new Error("Online features not configured");
   const clean = {};
   for (const [k, v] of Object.entries(updates)) {
-    if (v !== undefined) clean[k] = v;
+    if (v === undefined) continue;
+    if (!PROFILE_UPDATABLE_FIELDS.has(k)) continue;
+    clean[k] = v;
+  }
+  if (typeof clean.username === "string" && !USERNAME_RE.test(clean.username)) {
+    throw new Error("Username must be 3-20 characters: letters, numbers, and underscores only");
+  }
+  if (typeof clean.bio === "string" && clean.bio.length > 600) {
+    throw new Error("Bio must be 600 characters or fewer");
+  }
+  if (typeof clean.display_name === "string" && clean.display_name.length > 60) {
+    throw new Error("Display name must be 60 characters or fewer");
   }
   clean.updated_at = new Date().toISOString();
   const { data, error } = await supabase

@@ -162,11 +162,15 @@ function PrivacyContent() {
       <p>
         Your puzzle rating, daily-puzzle progress, and individual puzzle
         attempts are stored in <Code>puzzle_progress</Code> and{" "}
-        <Code>puzzle_attempts</Code>. Review cards (spaced-repetition entries
-        you save from failed puzzles or important game positions) are stored
-        in <Code>review_cards</Code> with the FEN, your answer, and the SM-2
-        scheduling fields. All three tables are private - only you can read or
-        write your own rows.
+        <Code>puzzle_attempts</Code>. These two tables are private - only
+        you can read or write your own rows.
+      </p>
+      <p>
+        Anki-style review cards (the spaced-repetition deck you build from
+        mistakes, puzzles, and saved positions) currently live in your
+        browser&apos;s <Code>localStorage</Code> (see &quot;Browser-only
+        data&quot; below). They are not synced across devices or backed up
+        to our servers. Clearing site data deletes them.
       </p>
 
       <H3>Social graph</H3>
@@ -186,19 +190,47 @@ function PrivacyContent() {
 
       <H3>Browser-only data</H3>
       <p>
-        Some state never leaves your device: bot game saves, puzzle history,
-        review cards (in guest mode), board preferences, and the guest-mode
-        flag are stored in your browser&apos;s <Code>localStorage</Code>.
-        Clearing site data removes all of this and we cannot recover it.
+        A material amount of state never leaves your device. Bot game saves,
+        analysis boards, puzzle history, all Anki review cards and their
+        SM-2 schedules, drill sets, board preferences, sound volume,
+        daily-puzzle cache, and the guest-mode flag are stored in your
+        browser&apos;s <Code>localStorage</Code>. Clearing site data removes
+        all of this and we cannot recover it.
       </p>
 
-      <H3>What we do not collect</H3>
+      <H3>Crash reporting and product analytics</H3>
       <p>
-        We do not run analytics, advertising, behavioural tracking, or
-        third-party fingerprinting scripts. There is no telemetry call from
-        the client beyond what is required to play (Supabase Realtime,
-        Supabase Postgres, your own browser&apos;s WebSocket to the chess
-        engine worker).
+        oChess optionally integrates with{" "}
+        <strong>Sentry</strong> for crash reporting and{" "}
+        <strong>PostHog</strong> for product analytics. Both are{" "}
+        <strong>off by default</strong> and only initialize when the
+        operator of this deployment has set the corresponding environment
+        variables (<Code>VITE_SENTRY_DSN</Code>,{" "}
+        <Code>VITE_POSTHOG_KEY</Code>). When enabled:
+      </p>
+      <ul className="list-disc ml-5 mt-2 space-y-1.5">
+        <li>
+          Sentry receives unhandled JavaScript errors with stack traces. We
+          strip query strings and URL fragments before sending so room ids,
+          share codes, and OAuth tokens are not transmitted. We attach your
+          Supabase user id (UUID) only after you sign in.
+        </li>
+        <li>
+          PostHog receives a small set of explicit product events
+          (sign-up / sign-in / a few feature uses). Pageviews and
+          autocapture are disabled. Session replay is disabled.{" "}
+          PostHog stores a device id in <Code>localStorage</Code>; the
+          PostHog SDK respects browser <Code>Do Not Track</Code>.
+        </li>
+        <li>
+          Neither Sentry nor PostHog is used for advertising or
+          third-party data sharing. The deployment operator can disable
+          either by removing the env var.
+        </li>
+      </ul>
+      <p className="mt-2">
+        We do not run advertising trackers, do not fingerprint your
+        browser, and do not load third-party social SDKs.
       </p>
 
       <H2>How we use it</H2>
@@ -230,6 +262,19 @@ function PrivacyContent() {
       <p>
         <strong>Stockfish</strong> runs entirely inside your browser as a
         WebAssembly worker. No position is ever sent to a remote engine.
+      </p>
+      <p>
+        <strong>Google Gemini</strong> is contacted server-side from a
+        Supabase Edge Function only when you explicitly use the AI Coach
+        plan generator or the AI Arena variant builder. The prompts include
+        the position / theme / mistakes you are asking about, never your
+        email or other profile data. See{" "}
+        <a className="underline" href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener noreferrer">ai.google.dev/gemini-api/terms</a>.
+      </p>
+      <p>
+        <strong>Sentry</strong> and <strong>PostHog</strong> only receive
+        data when the operator of this deployment has enabled them. See
+        the &quot;Crash reporting and product analytics&quot; section above.
       </p>
 
       <H2>Retention</H2>

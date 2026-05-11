@@ -182,12 +182,37 @@ export async function fetchChesscomGames(username, { signal, onProgress, max = M
   return games;
 }
 
+// Hard limits on file imports. The API import paths use
+// MAX_IMPORT_GAMES (5000); file uploads need their own ceilings
+// because there's no per-API throttle to keep the parser polite.
+//   - PARSE_MAX_BYTES  - 8MB. Caps memory blow-up from a malicious
+//                        or misformed file (e.g. a 50MB log of
+//                        randomly-permuted "[Event" tags).
+//   - PARSE_MAX_GAMES  - 5000. Matches MAX_IMPORT_GAMES so the
+//                        downstream filter / persist path doesn't
+//                        have to cope with surprise volumes.
+const PARSE_MAX_BYTES = 8 * 1024 * 1024;
+const PARSE_MAX_GAMES = 5000;
+
 export function parsePgnFile(text) {
+  if (typeof text !== "string") return [];
+  // The .length here is a code-unit count, which is a safe upper
+  // bound on the encoded byte size (UTF-16 -> UTF-8 never grows
+  // past 4x for BMP text and the cap is generous enough that
+  // bytes-vs-code-units doesn't matter).
+  if (text.length > PARSE_MAX_BYTES) {
+    text = text.slice(0, PARSE_MAX_BYTES);
+  }
+
   const games = [];
   const chunks = text.split(/\n\n(?=\[)/);
 
   let buffer = "";
   for (const chunk of chunks) {
+    if (games.length >= PARSE_MAX_GAMES) {
+      games.truncated = true;
+      return games;
+    }
     buffer += (buffer ? "\n\n" : "") + chunk;
     if (buffer.includes("[Event") && /\d\s+(1-0|0-1|1\/2-1\/2|\*)/.test(buffer)) {
       const white = buffer.match(/\[White "(.+?)"\]/)?.[1] || "?";
@@ -211,7 +236,7 @@ export function parsePgnFile(text) {
       buffer = "";
     }
   }
-  if (buffer.trim() && buffer.includes("[Event")) {
+  if (buffer.trim() && buffer.includes("[Event") && games.length < PARSE_MAX_GAMES) {
     const white = buffer.match(/\[White "(.+?)"\]/)?.[1] || "?";
     const black = buffer.match(/\[Black "(.+?)"\]/)?.[1] || "?";
     const result = buffer.match(/\[Result "(.+?)"\]/)?.[1] || "*";

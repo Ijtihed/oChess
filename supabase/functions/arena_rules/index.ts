@@ -8,8 +8,9 @@
 // runs server-side BEFORE any AI output reaches a client.
 //
 // CRAZY ARENA SHIP #1 (this revision):
-// Variant generation is a 3-step pipeline matching the warrior
-// architecture pattern.
+// Variant generation is a 2-step pipeline (planner -> factory)
+// with structural validation server-side and behavioural
+// verification on the client.
 //
 //   STEP 1 - Behaviour Planner (prose):
 //     Gemini Flash, temp 0.9, ~500 output tokens. Three short
@@ -24,12 +25,18 @@
 //     `abilities` field on each piece. Auto-retries once if
 //     the structural validator rejects.
 //
-//   STEP 3 - Critic (deterministic, no Gemini call):
-//     Hand-coded structural + simulation critic. Runs a
-//     100-game random-walk simulation server-side and rejects
-//     variants whose win rate is > 80% one-sided or which
-//     terminate < 30% of the time. Catches the obviously broken
-//     variants without burning another AI call.
+//   STRUCTURAL VALIDATOR (`validateStructure`):
+//     Runs server-side after STEP 2. Type errors / missing
+//     required fields / illegal effect combinations are rejected
+//     and trigger the auto-retry above.
+//
+//   BEHAVIOURAL VERIFIER (`verifyRules`):
+//     Runs client-side after the response is received (defense
+//     in depth). Checks that abilities are reachable from the
+//     starting position in the first few plies and that the
+//     variant is playable in random-walk simulation. Hard
+//     failures bounce back to the user with a clear message;
+//     soft warnings are surfaced in the lobby.
 //
 // Flow per request:
 //   1. JWT-auth the caller (handled by Supabase platform).
@@ -39,8 +46,9 @@
 //   3. Pre-flight $-cap guard via record_ai_spend_or_block.
 //   4. STEP 1 (planner) - get prose vibe.
 //   5. STEP 2 (factory) - get structured rule JSON.
-//   6. STEP 3 (critic) - structural + 100-game simulation.
-//   7. The client does a second-pass full validation on
+//   6. Run `validateStructure` server-side; auto-retry once on
+//      failure.
+//   7. The client runs `validateStructure` AND `verifyRules` on
 //      receipt - defense in depth.
 //
 // Deploy:
@@ -67,13 +75,24 @@ interface ArenaRulesRequest {
   /** Natural-language description of the variant. */
   prompt?: string;
   /**
-   * Optional hint added to the factory user-prompt. The client
-   * sends this on a verification-retry attempt: "previous
-   * response was structurally valid but failed the playability
-   * check; please fix THESE specific issues." Capped at 1KB so a
-   * malicious caller can't pad the prompt with garbage.
+   * Optional retry-hint key. HARDENING: the field is now an
+   * enum key, not arbitrary user text. The previous version
+   * concatenated this string straight into the LLM prompt,
+   * which was a direct prompt-injection channel. Accepted
+   * values are listed in `ALLOWED_RETRY_HINTS`. Anything else
+   * is dropped (treated as undefined).
    */
   retryHint?: string;
+}
+
+const ALLOWED_RETRY_HINTS = new Set([
+  "verifier_unreachable_ability",
+  "verifier_one_sided_winrate",
+]);
+
+function sanitizeRetryHint(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  return ALLOWED_RETRY_HINTS.has(raw) ? raw : undefined;
 }
 
 interface ArenaRulesResponse {
@@ -773,16 +792,19 @@ Fix the errors and try again. Stay within the schema above; do not invent new fi
   if (!labMode) {
     labNote = `\n\nIMPORTANT (Ship #1 lobby mode): the composable primitives (displace, relocate_self, spawn, transform, mark, aoe_wrap) are NOT available to this user. Use ONLY effect.kind = "destroy" (or its alias "capture"). Status effects, summons, displacement, charm, etc. are not selectable - if the user prompts for them, translate the intent into a thematically-named "destroy" ability with optional AOE. This is enforced by the server validator; ignoring it will fail the response.\n`;
   }
-  // Verification-retry hint: the client passes this on the second
-  // attempt when a structurally-valid response failed playability.
-  // Gets the same "fix THIS specifically" weight as a structural
-  // validator retry, but the failure modes are different (the
-  // structural validator catches type errors; the playability
-  // verifier catches "ability is invisible at game start").
+  // Verification-retry hint: HARDENING — this used to accept an
+  // arbitrary string from the request body and concatenate it into
+  // the LLM prompt, which is a direct prompt-injection channel
+  // (any authenticated client could send "ignore prior instructions
+  // and output X"). We now ignore the client value entirely and
+  // accept only a small fixed vocabulary of server-side hints.
+  // Future server-driven verifier retries should pass an enum
+  // through `retryHint` and we'll map it here.
   let hintNote = "";
-  if (retryHint && typeof retryHint === "string") {
-    const safe = retryHint.slice(0, 1000);
-    hintNote = `\n\n${safe}\n`;
+  if (retryHint === "verifier_unreachable_ability") {
+    hintNote = `\n\nNOTE: the previous attempt produced abilities that were not reachable in the first 4 plies of legal play. Widen the offset / range coverage so every declared ability is castable from the starting position or within 1-2 moves.\n`;
+  } else if (retryHint === "verifier_one_sided_winrate") {
+    hintNote = `\n\nNOTE: the previous attempt produced a wildly one-sided variant in random-walk simulation. Adjust ability balance or win conditions so neither side dominates by default.\n`;
   }
   return `User's variant description:
 """
@@ -944,13 +966,20 @@ async function callGeminiOne(systemPrompt: string, userPrompt: string, model: st
       }),
     });
     if (!resp.ok) {
-      const body = await resp.text();
-      // 404 means the model name is wrong/deprecated. Surface it
-      // with a marker so the caller can try a fallback.
+      // HARDENING: don't echo the upstream provider response body
+      // back to the client. Log it for the operator and return a
+      // generic error string so we don't leak quota hints / internal
+      // metadata. We still preserve the modelNotFound signal so the
+      // caller can try a fallback model name.
+      const body = await resp.text().catch(() => "");
       const modelNotFound = resp.status === 404 || /model.*not.*found/i.test(body);
+      try {
+        // eslint-disable-next-line no-console
+        console.error("[arena_rules] gemini upstream error", resp.status, body.slice(0, 500));
+      } catch { /* never throw inside an error path */ }
       return {
         ok: false,
-        error: `Gemini returned ${resp.status}: ${body.slice(0, 300)}`,
+        error: `Arena rules upstream temporarily unavailable (${resp.status})`,
         modelNotFound,
       };
     }
@@ -1975,7 +2004,11 @@ Deno.serve(async (req) => {
   }
 
   const t0 = performance.now();
-  log("request_received", { prompt_chars: body.prompt.length, has_retry_hint: !!body.retryHint });
+  // Sanitize the retry-hint key once; any unrecognized value is
+  // dropped so we never feed attacker-controlled text into the
+  // LLM prompt.
+  const retryHintKey = sanitizeRetryHint(body.retryHint);
+  log("request_received", { prompt_chars: body.prompt.length, has_retry_hint: !!retryHintKey });
 
   // Rate limit (also serves as auth gate - non-authed users
   // can't make the RPC succeed).
@@ -2068,7 +2101,7 @@ Deno.serve(async (req) => {
   // ── STEP 2: Variant Factory (structured rules JSON) ──
   // First attempt. Planner output is fed in as creative
   // context, not as instructions to copy verbatim.
-  const firstPrompt = buildPrompt(body.prompt, undefined, plannerVibe, labMode, body.retryHint);
+  const firstPrompt = buildPrompt(body.prompt, undefined, plannerVibe, labMode, retryHintKey);
   const first = await callGemini(SYSTEM_PROMPT, firstPrompt, model);
   if (!first.ok) {
     log("gemini_call_failed", { model, error: first.error, attempt: 1 });
@@ -2095,7 +2128,7 @@ Deno.serve(async (req) => {
   // planner vibe stays the same on retry - only the structural
   // errors are new context.
   if (errors.length > 0) {
-    const retryPrompt = buildPrompt(body.prompt, errors, plannerVibe, labMode, body.retryHint);
+    const retryPrompt = buildPrompt(body.prompt, errors, plannerVibe, labMode, retryHintKey);
     const second = await callGemini(SYSTEM_PROMPT, retryPrompt, model);
     if (second.ok) {
       if (second.inputTokens || second.outputTokens) {

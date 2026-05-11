@@ -46,7 +46,15 @@ export default class ErrorBoundary extends Component {
   render() {
     if (!this.state.hasError) return this.props.children;
 
-    const message = this.state.error?.message || "An unexpected error occurred.";
+    // Production: never render the raw exception message. Errors
+    // can include URLs, ids, or stack frames that are not safe to
+    // surface to a possibly-unauthenticated viewer.
+    // Development: show the message inline so iteration stays fast.
+    const isDev = typeof import.meta !== "undefined"
+      && import.meta.env
+      && import.meta.env.MODE !== "production";
+    const rawMessage = this.state.error?.message || "An unexpected error occurred.";
+    const showDetails = isDev;
 
     return (
       <div
@@ -71,25 +79,27 @@ export default class ErrorBoundary extends Component {
             oChess hit an unexpected error and stopped. The page will still load if you reload, and
             your saved games + analysis are stored locally so they're safe.
           </p>
-          <pre
-            style={{
-              fontSize: 11,
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-              color: "#6b7280",
-              background: "#171717",
-              border: "1px solid rgba(255,255,255,0.04)",
-              padding: "0.75rem",
-              textAlign: "left",
-              overflow: "auto",
-              maxHeight: 160,
-              borderRadius: 0,
-              margin: 0,
-              marginBottom: 16,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {String(message)}
-          </pre>
+          {showDetails ? (
+            <pre
+              style={{
+                fontSize: 11,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                color: "#6b7280",
+                background: "#171717",
+                border: "1px solid rgba(255,255,255,0.04)",
+                padding: "0.75rem",
+                textAlign: "left",
+                overflow: "auto",
+                maxHeight: 160,
+                borderRadius: 0,
+                margin: 0,
+                marginBottom: 16,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {String(rawMessage)}
+            </pre>
+          ) : null}
           <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
             <button
               onClick={this.reset}

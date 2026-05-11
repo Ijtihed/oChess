@@ -1,6 +1,6 @@
 import { useNavigate, Link } from "react-router-dom";
 
-const GITHUB_URL = "https://github.com/oChess";
+const GITHUB_URL = "https://github.com/Ijtihed/oChess";
 
 const PLATFORM_LINKS = [
   { label: "Play", path: "/play" },

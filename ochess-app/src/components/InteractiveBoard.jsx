@@ -52,6 +52,13 @@ export default function InteractiveBoard({
   squareAnnotation,
   dragEnabled = true,
   selectionKey,
+  // When true, pawn promotion silently picks queen instead of
+  // showing the picker. Defaults to false so rated games and
+  // Anki review boards always surface the picker (silent
+  // queening loses tournaments). Bot-only fast-play surfaces
+  // (training drills, puzzles) can opt in if they want the old
+  // behavior.
+  autoPromoteToQueen = false,
   // Optional override for legal-move hints. When provided, the
   // board uses this to compute the dot-hint targets instead of
   // chess.js's `moves({ square, verbose: true })`. The override
@@ -78,6 +85,13 @@ export default function InteractiveBoard({
   const flashTimer = useRef(null);
   useEffect(() => () => clearTimeout(flashTimer.current), []);
   const [localRightClickSq, setLocalRightClickSq] = useState({});
+  // Promotion picker state. When non-null, the board renders a
+  // small four-square picker over the destination square and
+  // delays the move dispatch until the user chooses (or cancels).
+  // `pendingPromotion` shape:
+  //   { from, to, color, kind?, abilityId?, casterType? }
+  const [pendingPromotion, setPendingPromotion] = useState(null);
+  const cancelPromotion = useCallback(() => setPendingPromotion(null), []);
 
   const rightClickSq = externalRightClickSquares ?? localRightClickSq;
   const setRightClickSq = onRightClickSquaresChange ?? setLocalRightClickSq;
@@ -177,6 +191,25 @@ export default function InteractiveBoard({
       if (isPlayerTurn) {
         const target = legalTargets.find((m) => m.to === square);
         if (target) {
+          // If the move is a promotion and we are NOT in
+          // auto-queen mode, surface the picker. The actual
+          // dispatch happens in confirmPromotion below once
+          // the user picks a piece. Ability casts are never
+          // promotions - they route through confirmPromotion's
+          // bypass branch.
+          if (target.promotion && !autoPromoteToQueen && !target.kind) {
+            setPendingPromotion({
+              from: selectedSq,
+              to: square,
+              color: playerColor,
+              kind: target.kind,
+              abilityId: target.abilityId,
+              casterType: target.casterType,
+            });
+            setSelectedSq(null);
+            setLegalTargets([]);
+            return;
+          }
           const promo = target.promotion ? "q" : undefined;
           // Crazy Arena Ship #2.5: forward `kind` and `abilityId`
           // so the engine routes the cast through applyAbilityMove
@@ -204,6 +237,11 @@ export default function InteractiveBoard({
         const srcPiece = chess.get(selectedSq);
         if (srcPiece && srcPiece.color === playerColor) {
           const isPromo = srcPiece.type === "p" && (square[1] === "8" || square[1] === "1");
+          // Premoves keep the silent-queen behavior because the
+          // user is committing to a move on the *opponent's*
+          // turn and a picker would interrupt the typical
+          // bullet-chess flow. Cancel-with-Esc + click again
+          // to re-issue if you wanted under-promotion.
           onMove({ from: selectedSq, to: square, promotion: isPromo ? "q" : undefined });
           setSelectedSq(null);
           setLegalTargets([]);
@@ -255,20 +293,62 @@ export default function InteractiveBoard({
     const pt = typeof piece === "string" ? piece : (piece?.pieceType || piece?.type || "");
     const pieceColor = pt[0]?.toLowerCase() === "b" ? "b" : "w";
     const pieceType = pt[1]?.toUpperCase() || "";
-    const promotion = pieceType === "P" && (targetSquare[1] === "8" || targetSquare[1] === "1") ? "q" : undefined;
+    const isPromo = pieceType === "P" && (targetSquare[1] === "8" || targetSquare[1] === "1");
 
     if (isPlayerTurn) {
+      // Show the promotion picker for live (non-premove) drops
+      // unless explicitly opted-in to auto-queen.
+      if (isPromo && !autoPromoteToQueen) {
+        setPendingPromotion({
+          from: sourceSquare,
+          to: targetSquare,
+          color: playerColor,
+        });
+        return true;
+      }
+      const promotion = isPromo ? "q" : undefined;
       const ok = onMove({ from: sourceSquare, to: targetSquare, promotion });
       if (ok) soundForMove(sourceSquare, targetSquare, promotion);
       else playError();
       return ok;
     } else {
       if (pieceColor === playerColor) {
+        // Premoves stay silent-queen; see comment in
+        // handleSquareClick.
+        const promotion = isPromo ? "q" : undefined;
         onMove({ from: sourceSquare, to: targetSquare, promotion });
       }
       return false;
     }
-  }, [interactive, dragEnabled, onMove, soundForMove, isPlayerTurn, playerColor]);
+  }, [interactive, dragEnabled, onMove, soundForMove, isPlayerTurn, playerColor, autoPromoteToQueen]);
+
+  // Confirm a queued promotion with the user's chosen piece. Calls
+  // onMove with the right promotion code, plays the sound, and
+  // clears the picker. Cancelling restores the position implicitly
+  // because chess.js never registered the move.
+  const confirmPromotion = useCallback((piece) => {
+    const p = pendingPromotion;
+    if (!p) return;
+    const movePayload = {
+      from: p.from,
+      to: p.to,
+      promotion: piece,
+      ...(p.kind ? { kind: p.kind } : {}),
+      ...(p.abilityId ? { abilityId: p.abilityId } : {}),
+      ...(p.casterType ? { casterType: p.casterType } : {}),
+    };
+    setPendingPromotion(null);
+    const ok = onMove(movePayload);
+    if (ok && !p.kind) soundForMove(p.from, p.to, piece);
+    else if (!ok) playError();
+  }, [pendingPromotion, onMove, soundForMove]);
+
+  useEffect(() => {
+    if (!pendingPromotion) return;
+    const onKey = (e) => { if (e.key === "Escape") cancelPromotion(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pendingPromotion, cancelPromotion]);
 
   const sqStyles = useMemo(() => {
     const styles = { ...highlightSquares };
@@ -353,6 +433,22 @@ export default function InteractiveBoard({
     return { left: `${left}%`, top: `${top}%`, glyph, bg, text };
   }, [squareAnnotation, orientation]);
 
+  // Promotion picker geometry. Position the four-piece column over
+  // the destination square (or the closest in-board column when the
+  // destination is on the file we're going to draw the column from).
+  const promoBadge = useMemo(() => {
+    if (!pendingPromotion) return null;
+    const sq = pendingPromotion.to;
+    if (!/^[a-h][1-8]$/.test(sq)) return null;
+    const file = sq.charCodeAt(0) - 97;
+    const rank = parseInt(sq[1]) - 1;
+    const col = orientation === "white" ? file : 7 - file;
+    const row = orientation === "white" ? 7 - rank : rank;
+    const left = col * 12.5;
+    const top = row * 12.5;
+    return { left: `${left}%`, top: `${top}%`, color: pendingPromotion.color };
+  }, [pendingPromotion, orientation]);
+
   return (
     <div className={`w-full relative ${className}`}>
       <Chessboard options={boardOptions} />
@@ -379,6 +475,69 @@ export default function InteractiveBoard({
         >
           {badge.glyph}
         </div>
+      )}
+      {pendingPromotion && promoBadge && (
+        <>
+          <div
+            onClick={cancelPromotion}
+            style={{
+              position: "absolute",
+              inset: 0,
+              backgroundColor: "rgba(0,0,0,0.35)",
+              zIndex: 60,
+            }}
+            aria-hidden="true"
+          />
+          <div
+            role="dialog"
+            aria-label="Choose promotion piece"
+            style={{
+              position: "absolute",
+              left: promoBadge.left,
+              top: promoBadge.top,
+              width: "12.5%",
+              zIndex: 70,
+              display: "flex",
+              flexDirection: "column",
+              backgroundColor: "#1a1a1a",
+              border: "1px solid rgba(255,255,255,0.2)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+            }}
+          >
+            {["q", "r", "b", "n"].map((p) => {
+              const code = `${promoBadge.color}${p.toUpperCase()}`;
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => confirmPromotion(p)}
+                  aria-label={`Promote to ${
+                    p === "q" ? "queen" : p === "r" ? "rook" : p === "b" ? "bishop" : "knight"
+                  }`}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    margin: 0,
+                    aspectRatio: "1 / 1",
+                    width: "100%",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <img
+                    src={`/piece/${pieceSet}/${code}.svg`}
+                    alt={code}
+                    draggable={false}
+                    style={{ width: "85%", height: "85%" }}
+                  />
+                </button>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

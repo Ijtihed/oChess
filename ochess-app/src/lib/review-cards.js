@@ -66,6 +66,41 @@ export function saveSchedules(map) {
 }
 
 /**
+ * Merge-aware schedule write. Reads the on-disk schedules right
+ * before persisting and combines the in-memory map with whatever
+ * another tab / page may have written since this tab loaded.
+ *
+ * We pick the per-card schedule with the LATER `lastReviewedAt`
+ * timestamp - the assumption is the most recent rate is the
+ * correct truth. New cards (no lastReviewedAt yet) tie-break in
+ * favor of the in-memory copy so the active tab's edit wins.
+ *
+ * Without this, two tabs reviewing in parallel can clobber each
+ * other's writes (the last full JSON write wins, dropping the
+ * other tab's ratings on the floor).
+ */
+export function saveSchedulesMerged(map) {
+  if (!map || typeof map !== "object") return;
+  let onDisk = {};
+  try {
+    onDisk = JSON.parse(localStorage.getItem(SCHEDULE_KEY) || "{}") || {};
+  } catch { /* fall through with onDisk={} */ }
+
+  const out = { ...onDisk };
+  for (const [id, mine] of Object.entries(map)) {
+    const theirs = onDisk[id];
+    if (!theirs) {
+      out[id] = mine;
+      continue;
+    }
+    const myTs = mine?.lastReviewedAt ? new Date(mine.lastReviewedAt).getTime() : 0;
+    const theirTs = theirs?.lastReviewedAt ? new Date(theirs.lastReviewedAt).getTime() : 0;
+    out[id] = (Number.isNaN(myTs) ? 0 : myTs) >= (Number.isNaN(theirTs) ? 0 : theirTs) ? mine : theirs;
+  }
+  try { localStorage.setItem(SCHEDULE_KEY, JSON.stringify(out)); } catch {}
+}
+
+/**
  * Get the schedule for a card, lazily creating one on first
  * review. Pre-Anki schedules (without the `state` field) are
  * migrated transparently by sanitizeSchedule: cards with a
@@ -75,8 +110,15 @@ export function saveSchedules(map) {
 export function getSchedule(map, id) {
   const s = map[id];
   if (!s) return createScheduleState();
-  const dueAt = s.dueAt ? new Date(s.dueAt) : new Date(0);
-  if (Number.isNaN(dueAt.getTime())) return createScheduleState();
+  let dueAt = s.dueAt ? new Date(s.dueAt) : new Date(0);
+  if (Number.isNaN(dueAt.getTime())) {
+    // HARDENING: a corrupt or legacy `dueAt` used to wipe the
+    // entire schedule (lose ease, interval, lapses, state). That
+    // silently re-graduated the card to NEW and undid weeks of
+    // review. Clamp the timestamp to "due now" instead and keep
+    // every other field intact.
+    dueAt = new Date(0);
+  }
   const lastReviewedAt = s.lastReviewedAt && !Number.isNaN(new Date(s.lastReviewedAt).getTime())
     ? new Date(s.lastReviewedAt)
     : null;

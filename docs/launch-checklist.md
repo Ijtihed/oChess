@@ -71,19 +71,24 @@ The `schema.sql` script tries to add `seeks`, `games`, `challenges`, `friendship
 
 ### 5. Deploy the AI Coach Edge Function (only if you want the Plan-tab AI feature)
 
-The `coach` Edge Function bridges the client to Groq's free Llama 3.3 70B model. Without deploying it, the "Generate AI plan" button in the Plan tab returns "Online features not configured." Drill sets / mistake analysis still work without it.
+The `coach` Edge Function bridges the client to **Google Gemini 2.5 Flash** via Google's OpenAI-compatible endpoint. Without deploying it, the "Generate AI plan" button in the Plan tab returns "Online features not configured." Drill sets / mistake analysis still work without it.
 
 ```bash
 cd ochess-app
 
-# Sign up at https://console.groq.com (free, no credit card)
-# Create an API key (starts with gsk_)
+# Get an API key from https://aistudio.google.com/apikey
+# (Free tier covers low-volume usage; the platform also enforces a
+# monthly USD cap via the `record_ai_spend_or_block` RPC.)
 
 npx supabase --workdir .. login
 npx supabase --workdir .. link --project-ref <your-project-ref>
-npx supabase --workdir .. secrets set GROQ_API_KEY=gsk_xxxxxxxxxxxx
+npx supabase --workdir .. secrets set GEMINI_API_KEY=...
+# Optional override of the default model:
+# npx supabase --workdir .. secrets set GEMINI_MODEL=gemini-2.5-flash
 npx supabase --workdir .. functions deploy coach
 ```
+
+Both `coach` and `arena_rules` share the same `GEMINI_API_KEY` secret and the same monthly USD cap (`ai_settings.monthly_cap_micro_usd`).
 
 Per-account rate limit: 3 calls per 5 minutes. Server-enforced via the `record_coach_call` RPC; the client surfaces a countdown banner and disables the Generate button while the cap is active.
 
@@ -229,7 +234,7 @@ Bookmark these in your Supabase project for daily ops:
 - `Database -> Tables -> coach_calls` - one row per successful AI coach call. Sort by `created_at desc` to see usage; old rows are auto-purged after 1 day by the `record_coach_call` RPC.
 - `Authentication -> Users` - search by email for support cases.
 - `Logs -> Postgres logs` - check for `glicko2_update` errors after games end.
-- `Logs -> Edge Function logs` (coach) - watch for Groq 429s if usage spikes.
+- `Logs -> Edge Function logs` (coach, arena_rules) - watch for Gemini 429s and quota errors if usage spikes; the `record_ai_spend_or_block` RPC will already short-circuit calls once the monthly cap is hit.
 - `Realtime -> Connections` - peak concurrent online players.
 
 If Sentry / PostHog are configured, also bookmark:

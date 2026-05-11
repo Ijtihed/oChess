@@ -194,12 +194,13 @@ export default function Navbar({ activePage, onNavigate, user, onAuthClick }) {
           ) : (
             <button
               onClick={() => handleNav("profile")}
-              className="md:hidden w-8 h-8 rounded-full bg-surface-high flex items-center justify-center active:scale-90 transition-transform overflow-hidden"
+              aria-label="Open profile"
+              className="md:hidden w-11 h-11 rounded-full bg-surface-high flex items-center justify-center active:scale-90 transition-transform overflow-hidden"
             >
               {user.avatar ? (
                 <img src={user.avatar} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               ) : (
-                <span className="font-headline text-[10px] font-bold text-on-surface-variant uppercase">{user.name?.[0] || "U"}</span>
+                <span className="font-headline text-[12px] font-bold text-on-surface-variant uppercase">{user.name?.[0] || "U"}</span>
               )}
             </button>
           )}

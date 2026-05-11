@@ -11,10 +11,7 @@ import PlayPage from "./components/PlayPage";
 import StudyPage from "./components/StudyPage";
 import BotsPage from "./components/BotsPage";
 import VariantsPage from "./components/VariantsPage";
-import ReviewPage from "./components/ReviewPage";
-import PresentationPage from "./components/PresentationPage";
 import Profile from "./components/Profile";
-import PublicProfile from "./components/PublicProfile";
 import GameScreen, { getSavedGame, clearSavedGame } from "./components/GameScreen";
 import { CreateChallenge, JoinChallenge } from "./components/ChallengePage";
 import ComingSoon from "./components/ComingSoon";
@@ -32,6 +29,13 @@ const AnalysisPage = lazy(() => import("./components/AnalysisPage"));
 const PuzzlesPage = lazy(() => import("./components/PuzzlesPage"));
 const OnlineGameScreen = lazy(() => import("./components/OnlineGameScreen"));
 const VariantGameScreen = lazy(() => import("./components/VariantGameScreen"));
+// Heavy routes the home/dashboard doesn't need at first paint.
+// ReviewPage is the Anki view (~82KB), PresentationPage is the
+// landing-style hero showcase (~27KB), PublicProfile is the
+// /u/:username route (~14KB).
+const ReviewPage = lazy(() => import("./components/ReviewPage"));
+const PresentationPage = lazy(() => import("./components/PresentationPage"));
+const PublicProfile = lazy(() => import("./components/PublicProfile"));
 // Arena routes pull in acorn (~150KB) + the iframe runtime
 // source (~16KB) + the ability panel + visual overlay. Lazy so
 // the homepage doesn't pay this cost.

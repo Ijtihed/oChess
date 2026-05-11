@@ -12,13 +12,30 @@
  * @param {Object} props.description     Output of describeRules(resolved).
  * @param {string} [props.model]         Model identifier for the small subtitle pill.
  */
+const NAME_MAX = 80;
+const DESC_MAX = 600;
+
+// Trim AI-emitted text fields before display. React already escapes
+// them but a 50KB description from a buggy / hostile prompt still
+// breaks the UI; cap to a reasonable length and strip control chars.
+function clampText(value, max) {
+  if (typeof value !== "string") return "";
+  // Strip C0 / C1 control characters that could break layout
+  // (ANSI escapes, line separators, RTL overrides).
+  // eslint-disable-next-line no-control-regex
+  const stripped = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, "");
+  return stripped.length > max ? stripped.slice(0, max) + "\u2026" : stripped;
+}
+
 export default function RulePreview({ description, model }) {
   if (!description) return null;
+  const safeName = clampText(description.name, NAME_MAX) || "Custom rules";
+  const safeDesc = clampText(description.description, DESC_MAX);
   return (
     <div className="px-3 py-3 bg-surface-container border border-primary/20 space-y-2">
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <span className="font-headline text-[13px] font-bold text-primary">
-          {description.name || "Custom rules"}
+          {safeName}
         </span>
         {model && (
           <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/30">
@@ -26,9 +43,9 @@ export default function RulePreview({ description, model }) {
           </span>
         )}
       </div>
-      {description.description && (
+      {safeDesc && (
         <p className="text-[12px] text-on-surface-variant/65 leading-relaxed">
-          {description.description}
+          {safeDesc}
         </p>
       )}
       {description.changes.length > 0 && (() => {

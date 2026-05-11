@@ -17,7 +17,7 @@
 | Backend | Supabase (PostgreSQL + Realtime + Auth + Storage + Edge Functions) |
 | Realtime | Supabase Realtime (postgres_changes + broadcast + presence) |
 | Auth | Supabase Auth (email + Google OAuth, PKCE flow) |
-| LLM coach | Groq (Llama 3.3 70B) via a JWT-gated Supabase Edge Function |
+| LLM coach | Google Gemini 2.5 Flash via a JWT-gated Supabase Edge Function |
 | Monitoring | Sentry (errors) + PostHog (analytics), both opt-in via env vars |
 | Testing | Vitest + @testing-library/react + Playwright e2e |
 | CI/CD | GitHub Actions on push/PR to `main` |
@@ -42,10 +42,10 @@
    │  Anki state machine  │   ◄── presence ─────────► opponent online indicators
    └──────────────────────┘
             │
-            └── functions.invoke('coach') ─────────► Edge Function ──► Groq LLM
+            └── functions.invoke('coach') ─────────► Edge Function ──► Gemini API
                                                        (JWT gate +
-                                                        record_coach_call
-                                                        rate limit)
+                                                        record_coach_call rate limit
+                                                        + record_ai_spend_or_block cap)
 ```
 
 The DB row is the single source of truth for every persistent piece of state. Realtime broadcasts are speed hints layered on top - they're verified against the DB before we apply terminal events (resign / draw accept / game over) so a malicious client with the anon key can't forge those.
@@ -229,7 +229,8 @@ supabase/
   README.md                   # Apply runbook
   migrations/                 # Focused diffs for incremental updates
   functions/
-    coach/                    # Groq LLM bridge with rate-limit gate
+    coach/                    # Gemini LLM bridge with rate-limit gate
+    arena_rules/              # Gemini bridge for AI Arena variant generation
     cleanup-stale-seeks/      # Manual-invoke fallback (pg_cron handles regular runs)
 docs/
   architecture.md             # This file
@@ -278,7 +279,7 @@ Edge Function (Deno)
      Blocked attempts return 429 + retry_after_seconds; do NOT
      consume a slot.
   3. Build prompt from mistakes + filter vocabulary
-  4. Call Groq (Llama 3.3 70B, fall back to 3.1 8B)
+  4. Call Gemini 2.5 Flash via Google's OpenAI-compatible endpoint
   5. Parse + sanitize JSON response
        ↓
   Returns { summary, plan: [{ day, focus, query, ... }], insights, rate_limit }

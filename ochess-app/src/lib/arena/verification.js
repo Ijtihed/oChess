@@ -188,11 +188,20 @@ function checkAbilityReachability(rules, errors, warnings, repaired_paths, opts)
       }
 
       // Random walks of up to `plies` plies. Stop early if the
-      // ability becomes castable.
+      // ability becomes castable. We always start the walk from
+      // the variant's `startingFen` side-to-move (almost always
+      // white), so a black-only ability must wait for white to
+      // play and then check on black's turn. The previous
+      // version accidentally forced `pos.turn = "w"` for both
+      // colors and produced false negatives for black-only or
+      // byColor=b abilities.
       const walks = 6;
       for (let w = 0; w < walks; w++) {
         let pos = startPos.clone();
-        pos.turn = color === "w" ? "w" : "w"; // walks always start from white turn 1
+        // Honor the starting FEN's side-to-move. Don't flip it
+        // here based on `color` - we want to verify reachability
+        // under realistic play, not from an artificial
+        // "black-to-move-first" position.
         for (let p = 0; p < plies; p++) {
           const status = checkGameStatus(pos, rules);
           if (status.ended) break;

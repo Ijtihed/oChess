@@ -616,18 +616,27 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
                         const answerMove = nextUci && nextUci.length >= 4
                           ? { from: nextUci.slice(0, 2), to: nextUci.slice(2, 4), promotion: nextUci.length > 4 ? nextUci[4] : undefined }
                           : null;
-                        cards.push({
-                          id: `${puzzle.id}-${Date.now()}`,
-                          puzzleId: puzzle.id,
-                          fen,
-                          type: "puzzle",
-                          rating: puzzle.rating,
-                          themes: puzzle.themes,
-                          answerMove: answerMove || undefined,
-                          lineMoves: remainingUci.length > 0 ? remainingUci : undefined,
-                          ts: Date.now(),
-                        });
-                        localStorage.setItem("ochess_review_cards", JSON.stringify(cards));
+                        // Stable id keyed on puzzleId + position so
+                        // re-clicking "Save to Anki" on the same
+                        // failure doesn't create duplicates and
+                        // double the review burden. The previous
+                        // version used Date.now() in the id which
+                        // produced a fresh card every click.
+                        const stableId = `puzzle:${puzzle.id}:${fen}`;
+                        if (!cards.some((c) => c.id === stableId)) {
+                          cards.push({
+                            id: stableId,
+                            puzzleId: puzzle.id,
+                            fen,
+                            type: "puzzle",
+                            rating: puzzle.rating,
+                            themes: puzzle.themes,
+                            answerMove: answerMove || undefined,
+                            lineMoves: remainingUci.length > 0 ? remainingUci : undefined,
+                            ts: Date.now(),
+                          });
+                          localStorage.setItem("ochess_review_cards", JSON.stringify(cards));
+                        }
                         setSaved(true); setTimeout(() => setSaved(false), 1500);
                       } catch {}
                     }}

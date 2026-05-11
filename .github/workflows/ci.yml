@@ -76,3 +76,37 @@ jobs:
       # class of bug we hit before deploy.
       - name: Edge Function smoke test
         run: PORT=0 deno run --allow-net --allow-env --allow-read scripts/test-edge-validation.ts
+
+  e2e:
+    # Headless Playwright smoke test. Runs after the build job
+    # passes so we don't waste the browser-install minutes if
+    # the unit suite is already broken. Marked continue-on-error
+    # for now since the spec set is small; flip to required once
+    # we've grown enough coverage to gate on it.
+    name: E2E (Playwright smoke)
+    runs-on: ubuntu-latest
+    needs: build-test
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ochess-app
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ochess-app/package-lock.json
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npm run build
+
+      - name: Run Playwright tests
+        run: npm run e2e

@@ -78,13 +78,17 @@ create trigger ai_settings_audit_touch_trg
 -- arena_rooms cleanup is handled separately (see existing
 -- cleanup_stale_arena_rooms job). Saved variants and ai_settings
 -- are user data; never auto-prune.
+-- arena_moves uses `ts`, NOT `created_at`. The earlier copy of
+-- this function referenced a non-existent column and silently
+-- failed every night.
 create or replace function prune_arena_old_rows()
 returns void
 language plpgsql
+set search_path = public
 as $$
 begin
   delete from arena_visual_errors where created_at < now() - interval '30 days';
-  delete from arena_moves where created_at < now() - interval '180 days';
+  delete from arena_moves where ts < now() - interval '180 days';
 end;
 $$;
 

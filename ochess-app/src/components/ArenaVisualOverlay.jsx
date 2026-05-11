@@ -109,11 +109,15 @@ export default function ArenaVisualOverlay({
     if (!shouldMount) return undefined;
     function handler(ev) {
       if (!ev.data || typeof ev.data !== "object") return;
-      // We don't filter ev.source here because a malicious page
-      // can't reach into the iframe (opaque origin, no
-      // allow-same-origin). The risk surface is the iframe
-      // sending us a malformed message, which we defend against
-      // by validating msg.type below.
+      // Defense in depth: only accept messages whose source is
+      // OUR mounted iframe. The opaque sandbox origin already
+      // blocks third parties from forging postMessages with
+      // useful payloads, but pinning the source makes it
+      // impossible for any other window the user might have open
+      // (a stray ad iframe, a misconfigured embed) to spoof
+      // SLOT_DISABLED / SANDBOX_HALTED into our pipeline.
+      const expected = iframeRef.current?.contentWindow;
+      if (expected && ev.source !== expected) return;
       const msg = ev.data;
       switch (msg.type) {
         case "READY":

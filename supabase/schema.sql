@@ -473,6 +473,10 @@ alter table arena_rooms enable row level security;
 alter table arena_moves enable row level security;
 
 -- ── profiles ──
+-- The UPDATE policy is open to the owner; column-level allowlist
+-- is enforced by the `profiles_guard_writes` trigger below
+-- (rejects writes to id / created_at / crazy_arena_lab from
+-- authenticated callers). Service role bypasses the trigger.
 drop policy if exists "Public profiles are viewable by everyone" on profiles;
 drop policy if exists "Users can insert own profile" on profiles;
 drop policy if exists "Users can update own profile" on profiles;
@@ -483,7 +487,85 @@ create policy "Users can insert own profile" on profiles
 create policy "Users can update own profile" on profiles
   for update using (auth.uid() = id) with check (auth.uid() = id);
 
+-- Column allowlist trigger. Blocks self-grants of crazy_arena_lab
+-- and other privileged flags from the client.
+create or replace function profiles_guard_writes()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    return new;
+  end if;
+  if new.id is distinct from old.id then
+    raise exception 'profiles.id is immutable';
+  end if;
+  if new.created_at is distinct from old.created_at then
+    new.created_at := old.created_at;
+  end if;
+  if new.crazy_arena_lab is distinct from old.crazy_arena_lab then
+    raise exception 'profiles.crazy_arena_lab is read-only from clients (use grant_crazy_arena_lab)';
+  end if;
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_guard_writes_trg on profiles;
+create trigger profiles_guard_writes_trg
+  before update on profiles
+  for each row
+  execute function profiles_guard_writes();
+
+create or replace function grant_crazy_arena_lab(p_user_id uuid, p_value boolean default true)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not (current_setting('request.jwt.claim.role', true) = 'service_role'
+          or session_user = 'postgres') then
+    raise exception 'admin only';
+  end if;
+  update profiles set crazy_arena_lab = coalesce(p_value, false) where id = p_user_id;
+end;
+$$;
+revoke all on function grant_crazy_arena_lab(uuid, boolean) from public, anon, authenticated;
+grant execute on function grant_crazy_arena_lab(uuid, boolean) to service_role;
+
+-- Length / format caps on free-text profile columns.
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'profiles_bio_len') then
+    alter table profiles add constraint profiles_bio_len
+      check (bio is null or length(bio) <= 600);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'profiles_display_name_len') then
+    alter table profiles add constraint profiles_display_name_len
+      check (display_name is null or length(display_name) <= 60);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'profiles_country_len') then
+    alter table profiles add constraint profiles_country_len
+      check (country is null or length(country) <= 4);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'profiles_lichess_username_len') then
+    alter table profiles add constraint profiles_lichess_username_len
+      check (lichess_username is null or length(lichess_username) <= 40);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'profiles_chesscom_username_len') then
+    alter table profiles add constraint profiles_chesscom_username_len
+      check (chesscom_username is null or length(chesscom_username) <= 40);
+  end if;
+end $$;
+
 -- ── ratings ──
+-- Read by everyone (leaderboards), insert own (bootstrap), but
+-- UPDATE is intentionally NOT exposed to authenticated. Glicko
+-- mutations only happen through `glicko2_update` (security
+-- definer). This stops a tampered client from PATCHing their own
+-- rating directly.
 drop policy if exists "Ratings are viewable by everyone" on ratings;
 drop policy if exists "System updates ratings" on ratings;
 drop policy if exists "Users can read all ratings" on ratings;
@@ -493,8 +575,8 @@ create policy "Ratings are viewable by everyone" on ratings
   for select using (true);
 create policy "Users can insert own ratings" on ratings
   for insert with check (auth.uid() = user_id);
-create policy "Users can update own ratings" on ratings
-  for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+-- NOTE: no UPDATE policy. glicko2_update (security definer) is
+-- the only sanctioned write path.
 
 -- ── games ──
 drop policy if exists "Completed games are viewable by everyone" on games;
@@ -556,8 +638,17 @@ drop policy if exists "Creator can update own challenge" on challenges;
 drop policy if exists "Auth users can mark expired challenges" on challenges;
 drop policy if exists "Creator can delete challenges" on challenges;
 drop policy if exists "Creator can delete own challenge" on challenges;
-create policy "Anyone can view challenges" on challenges
-  for select using (true);
+-- SELECT is restricted to creator + anyone targeting a 'waiting'
+-- row by code (the unguessable code itself is the join secret).
+-- Once a challenge is accepted/expired/cancelled, only the
+-- creator can see it. The legacy "Anyone can view challenges"
+-- policy let any anon enumerate every challenge row; we no
+-- longer ship that.
+create policy "Participants can view their challenges" on challenges
+  for select using (
+    auth.uid() = creator_id
+    or status = 'waiting'
+  );
 create policy "Auth users can create own challenges" on challenges
   for insert with check (auth.uid() = creator_id);
 -- Two narrow update paths are allowed directly to clients:
@@ -710,7 +801,11 @@ create trigger check_duplicate_friendship
 -- puzzle_progress row. Wrapped in exception handler so signup never
 -- fails on a bad auth row.
 create or replace function handle_new_user()
-returns trigger as $$
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
 declare
   _username text;
 begin
@@ -742,7 +837,7 @@ exception when others then
   raise warning 'handle_new_user failed for %: %', new.id, sqlerrm;
   return new;
 end;
-$$ language plpgsql security definer;
+$$;
 
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
@@ -815,7 +910,7 @@ begin
 
   return (select row_to_json(g)::jsonb from games g where g.id = v_game_id);
 end;
-$$ language plpgsql security definer;
+$$ language plpgsql security definer set search_path = public;
 grant execute on function claim_seek(uuid, uuid, text, float) to authenticated;
 
 -- ── accept_challenge: atomically accept a challenge link ──
@@ -893,7 +988,7 @@ begin
 
   return (select row_to_json(g)::jsonb from games g where g.id = v_game_id);
 end;
-$$ language plpgsql security definer;
+$$ language plpgsql security definer set search_path = public;
 grant execute on function accept_challenge(uuid, uuid, text, float) to authenticated;
 
 -- ── glicko2_update: server-authoritative game completion ──
@@ -1060,7 +1155,7 @@ begin
 
   return jsonb_build_object('ok', true);
 end;
-$$ language plpgsql security definer;
+$$ language plpgsql security definer set search_path = public;
 grant execute on function glicko2_update(uuid, text, text, text, int) to authenticated;
 
 -- ── create_rematch: atomic rematch creation ──
@@ -1121,7 +1216,7 @@ begin
 
   return (select row_to_json(g)::jsonb from games g where g.id = v_new_id);
 end;
-$$ language plpgsql security definer;
+$$ language plpgsql security definer set search_path = public;
 grant execute on function create_rematch(uuid, uuid) to authenticated;
 
 -- ── record_coach_call: per-user rolling-window rate limit ──
@@ -1141,6 +1236,10 @@ grant execute on function create_rematch(uuid, uuid) to authenticated;
 -- DROP first because PostgreSQL refuses CREATE OR REPLACE when the
 -- OUT-parameter row type changes shape between schema revisions, and
 -- this file is meant to be safely re-runnable on existing databases.
+-- HARDENING: client-supplied window/max are clamped to the hard
+-- cap (300s / 3 calls). A hostile authenticated caller hitting
+-- the RPC directly with `p_max_calls = 999999` is rejected the
+-- same as if they used the defaults. Caller can only TIGHTEN.
 drop function if exists record_coach_call(int, int);
 create or replace function record_coach_call(
   p_window_seconds int default 300,
@@ -1162,35 +1261,35 @@ declare
   v_count int;
   v_oldest timestamptz;
   v_retry int;
+  v_window_seconds int;
+  v_max_calls int;
 begin
+  v_window_seconds := least(coalesce(p_window_seconds, 300), 300);
+  v_max_calls := least(coalesce(p_max_calls, 3), 3);
+
   v_uid := auth.uid();
   if v_uid is null then
-    return query select false, p_window_seconds, 0, p_window_seconds, p_max_calls;
+    return query select false, v_window_seconds, 0, v_window_seconds, v_max_calls;
     return;
   end if;
 
-  -- Trim very old rows so the table doesn't grow unboundedly. Anything
-  -- older than 1 day is irrelevant for any reasonable window.
   delete from coach_calls where created_at < now() - interval '1 day';
 
-  -- Count + find the oldest call inside the current window.
   select count(*), min(created_at)
     into v_count, v_oldest
     from coach_calls
    where user_id = v_uid
-     and created_at > now() - (p_window_seconds || ' seconds')::interval;
+     and created_at > now() - (v_window_seconds || ' seconds')::interval;
 
-  if v_count >= p_max_calls then
-    -- Time until the oldest in-window call ages out. ceil so a
-    -- sub-second remainder still surfaces as 1 second to the user.
+  if v_count >= v_max_calls then
     v_retry := greatest(1, ceil(extract(epoch from
-      (v_oldest + (p_window_seconds || ' seconds')::interval - now())))::int);
-    return query select false, v_retry, v_count, p_window_seconds, p_max_calls;
+      (v_oldest + (v_window_seconds || ' seconds')::interval - now())))::int);
+    return query select false, v_retry, v_count, v_window_seconds, v_max_calls;
     return;
   end if;
 
   insert into coach_calls(user_id) values (v_uid);
-  return query select true, 0, v_count + 1, p_window_seconds, p_max_calls;
+  return query select true, 0, v_count + 1, v_window_seconds, v_max_calls;
 end;
 $$;
 revoke all on function record_coach_call(int, int) from public, anon;
@@ -1200,6 +1299,7 @@ grant execute on function record_coach_call(int, int) to authenticated, service_
 -- Same shape as record_coach_call but a separate table so arena
 -- and coach budgets don't share. Defaults: 10 calls per 600 s
 -- (10 min). The Edge Function is the only sanctioned caller.
+-- HARDENING: same as record_coach_call - clamp to the hard cap.
 drop function if exists record_arena_rules_call(int, int);
 create or replace function record_arena_rules_call(
   p_window_seconds int default 600,
@@ -1221,31 +1321,35 @@ declare
   v_count int;
   v_oldest timestamptz;
   v_retry int;
+  v_window_seconds int;
+  v_max_calls int;
 begin
+  v_window_seconds := least(coalesce(p_window_seconds, 600), 600);
+  v_max_calls := least(coalesce(p_max_calls, 10), 10);
+
   v_uid := auth.uid();
   if v_uid is null then
-    return query select false, p_window_seconds, 0, p_window_seconds, p_max_calls;
+    return query select false, v_window_seconds, 0, v_window_seconds, v_max_calls;
     return;
   end if;
 
-  -- Trim very old rows so the table doesn't grow unboundedly.
   delete from arena_rules_calls where created_at < now() - interval '1 day';
 
   select count(*), min(created_at)
     into v_count, v_oldest
     from arena_rules_calls
    where user_id = v_uid
-     and created_at > now() - (p_window_seconds || ' seconds')::interval;
+     and created_at > now() - (v_window_seconds || ' seconds')::interval;
 
-  if v_count >= p_max_calls then
+  if v_count >= v_max_calls then
     v_retry := greatest(1, ceil(extract(epoch from
-      (v_oldest + (p_window_seconds || ' seconds')::interval - now())))::int);
-    return query select false, v_retry, v_count, p_window_seconds, p_max_calls;
+      (v_oldest + (v_window_seconds || ' seconds')::interval - now())))::int);
+    return query select false, v_retry, v_count, v_window_seconds, v_max_calls;
     return;
   end if;
 
   insert into arena_rules_calls(user_id) values (v_uid);
-  return query select true, 0, v_count + 1, p_window_seconds, p_max_calls;
+  return query select true, 0, v_count + 1, v_window_seconds, v_max_calls;
 end;
 $$;
 revoke all on function record_arena_rules_call(int, int) from public, anon;
@@ -1316,13 +1420,15 @@ insert into ai_settings (id, monthly_cap_micro_usd, soft_warning_micro_usd)
 -- already in flight (those need a page reload).
 alter table ai_settings add column if not exists disable_drawn_visuals boolean not null default false;
 
--- Anyone authenticated can READ the current cap (so the lobby
--- can show it). Only the service role can update it (so a
--- compromised user account can't relax the cap).
+-- Authenticated callers can READ the current cap (so the lobby
+-- can show it). Anonymous probes do not need this; we keep
+-- operational metadata out of unauthenticated view. Only the
+-- service role can update.
 alter table ai_settings enable row level security;
 drop policy if exists "Anyone reads ai_settings" on ai_settings;
-create policy "Anyone reads ai_settings" on ai_settings
-  for select using (true);
+drop policy if exists "Authenticated reads ai_settings" on ai_settings;
+create policy "Authenticated reads ai_settings" on ai_settings
+  for select using (auth.role() = 'authenticated');
 
 -- ── arena_visual_errors: audit log of sandbox draw failures ──
 -- Every time the iframe sandbox catches an error inside a
@@ -1385,7 +1491,9 @@ create or replace function record_arena_visual_error(
   p_ply int default null,
   p_variant_name text default null
 ) returns bigint
-language plpgsql security definer
+language plpgsql
+security definer
+set search_path = public
 as $$
 declare
   v_recent_count int;
@@ -1477,8 +1585,22 @@ declare
   v_remaining bigint;
   v_cap bigint;
   v_soft bigint;
+  v_charge bigint;
 begin
   v_uid := auth.uid();
+
+  -- HARDENING: sanitize the amount before recording. Negative or
+  -- absurd values would corrupt the running monthly total or let
+  -- a hostile caller hide spend by inserting negatives. Real
+  -- Gemini 2.5 Flash calls cost well under 1 cent each; clamp to
+  -- 5 USD per call as a sanity ceiling.
+  if p_micro_usd is null or p_micro_usd < 0 then
+    v_charge := 0;
+  elsif p_micro_usd > 5000000 then
+    v_charge := 5000000;
+  else
+    v_charge := p_micro_usd;
+  end if;
 
   -- Single source of truth: ai_settings row.
   select monthly_cap_micro_usd, soft_warning_micro_usd
@@ -1501,16 +1623,21 @@ begin
   v_remaining := v_cap - v_used;
 
   -- Reject if this call would push over the cap.
-  if v_used + p_micro_usd > v_cap then
+  if v_used + v_charge > v_cap then
     return query select false, v_used, v_cap, greatest(0::bigint, v_remaining), true;
     return;
   end if;
 
-  insert into ai_spend_log(user_id, feature, provider, model, input_tokens, output_tokens, micro_usd)
-    values (v_uid, p_feature, p_provider, p_model, p_input_tokens, p_output_tokens, p_micro_usd);
+  -- Skip the insert for pre-check calls (charge=0). Edge functions
+  -- still get the allowed/cap signal; the ledger stays small and
+  -- tamper-resistant.
+  if v_charge > 0 then
+    insert into ai_spend_log(user_id, feature, provider, model, input_tokens, output_tokens, micro_usd)
+      values (v_uid, p_feature, p_provider, p_model, p_input_tokens, p_output_tokens, v_charge);
+  end if;
 
-  return query select true, v_used + p_micro_usd, v_cap, v_cap - v_used - p_micro_usd,
-    (v_used + p_micro_usd) >= v_soft;
+  return query select true, v_used + v_charge, v_cap, v_cap - v_used - v_charge,
+    (v_used + v_charge) >= v_soft;
 end;
 $$;
 revoke all on function record_ai_spend_or_block(text, text, text, int, int, bigint, bigint)
@@ -1588,25 +1715,38 @@ begin
     return;
   end if;
 
-  -- Idempotent: if the move row already exists with the same FEN,
-  -- treat the call as a successful no-op so a network retry from
-  -- the same client doesn't surface a confusing error.
-  select ply into v_existing_ply
-    from arena_moves
-    where room_id = p_room_id and round = p_round and ply = p_ply;
-  if found then
-    return query select true, v_room, null::text;
-    return;
-  end if;
+  -- Idempotent: if the move row already exists with the SAME FEN,
+  -- treat the call as a successful no-op (network retry). If the
+  -- FEN differs, the client is desynced - return an explicit error
+  -- so the higher-level recovery logic can re-fetch state instead
+  -- of silently masking the divergence.
+  declare v_existing_fen text;
+  begin
+    select fen into v_existing_fen
+      from arena_moves
+      where room_id = p_room_id and round = p_round and ply = p_ply;
+    if found then
+      if v_existing_fen is distinct from p_fen then
+        return query select false, v_room, 'duplicate ply with conflicting fen';
+        return;
+      end if;
+      return query select true, v_room, null::text;
+      return;
+    end if;
+  end;
 
   insert into arena_moves(room_id, round, ply, fen, move_from, move_to, promotion, san)
     values (p_room_id, p_round, p_ply, p_fen, p_move_from, p_move_to, p_promotion, p_san);
 
+  -- Definer-bypass: skip arena_rooms_guard_writes for legitimate
+  -- orchestrator updates (round_state advances).
+  perform set_config('ochess.arena_bypass_guard', 'on', true);
   update arena_rooms
     set round_state = p_round_state,
         updated_at = now()
     where id = p_room_id
     returning * into v_room;
+  perform set_config('ochess.arena_bypass_guard', 'off', true);
 
   return query select true, v_room, null::text;
 end;
@@ -1676,23 +1816,32 @@ begin
     return;
   end if;
 
-  select ply into v_existing_ply
-    from arena_moves
-    where room_id = p_room_id and round = p_round and ply = p_ply;
-  if found then
-    return query select true, v_room, null::text;
-    return;
-  end if;
+  declare v_existing_fen text;
+  begin
+    select fen into v_existing_fen
+      from arena_moves
+      where room_id = p_room_id and round = p_round and ply = p_ply;
+    if found then
+      if v_existing_fen is distinct from p_fen then
+        return query select false, v_room, 'duplicate ply with conflicting fen';
+        return;
+      end if;
+      return query select true, v_room, null::text;
+      return;
+    end if;
+  end;
 
   insert into arena_moves(room_id, round, ply, fen, move_from, move_to, promotion, san, move_kind, ability_id, state_after)
     values (p_room_id, p_round, p_ply, p_fen, p_move_from, p_move_to, p_promotion, p_san, p_move_kind, p_ability_id, p_state_after);
 
+  perform set_config('ochess.arena_bypass_guard', 'on', true);
   update arena_rooms
     set round_state = p_round_state,
         crazy_state = p_crazy_state,
         updated_at = now()
     where id = p_room_id
     returning * into v_room;
+  perform set_config('ochess.arena_bypass_guard', 'off', true);
 
   return query select true, v_room, null::text;
 end;
@@ -1781,6 +1930,10 @@ begin
   -- crazy_state = null as "no marks, no effects" - it'll re-seed
   -- from the rules' startingAbilities the moment a player triggers
   -- something.
+  --
+  -- Definer-bypass GUC so arena_rooms_guard_writes lets us write
+  -- match_result / terminal status without raising.
+  perform set_config('ochess.arena_bypass_guard', 'on', true);
   update arena_rooms
     set match_result = p_match_result,
         round_state = p_round_state,
@@ -1789,6 +1942,7 @@ begin
         updated_at = now()
     where id = p_room_id
     returning * into v_room;
+  perform set_config('ochess.arena_bypass_guard', 'off', true);
 
   return query select true, true, v_room, null::text;
 end;
@@ -1821,11 +1975,11 @@ grant execute on function arena_advance_round(uuid, text, jsonb, jsonb, text)
 --   joiner_name         - only the joiner can set
 --   rules_joiner        - only the joiner can set
 --
--- match_result / round_state / status are deliberately NOT
--- gated here because both sides legitimately advance them via
--- the orchestrator. Future hardening: route those through
--- arena_advance_round / arena_apply_move exclusively and add
--- guards here.
+-- match_result and terminal status transitions ('done'/'abandoned')
+-- are now gated to require the orchestrator path
+-- (arena_finalize_match RPC, security definer + bypass GUC). Open
+-- transitions like round_state / non-terminal status changes
+-- still flow through normal participant updates.
 create or replace function arena_rooms_guard_writes()
 returns trigger
 language plpgsql
@@ -1836,7 +1990,17 @@ declare
   v_uid uuid;
   v_is_creator boolean;
   v_is_joiner boolean;
+  v_bypass text;
 begin
+  -- Definer-RPC bypass GUC: arena_apply_move,
+  -- arena_apply_move_v2 and arena_finalize_match set this on
+  -- entry so their legitimate writes go through without bumping
+  -- into the trigger.
+  v_bypass := current_setting('ochess.arena_bypass_guard', true);
+  if v_bypass = 'on' then
+    return new;
+  end if;
+
   v_uid := auth.uid();
   -- service_role bypass: NULL auth.uid() means the request was
   -- made with the service key (Edge Function, cron job). Trust
@@ -1856,12 +2020,16 @@ begin
     raise exception 'creator_name is immutable';
   end if;
 
-  -- rules_creator: only the creator may change. NULL → value is
-  -- a fresh assignment (rare; create-time path normally writes
-  -- rules_creator at INSERT). Any non-NULL → value or value →
-  -- value mutation must come from the creator.
-  if new.rules_creator is distinct from old.rules_creator and not v_is_creator then
-    raise exception 'only the creator may change rules_creator';
+  -- rules_creator: only the creator may change, and only while
+  -- the rules slot is still empty (locked once set so it can't
+  -- be flipped mid-match).
+  if new.rules_creator is distinct from old.rules_creator then
+    if not v_is_creator then
+      raise exception 'only the creator may change rules_creator';
+    end if;
+    if old.rules_creator is not null then
+      raise exception 'rules_creator is locked once set';
+    end if;
   end if;
 
   -- joiner_id: 3 cases.
@@ -1879,8 +2047,6 @@ begin
 
   -- joiner_name: only the joiner (post-claim) can change.
   if new.joiner_name is distinct from old.joiner_name then
-    -- Allow the seat-claim row, where joiner_id flips to v_uid
-    -- in the same UPDATE.
     if new.joiner_id = v_uid and old.joiner_id is null then
       null;
     elsif v_is_joiner then
@@ -1890,15 +2056,30 @@ begin
     end if;
   end if;
 
-  -- rules_joiner: only the joiner may change.
+  -- rules_joiner: only the joiner may change, and only while
+  -- the rules slot is still empty (locked once set).
   if new.rules_joiner is distinct from old.rules_joiner then
     if new.joiner_id = v_uid and old.joiner_id is null then
       null;
     elsif v_is_joiner then
-      null;
+      if old.rules_joiner is not null then
+        raise exception 'rules_joiner is locked once set';
+      end if;
     else
       raise exception 'only the joiner may change rules_joiner';
     end if;
+  end if;
+
+  -- match_result must come through arena_finalize_match (which
+  -- sets the bypass GUC). Anything else is a forge attempt.
+  if new.match_result is distinct from old.match_result then
+    raise exception 'match_result must be set via arena_finalize_match';
+  end if;
+
+  -- Terminal status transitions only via orchestrator RPC.
+  if new.status is distinct from old.status
+     and new.status in ('done','abandoned') then
+    raise exception 'terminal status must be set via orchestrator RPC';
   end if;
 
   return new;
@@ -1911,15 +2092,61 @@ create trigger arena_rooms_guard_writes
   for each row
   execute function arena_rooms_guard_writes();
 
+-- Orchestrator-style finalize. Sets match_result and transitions
+-- status to 'done' atomically, with the bypass GUC so the trigger
+-- accepts the write.
+create or replace function arena_finalize_match(
+  p_room_id uuid,
+  p_match_result jsonb
+) returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_room arena_rooms;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    raise exception 'unauthenticated';
+  end if;
+  select * into v_room from arena_rooms where id = p_room_id for update;
+  if not found then
+    raise exception 'room not found';
+  end if;
+  if v_uid not in (v_room.creator_id, coalesce(v_room.joiner_id, v_uid)) then
+    raise exception 'not a participant';
+  end if;
+  if v_room.status = 'done' then
+    return true;
+  end if;
+  perform set_config('ochess.arena_bypass_guard', 'on', true);
+  update arena_rooms
+     set match_result = p_match_result,
+         status = 'done',
+         updated_at = now()
+   where id = p_room_id;
+  perform set_config('ochess.arena_bypass_guard', 'off', true);
+  return true;
+end;
+$$;
+revoke all on function arena_finalize_match(uuid, jsonb) from public, anon;
+grant execute on function arena_finalize_match(uuid, jsonb) to authenticated;
+
 -- ── cleanup_stale_seeks: housekeeping (call from a cron job) ──
 -- Restricted to the service_role so a logged-in user can't grief
 -- matchmaking by globally evicting other players' open seeks.
 create or replace function cleanup_stale_seeks()
-returns void as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 begin
   delete from seeks where created_at < now() - interval '15 minutes';
 end;
-$$ language plpgsql security definer;
+$$;
 revoke all on function cleanup_stale_seeks() from public, anon, authenticated;
 grant execute on function cleanup_stale_seeks() to service_role;
 
@@ -2013,17 +2240,27 @@ create policy "Users can delete their own avatar" on storage.objects
 create extension if not exists pg_cron with schema extensions;
 
 -- ── Stale matchmaking seeks ──
+-- Each cron block is wrapped in DO/EXCEPTION so a host without
+-- pg_cron available (some local Supabase setups) doesn't fail
+-- the whole schema apply. The same idempotent pattern is used
+-- by the ship3_hygiene cron jobs further down.
 do $$ begin
   if exists (select 1 from cron.job where jobname = 'ochess-cleanup-stale-seeks') then
     perform cron.unschedule('ochess-cleanup-stale-seeks');
   end if;
+exception when others then
+  null;
 end $$;
 
-select cron.schedule(
-  'ochess-cleanup-stale-seeks',
-  '*/5 * * * *',
-  $cron$select cleanup_stale_seeks()$cron$
-);
+do $$ begin
+  perform cron.schedule(
+    'ochess-cleanup-stale-seeks',
+    '*/5 * * * *',
+    $cron$select cleanup_stale_seeks()$cron$
+  );
+exception when others then
+  null;
+end $$;
 
 -- ── Abandoned games ──
 -- Backstop for the "both players walked away" case. The normal
@@ -2047,7 +2284,11 @@ select cron.schedule(
 --   * Result is `*` with `result_reason = 'abandoned'` so the existing
 --     UI renders it as a non-rated, non-result row in game history.
 create or replace function cleanup_stale_games()
-returns void as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 begin
   update games
   set status = 'completed',
@@ -2059,7 +2300,7 @@ begin
     and (last_move_at is null or last_move_at < now() - interval '24 hours')
     and (created_at is null or created_at < now() - interval '24 hours');
 end;
-$$ language plpgsql security definer;
+$$;
 
 revoke execute on function cleanup_stale_games() from public, authenticated, anon;
 grant execute on function cleanup_stale_games() to service_role;
@@ -2068,13 +2309,19 @@ do $$ begin
   if exists (select 1 from cron.job where jobname = 'ochess-cleanup-stale-games') then
     perform cron.unschedule('ochess-cleanup-stale-games');
   end if;
+exception when others then
+  null;
 end $$;
 
-select cron.schedule(
-  'ochess-cleanup-stale-games',
-  '17 */6 * * *',
-  $cron$select cleanup_stale_games()$cron$
-);
+do $$ begin
+  perform cron.schedule(
+    'ochess-cleanup-stale-games',
+    '17 */6 * * *',
+    $cron$select cleanup_stale_games()$cron$
+  );
+exception when others then
+  null;
+end $$;
 
 -- ── cleanup_stale_arena_rooms: housekeeping (call from a cron job) ──
 --
@@ -2119,7 +2366,11 @@ select cron.schedule(
 -- on a pending move get a timely resolution after their clock
 -- objectively expires.
 create or replace function cleanup_stale_arena_rooms()
-returns void as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 declare
   r record;
   v_clock jsonb;
@@ -2319,7 +2570,7 @@ begin
   where status in ('warmup_round_1','warmup_round_2','round_1','round_2','tiebreak','prompting')
     and updated_at < now() - interval '24 hours';
 end;
-$$ language plpgsql security definer;
+$$;
 
 revoke execute on function cleanup_stale_arena_rooms() from public, authenticated, anon;
 grant execute on function cleanup_stale_arena_rooms() to service_role;
@@ -2328,17 +2579,23 @@ do $$ begin
   if exists (select 1 from cron.job where jobname = 'ochess-cleanup-stale-arena-rooms') then
     perform cron.unschedule('ochess-cleanup-stale-arena-rooms');
   end if;
+exception when others then
+  null;
 end $$;
 
 -- Run every 5 min so a player who closes their laptop with a
 -- pending move gets resolved promptly. Combined with the
 -- 10-minute idle threshold, the worst-case staleness for an
 -- abandoned room is ~15 minutes (5 min jitter + 10 min idle).
-select cron.schedule(
-  'ochess-cleanup-stale-arena-rooms',
-  '*/5 * * * *',
-  $cron$select cleanup_stale_arena_rooms()$cron$
-);
+do $$ begin
+  perform cron.schedule(
+    'ochess-cleanup-stale-arena-rooms',
+    '*/5 * * * *',
+    $cron$select cleanup_stale_arena_rooms()$cron$
+  );
+exception when others then
+  null;
+end $$;
 
 -- ── Ship #3.1: saved variants library ──
 -- Users can save a variant they liked so they can replay it
@@ -2384,7 +2641,9 @@ create or replace function save_arena_variant(
   p_prompt text,
   p_rules jsonb
 ) returns uuid
-language plpgsql security definer
+language plpgsql
+security definer
+set search_path = public
 as $$
 declare
   v_count int;
@@ -2462,13 +2721,17 @@ create trigger ai_settings_audit_touch_trg
   execute function ai_settings_audit_touch();
 
 -- Retention pruning. arena_visual_errors > 30d, arena_moves > 180d.
+-- arena_moves uses `ts`, NOT `created_at`. The earlier copy of
+-- this function referenced a non-existent column and silently
+-- failed every night.
 create or replace function prune_arena_old_rows()
 returns void
 language plpgsql
+set search_path = public
 as $$
 begin
   delete from arena_visual_errors where created_at < now() - interval '30 days';
-  delete from arena_moves where created_at < now() - interval '180 days';
+  delete from arena_moves where ts < now() - interval '180 days';
 end;
 $$;
 

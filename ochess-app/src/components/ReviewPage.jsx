@@ -12,7 +12,7 @@ import {
   saveCards,
   removeCard,
   loadSchedules,
-  saveSchedules,
+  saveSchedulesMerged,
   rateCard,
   bumpCardDue,
   isCardDue,
@@ -93,6 +93,27 @@ function playerColorFor(card) {
 }
 
 /**
+ * Allow only http/https URLs to render as <a href>. javascript:,
+ * data:, vbscript:, or anything else is dropped.
+ *
+ * Cards can come from imports, share links, or LLM-generated
+ * mistakes. None of those paths should be able to inject a
+ * navigation handler that runs in the user's session, but
+ * defense-in-depth: scrub at render time in case a bad row
+ * survives upstream filtering.
+ */
+function sanitizeExternalUrl(raw) {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  try {
+    const u = new URL(raw, "https://placeholder.invalid/");
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve a "View source" URL for a card, or null if there isn't
  * one. Mistake / shared cards carry an explicit `source_url`; for
  * puzzle cards we fall back to a Lichess training URL synthesized
@@ -102,9 +123,10 @@ function playerColorFor(card) {
  */
 function cardSourceUrl(card) {
   if (!card) return null;
-  if (typeof card.source_url === "string" && card.source_url) return card.source_url;
+  const safe = sanitizeExternalUrl(card.source_url);
+  if (safe) return safe;
   if (card.type === "puzzle" && card.puzzleId) {
-    return `https://lichess.org/training/${card.puzzleId}`;
+    return `https://lichess.org/training/${encodeURIComponent(card.puzzleId)}`;
   }
   return null;
 }
@@ -398,6 +420,16 @@ export default function ReviewPage() {
   const dueIds = useMemo(() => {
     let pool = cards.filter((c) => isCardDue(schedules, cardId(c)));
     if (activeDeck?.match) pool = pool.filter(activeDeck.match);
+    // Sort by due time (oldest first). Anki orders the queue this
+    // way so cards that have been waiting the longest surface
+    // first; without the sort we shipped insertion-order, which
+    // meant brand-new imports would jump ahead of overdue
+    // mistakes and the user lost weeks of accumulated reviews.
+    pool.sort((a, b) => {
+      const ta = new Date(schedules[cardId(a)]?.dueAt || 0).getTime();
+      const tb = new Date(schedules[cardId(b)]?.dueAt || 0).getTime();
+      return (Number.isNaN(ta) ? 0 : ta) - (Number.isNaN(tb) ? 0 : tb);
+    });
     return pool.map(cardId);
   }, [cards, schedules, activeDeck]);
   const card = useMemo(
@@ -761,7 +793,10 @@ export default function ReviewPage() {
     const id = cardId(card);
     setSchedules((prev) => {
       const next = rateCard(prev, id, rating);
-      saveSchedules(next);
+      // saveSchedulesMerged reads what's currently on disk and
+      // merges with the in-memory map before writing, so two
+      // tabs reviewing in parallel don't clobber each other.
+      saveSchedulesMerged(next);
       return next;
     });
     setReviewed((r) => r + 1);
@@ -778,7 +813,7 @@ export default function ReviewPage() {
     resetCard();
     setSchedules((prev) => {
       const next = bumpCardDue(prev, cardId(card), 5);
-      saveSchedules(next);
+      saveSchedulesMerged(next);
       return next;
     });
   }, [card, resetCard]);
@@ -812,7 +847,7 @@ export default function ReviewPage() {
     });
     setSchedules((prev) => {
       const { [id]: _omit, ...rest } = prev;
-      saveSchedules(rest);
+      saveSchedulesMerged(rest);
       return rest;
     });
     resetCard();
@@ -843,7 +878,7 @@ export default function ReviewPage() {
     const id = cardId(card);
     setSchedules((prev) => {
       const next = setSchedule(prev, id, createScheduleState());
-      saveSchedules(next);
+      saveSchedulesMerged(next);
       return next;
     });
     resetCard();
@@ -1117,6 +1152,12 @@ export default function ReviewPage() {
   // the correct side.
   const fen = gameRef.current ? gameRef.current.fen() : card.fen;
   const orientation = orientationFor(card);
+  // gameRef.current === null means the saved card.fen failed to
+  // parse. We surface a clear "broken card" UI instead of letting
+  // InteractiveBoard fall back to the start position - the user
+  // would otherwise drill the wrong line and lose review accuracy
+  // without realizing.
+  const cardIsBroken = card && !gameRef.current;
 
   return (
     <div className="flex">
@@ -1225,14 +1266,27 @@ export default function ReviewPage() {
               </p>
             </div>
 
-            <InteractiveBoard
-              fen={fen}
-              onMove={handleMove}
-              orientation={orientation}
-              playerColor={playerColorFor(card)}
-              interactive={phase === "prompt" && !!(card.answerMove || card.lineMoves?.[lineIndex])}
-              highlightSquares={highlight}
-            />
+            {cardIsBroken ? (
+              <div className="w-full aspect-square border border-error/30 bg-error/5 flex flex-col items-center justify-center gap-3 px-6 text-center">
+                <span className="font-headline text-base font-extrabold tracking-tight text-error">
+                  This card is corrupted
+                </span>
+                <p className="text-[12px] text-on-surface-variant/55 leading-relaxed max-w-[360px]">
+                  The position stored on this card is not a valid FEN, so it can&apos;t be reviewed.
+                  This usually means the card was imported from a malformed source. Use the
+                  overflow menu to delete it and continue with the next due card.
+                </p>
+              </div>
+            ) : (
+              <InteractiveBoard
+                fen={fen}
+                onMove={handleMove}
+                orientation={orientation}
+                playerColor={playerColorFor(card)}
+                interactive={phase === "prompt" && !cardIsBroken && !!(card.answerMove || card.lineMoves?.[lineIndex])}
+                highlightSquares={highlight}
+              />
+            )}
 
             {/* Played-line ledger surfaces the moves both sides have
                 actually played in this session below the board. Same
@@ -1503,8 +1557,8 @@ function CardMetadata({ card, revealed = false }) {
 
       {(card.source_url || card.source) && (
         <div className="pt-2 border-t border-white/[0.04]">
-          {card.source_url ? (
-            <a href={card.source_url} target="_blank" rel="noopener noreferrer"
+          {sanitizeExternalUrl(card.source_url) ? (
+            <a href={sanitizeExternalUrl(card.source_url)} target="_blank" rel="noopener noreferrer"
               className="text-[10px] text-on-surface-variant/45 hover:text-primary transition-colors inline-flex items-center gap-1">
               View on {card.source || "source"}
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

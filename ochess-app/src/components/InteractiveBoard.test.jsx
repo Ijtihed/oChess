@@ -51,12 +51,41 @@ describe("InteractiveBoard - drag/drop", () => {
     expect(onMove).not.toHaveBeenCalled();
   });
 
-  it("auto-promotes pawn moves to the back rank to a queen by default", () => {
-    // White pawn one square from promotion. react-chessboard passes
-    // the piece string in the drop payload; we mirror that here.
+  it("queues a promotion picker on a back-rank pawn drop and does NOT silently queen by default", () => {
+    // Default behavior must surface the promotion choice. Silent
+    // queening on rated games is a tournament-losing footgun;
+    // callers wanting the old behavior pass autoPromoteToQueen.
     const fen = "4k3/P7/8/8/8/8/8/4K3 w - - 0 1";
     const onMove = vi.fn(() => true);
     render(<InteractiveBoard fen={fen} onMove={onMove} playerColor="w" />);
+    const opts = lastProps.current;
+    const result = opts.onPieceDrop({ sourceSquare: "a7", targetSquare: "a8", piece: "wP" });
+    // The drop is "accepted" (returns true) so react-chessboard
+    // doesn't snap back, but onMove is deferred until the user
+    // picks a piece in the overlay.
+    expect(result).toBe(true);
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it("auto-promotes pawn moves to a queen when autoPromoteToQueen=true", () => {
+    const fen = "4k3/P7/8/8/8/8/8/4K3 w - - 0 1";
+    const onMove = vi.fn(() => true);
+    render(<InteractiveBoard fen={fen} onMove={onMove} playerColor="w" autoPromoteToQueen />);
+    const opts = lastProps.current;
+    opts.onPieceDrop({ sourceSquare: "a7", targetSquare: "a8", piece: "wP" });
+    expect(onMove).toHaveBeenCalled();
+    expect(onMove.mock.calls[0][0].promotion).toBe("q");
+  });
+
+  it("uses silent-queen for premoves regardless of picker default", () => {
+    // Premoves are issued on the OPPONENT's turn. The picker would
+    // interrupt bullet-chess flow, so premove promotions stay
+    // silent-queen even with the picker enabled.
+    // White's pawn on a7 ready to promote, but it's black to move
+    // so this is a premove from white's perspective.
+    const fenBlack = "4k3/P7/8/8/8/8/8/4K3 b - - 0 1";
+    const onMove = vi.fn(() => true);
+    render(<InteractiveBoard fen={fenBlack} onMove={onMove} playerColor="w" />);
     const opts = lastProps.current;
     opts.onPieceDrop({ sourceSquare: "a7", targetSquare: "a8", piece: "wP" });
     expect(onMove).toHaveBeenCalled();
