@@ -1,10 +1,9 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
 import SocialPanel from "./SocialPanel";
 import { createVariantGame } from "../lib/variants";
-import { getBotMove, getThinkDelay } from "../lib/bot-engine";
+import { getBotMove, getThinkDelay, destroyBotEngines } from "../lib/bot-engine";
 import { playMoveSound, playGameStart, playVictory, playDefeat, playDraw, preloadAll } from "../lib/sounds";
 import { getBotChatMessage } from "../lib/bot-chat";
 
@@ -81,6 +80,18 @@ export default function VariantGameScreen({ variantId, opponent, playerColor = "
       setLastMove({ from: result.from, to: result.to });
       syncState();
 
+      const chatMsg = getBotChatMessage(opponent.level, {
+        san: result.san,
+        captured: result.captured,
+        check: vg.inCheck(),
+        mate: vg.isCheckmate?.() || false,
+      });
+      if (chatMsg) {
+        const entry = { text: chatMsg, from: "bot", ts: Date.now() };
+        botChatRef.current = [...botChatRef.current.slice(-9), entry];
+        setBotChat([...botChatRef.current]);
+      }
+
       if (checkEnd()) { botMovingRef.current = false; setBotThinking(false); return; }
       if (vg.shouldEndSequence()) break;
     }
@@ -102,6 +113,14 @@ export default function VariantGameScreen({ variantId, opponent, playerColor = "
       const n = vg.isMultiMove() ? vg.onTurnStart() : 1;
       setPlayerMovesLeft(n);
     }
+    // Tear down both bot workers when the variant screen unmounts.
+    // Same rationale as GameScreen: leaving these alive holds onto
+    // the JCE + Stockfish WASM heaps for the rest of the SPA
+    // session. Cleanup is a no-op if the engines weren't
+    // initialised (e.g. bot-not-supported variants that never call
+    // getBotMove).
+    return () => { destroyBotEngines(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleMove = useCallback((move) => {
@@ -166,13 +185,18 @@ export default function VariantGameScreen({ variantId, opponent, playerColor = "
 
   const displayFen = useMemo(() => {
     if (selectedPly && selectedPly <= history.length) {
-      const temp = new Chess(vg.startFen);
-      for (let i = 0; i < selectedPly; i++) temp.move(history[i].san);
+      const temp = createVariantGame(variantId);
+      if (vg.startFen) {
+        try { temp.chess.load(vg.startFen); } catch {}
+      }
+      for (let i = 0; i < selectedPly; i++) {
+        try { temp.move({ from: history[i].from, to: history[i].to, promotion: history[i].promotion }); } catch { break; }
+      }
       return temp.fen();
     }
     if (vg.isFogOfWar() && !gameOver) return vg.getMaskedFen(playerColor);
     return fen;
-  }, [selectedPly, history, fen, vg, playerColor, gameOver]);
+  }, [selectedPly, history, fen, vg, playerColor, gameOver, variantId]);
 
   const checks = variantId === "threeCheck" ? vg.getCheckCounts() : null;
 

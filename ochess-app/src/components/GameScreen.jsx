@@ -598,7 +598,9 @@ export default function GameScreen({ opponent, playerColor = "w", timeControl, r
 
   const pgn = useMemo(() => {
     const g = new Chess();
-    for (const m of history) g.move(m.san);
+    for (const m of history) {
+      try { g.move(m.san); } catch { break; }
+    }
     const date = new Date();
     const dateStr = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, "0")}.${String(date.getDate()).padStart(2, "0")}`;
     const white = playerColor === "w" ? "You" : opponent.name;

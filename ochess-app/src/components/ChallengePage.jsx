@@ -301,8 +301,10 @@ export function JoinChallenge() {
     try {
       const category = categoryFromTimeControl(challenge.time_control);
       const ratingsPromise = getRatings(user.id).catch(() => []);
-      const ratingsTimeout = new Promise((r) => setTimeout(() => r([]), 3000));
+      let ratingsTimer;
+      const ratingsTimeout = new Promise((r) => { ratingsTimer = setTimeout(() => r([]), 3000); });
       const ratings = await Promise.race([ratingsPromise, ratingsTimeout]);
+      clearTimeout(ratingsTimer);
       const r = ratings?.find((x) => x.category === category);
       const myRating = r ? Math.round(r.rating) : 1500;
       const myName = profile?.display_name || profile?.username || "Player";

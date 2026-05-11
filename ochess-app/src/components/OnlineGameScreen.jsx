@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Chess } from "chess.js";
 import InteractiveBoard from "./InteractiveBoard";
 import PlayerBar, { getCaptured } from "./PlayerBar";
 import SocialPanel from "./SocialPanel";
@@ -917,14 +916,19 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
     setTimeout(() => chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }), 50);
   }, [chatInput, myDisplayName, saveGameState]);
 
-  // Move preview (arrow key navigation)
+  // Move preview (arrow key navigation).
+  // Uses a temporary variant wrapper so the preview FEN is correct for
+  // non-standard start positions (horde, racing kings, chess960) and
+  // for variants with afterMove hooks (threeCheck state tracking).
   const handlePreviewMove = useCallback((ply) => {
     if (previewPly === ply || ply === history.length) { setPreviewPly(null); setFen(gameRef.current.fen()); return; }
     setPreviewPly(ply);
-    const temp = new Chess();
-    for (let i = 0; i < ply && i < history.length; i++) temp.move(history[i].san);
+    const temp = createVariantGame(variantId, { seed: gameDataRef.current?.id });
+    for (let i = 0; i < ply && i < history.length; i++) {
+      try { temp.move({ from: history[i].from, to: history[i].to, promotion: history[i].promotion }); } catch { break; }
+    }
     setFen(temp.fen());
-  }, [history, previewPly]);
+  }, [history, previewPly, variantId]);
 
   const handleBackToLive = useCallback(() => {
     setPreviewPly(null);
@@ -1002,18 +1006,29 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
 
   const isPreviewingPast = previewPly !== null;
 
+  const isFogVariant = variantId === "fogOfWar";
+  const displayFen = useMemo(() => {
+    if (isFogVariant && !gameOver && !isPreviewingPast) {
+      return gameRef.current.getMaskedFen(playerColor);
+    }
+    return fen;
+  }, [fen, isFogVariant, gameOver, isPreviewingPast, playerColor]);
+
   const captured = useMemo(() => getCaptured(fen), [fen]);
   const advForPlayer = playerColor === "w" ? captured.advantage : -captured.advantage;
   const playerCaptured = playerColor === "w" ? captured.capturedByWhite : captured.capturedByBlack;
   const opponentCaptured = playerColor === "w" ? captured.capturedByBlack : captured.capturedByWhite;
 
   const pgn = useMemo(() => {
-    const g = new Chess();
-    for (const m of history) g.move(m.san);
+    const g = createVariantGame(variantId, { seed: gameData?.id });
+    for (const m of history) {
+      try { g.move({ from: m.from, to: m.to, promotion: m.promotion }); } catch { break; }
+    }
     const result = gameOver?.result || "*";
-    g.header("Event", "oChess Online", "White", gameData.white_name || "?", "Black", gameData.black_name || "?", "Result", result);
+    g.chess.header("Event", "oChess Online", "White", gameData.white_name || "?", "Black", gameData.black_name || "?", "Result", result);
+    if (variantId !== "standard") g.chess.header("Variant", g.def.name);
     return g.pgn();
-  }, [history, gameOver, gameData]);
+  }, [history, gameOver, gameData, variantId]);
 
   const opponentTime = playerColor === "w" ? clock.display.black : clock.display.white;
   const playerTime = playerColor === "w" ? clock.display.white : clock.display.black;
@@ -1055,6 +1070,9 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
           <span className="text-[10px] font-label uppercase tracking-widest text-on-surface-variant/30">
             vs {opponentName} · {tcLabel}
           </span>
+          {isFogVariant && !gameOver && (
+            <span className="text-[9px] font-headline font-bold uppercase tracking-wide px-2 py-0.5 bg-surface-high text-on-surface-variant/30">Hidden board</span>
+          )}
           {!connected && !connectionDegraded && <div className="w-2.5 h-2.5 border border-primary/30 border-t-primary rounded-full animate-spin" aria-label="Connecting" />}
           {connectionDegraded && !connected && (
             <span title="Realtime is unreachable. Your moves still reach the server, but updates may be delayed."
@@ -1098,7 +1116,7 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
               auto-sizes its width to match. */}
           <div className="w-full mx-auto" style={{ maxWidth: "min(100%, calc(100dvh - 11rem))" }}>
             <InteractiveBoard
-              fen={fen}
+              fen={displayFen}
               onMove={handleMove}
               orientation={playerColor === "w" ? "white" : "black"}
               interactive={!gameOver && !isPreviewingPast}

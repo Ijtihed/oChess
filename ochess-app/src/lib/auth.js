@@ -99,10 +99,28 @@ const PROFILE_UPDATABLE_FIELDS = new Set([
   "board_prefs",
 ]);
 
-// Username format mirrored from AuthModal.jsx so save-time validation
-// matches sign-up validation. Any change here must be mirrored on the
-// DB (`profiles_username_format` check constraint).
-const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
+// Username format. Two valid shapes are accepted:
+//
+//   1. The strict shape we enforce on the AuthModal sign-up form
+//      (lowercase letters, must start with a letter): 3-24 chars.
+//   2. The legacy / OAuth-trigger shape from handle_new_user, which
+//      tacks an md5 suffix onto whatever it could pull out of the
+//      OAuth metadata: `<base>_<6 hex chars>`. The `<base>` part
+//      can come from `email.split("@")[0]` for a Google user, so
+//      it may contain uppercase letters or periods.
+//
+// We accept either shape on save so an OAuth user can keep their
+// auto-generated username without forcing a rename, while a manual
+// signup is held to the strict format. The DB does NOT have a
+// `profiles_username_format` constraint - this is the only
+// validation layer.
+const USERNAME_STRICT_RE = /^[a-z][a-z0-9_]{2,23}$/;
+const USERNAME_LEGACY_RE = /^[A-Za-z0-9._-]{3,40}$/;
+
+function isValidUsername(name) {
+  if (typeof name !== "string") return false;
+  return USERNAME_STRICT_RE.test(name) || USERNAME_LEGACY_RE.test(name);
+}
 
 export async function updateProfile(userId, updates) {
   // Refuse silently-succeeding writes when there is no backend. Without
@@ -115,14 +133,35 @@ export async function updateProfile(userId, updates) {
     if (!PROFILE_UPDATABLE_FIELDS.has(k)) continue;
     clean[k] = v;
   }
-  if (typeof clean.username === "string" && !USERNAME_RE.test(clean.username)) {
-    throw new Error("Username must be 3-20 characters: letters, numbers, and underscores only");
+  // Username column is NOT NULL on the DB. The Profile form sends
+  // `username: formData.username || null`, so a user who blanks
+  // their username field would otherwise trigger a cryptic
+  // "violates not-null constraint" Postgres error here. Catch
+  // both `null` and empty/whitespace-only strings up front with
+  // the same friendly message the strict-validation branch uses.
+  if (clean.username === null || (typeof clean.username === "string" && clean.username.trim() === "")) {
+    throw new Error("Username cannot be empty");
+  }
+  if (typeof clean.username === "string" && !isValidUsername(clean.username)) {
+    throw new Error("Username must be 3-24 characters: letters, numbers, and underscores only");
   }
   if (typeof clean.bio === "string" && clean.bio.length > 600) {
     throw new Error("Bio must be 600 characters or fewer");
   }
   if (typeof clean.display_name === "string" && clean.display_name.length > 60) {
     throw new Error("Display name must be 60 characters or fewer");
+  }
+  // Mirror the DB length caps for the linked-account fields so a
+  // typo like a pasted full URL gets a friendly client-side error
+  // instead of a Postgres check-constraint rejection.
+  if (typeof clean.lichess_username === "string" && clean.lichess_username.length > 40) {
+    throw new Error("Lichess username must be 40 characters or fewer");
+  }
+  if (typeof clean.chesscom_username === "string" && clean.chesscom_username.length > 40) {
+    throw new Error("Chess.com username must be 40 characters or fewer");
+  }
+  if (typeof clean.country === "string" && clean.country.length > 64) {
+    throw new Error("Country must be 64 characters or fewer");
   }
   clean.updated_at = new Date().toISOString();
   const { data, error } = await supabase
@@ -133,6 +172,19 @@ export async function updateProfile(userId, updates) {
     .single();
   if (error) {
     aerr("updateProfile error:", error);
+    // Friendlier surface for the common unique-constraint case so
+    // the UI can show "That username is taken" instead of the raw
+    // Postgres `duplicate key value violates unique constraint
+    // "profiles_username_key"` blob.
+    if (error.code === "23505" || /duplicate|unique/i.test(error.message || "")) {
+      throw new Error("That username is taken. Pick another.");
+    }
+    // The NOT NULL constraint on username can still surface here
+    // if a future code path bypasses the client-side guard above.
+    // Surface a consistent message.
+    if (error.code === "23502" || /null value/i.test(error.message || "")) {
+      throw new Error("Username cannot be empty");
+    }
     throw new Error(error.message || "Failed to save profile");
   }
   return data;

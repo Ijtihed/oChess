@@ -24,6 +24,7 @@ vi.mock("../lib/sounds", () => ({
 vi.mock("../lib/bot-engine", () => ({
   getBotMove: vi.fn(() => Promise.resolve(null)),
   getThinkDelay: vi.fn(() => 0),
+  destroyBotEngines: vi.fn(),
 }));
 
 vi.mock("../lib/bot-chat", () => ({

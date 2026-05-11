@@ -34,7 +34,7 @@ function makeSeededRandom(seed) {
     state ^= state >>> 17;
     state ^= state << 5;
     state >>>= 0;
-    return state / 0xFFFFFFFF;
+    return state / 0x100000000;
   };
 }
 
@@ -113,7 +113,6 @@ function getVisibleSquares(chess, color) {
           const moves = chess.moves({ square: sq, verbose: true });
           for (const m of moves) { visible.add(m.to); }
         } catch {}
-        const dirs = [];
         if (p.type === "p") {
           const dir = color === "w" ? -1 : 1;
           if (f > 0) visible.add(String.fromCharCode(97 + f - 1) + (8 - r - dir));
@@ -179,11 +178,17 @@ export const ONLINE_SUPPORTED_VARIANTS = new Set([
   "standard",
   "antichess",
   "kingOfTheHill",
-  "threeCheck", // Check counts replay via afterMove on loadPgn (hardened).
+  "threeCheck",
   "horde",
   "racingKings",
   "fogOfWar",
   "chess960",
+  "noCastling",
+  "extinction",
+  "dunsanys",
+  "checkless",
+  "peasants",
+  "weakArmy",
 ]);
 
 export function isOnlineSupportedVariant(variantId) {
@@ -331,7 +336,11 @@ export const VARIANT_DEFS = {
     },
   },
 
-  torpedo: { name: "Torpedo", startFen: null, checkCustomEnd: () => null },
+  torpedo: {
+    name: "Torpedo", startFen: null,
+    isTorpedo: true,
+    checkCustomEnd: () => null,
+  },
 
   // ── NEW: 10 more variants ──
 
@@ -475,6 +484,15 @@ export function createVariantGame(variantId, opts = {}) {
   if (!def) return createVariantGame("chess960", opts);
   const fen = typeof def.startFen === "function" ? def.startFen(opts?.seed) : def.startFen;
   const chess = fen ? new Chess(fen) : new Chess();
+  // Lock in the concrete starting FEN for variants with a
+  // function-valued startFen (currently chess960). `loadPgn`
+  // replay needs to rebuild from the EXACT same starting
+  // position - if we re-called def.startFen() during replay it
+  // would draw a fresh random 960 setup and the move list
+  // wouldn't apply cleanly. Capturing the resolved FEN once at
+  // construction time keeps replay deterministic without
+  // forcing every caller to thread the seed back through.
+  const initialFen = fen || null;
   const state = { checksOnWhite: 0, checksOnBlack: 0, whiteReached8: false, progressiveCount: 0, turnMoveNum: 0, totalMoveNum: 0 };
 
   if (variantId === "extinction") {
@@ -510,7 +528,52 @@ export function createVariantGame(variantId, opts = {}) {
       }
 
       let result;
-      try { result = chess.move(moveObj); } catch { return null; }
+      try { result = chess.move(moveObj); } catch { result = null; }
+      // Torpedo: if chess.js rejected a pawn double-push from a
+      // non-starting rank, handle it manually. Verify the path is
+      // clear, no capture, and the resulting position is legal.
+      if (!result && def.isTorpedo) {
+        const from = moveObj.from;
+        const to = moveObj.to;
+        if (from && to) {
+          const piece = chess.get(from);
+          const turn = chess.turn();
+          if (piece && piece.type === "p" && piece.color === turn) {
+            const ff = from.charCodeAt(0) - 97, fr = parseInt(from[1]);
+            const tf = to.charCodeAt(0) - 97, tr = parseInt(to[1]);
+            const dir = turn === "w" ? 1 : -1;
+            const promoRank = turn === "w" ? 8 : 1;
+            if (ff === tf && tr === fr + 2 * dir && tr !== promoRank && !chess.get(to)) {
+              const midSq = String.fromCharCode(97 + ff) + (fr + dir);
+              if (!chess.get(midSq)) {
+                const board = chess.board();
+                const fromR = 8 - fr, fromF = ff;
+                const toR = 8 - tr, toF = tf;
+                board[toR][toF] = board[fromR][fromF];
+                board[fromR][fromF] = null;
+                const newFen = rebuildFen(board, chess.fen());
+                const parts = newFen.split(" ");
+                parts[1] = turn === "w" ? "b" : "w";
+                parts[3] = midSq;
+                parts[4] = "0";
+                parts[5] = turn === "b" ? String(parseInt(parts[5]) + 1) : parts[5];
+                const candidateFen = parts.join(" ");
+                const testChess = new Chess(candidateFen);
+                // The side that just moved must not be in check
+                const prevTurn = turn;
+                const testFenParts = candidateFen.split(" ");
+                testFenParts[1] = prevTurn;
+                try {
+                  const checkTest = new Chess(testFenParts.join(" "));
+                  if (checkTest.inCheck()) return null;
+                } catch { return null; }
+                chess.load(candidateFen);
+                result = { from, to, color: turn, piece: "p", san: to, flags: "b" };
+              }
+            }
+          }
+        }
+      }
       if (!result) return null;
 
       // Pass `state` to afterMove so state-tracking variants
@@ -592,7 +655,12 @@ export function createVariantGame(variantId, opts = {}) {
       if (def.afterMove) {
         const moves = chess.history({ verbose: true });
         chess.reset();
-        if (def.startFen) chess.load(typeof def.startFen === "function" ? def.startFen() : def.startFen);
+        // Use the FEN we resolved at construction time so a future
+        // variant with both `afterMove` and a function-valued
+        // `startFen` (e.g. seeded chess960 + state tracking) replays
+        // against the same starting position both clients agreed on,
+        // instead of drawing a fresh random one here.
+        if (initialFen) chess.load(initialFen);
         // Reset wrapper state and replay through `move()`.
         for (const k of Object.keys(state)) state[k] = typeof state[k] === "boolean" ? false : (typeof state[k] === "object" ? {} : 0);
         for (const m of moves) {

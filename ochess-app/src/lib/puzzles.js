@@ -178,12 +178,14 @@ function getAdaptivePuzzle(puzzles, playerRating) {
   }
 
   // Tier 3: pure random fallback.
+  if (puzzles.length === 0) return null;
   const pick = puzzles[Math.floor(Math.random() * puzzles.length)];
   rememberPick(pick.id);
   return pick;
 }
 
 function getRandomPuzzle(puzzles, minRating = 0, maxRating = 9999) {
+  if (!puzzles || puzzles.length === 0) return null;
   const filtered = puzzles.filter((p) => p.rating >= minRating && p.rating <= maxRating);
   if (filtered.length === 0) return puzzles[Math.floor(Math.random() * puzzles.length)];
   return filtered[Math.floor(Math.random() * filtered.length)];

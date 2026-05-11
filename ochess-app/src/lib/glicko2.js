@@ -24,6 +24,12 @@ function E(mu, muJ, phiJ) {
 }
 
 export function computeGlicko2(playerRating, playerRd, playerVol, opponentRating, opponentRd, score) {
+  if (!Number.isFinite(playerRating)) playerRating = 1500;
+  if (!Number.isFinite(playerRd) || playerRd <= 0) playerRd = 350;
+  if (!Number.isFinite(playerVol) || playerVol <= 0) playerVol = 0.06;
+  if (!Number.isFinite(opponentRating)) opponentRating = 1500;
+  if (!Number.isFinite(opponentRd) || opponentRd <= 0) opponentRd = 350;
+  if (!Number.isFinite(score)) score = 0.5;
   const player = toGlicko2(playerRating, playerRd);
   const opp = toGlicko2(opponentRating, opponentRd);
   const sigma = playerVol;
