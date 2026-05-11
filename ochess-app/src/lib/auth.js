@@ -48,15 +48,37 @@ export async function getSession() {
   return data?.session || null;
 }
 
+// Columns safe to expose on a public profile view. Internal flags
+// like `crazy_arena_lab` (Crazy Arena lab opt-in) are explicitly
+// not in this list - they're owner-only metadata.
+const PUBLIC_PROFILE_COLUMNS =
+  "id,username,display_name,avatar_url,bio,country,lichess_username,chesscom_username,created_at";
+
 export async function getProfile(userId) {
   if (!supabase) return null;
-  const { data } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
+  // Owner profile: include the (small) set of owner-readable columns.
+  // We intentionally do NOT `select("*")` so a future internal-only
+  // column landing on `profiles` doesn't accidentally leak into the
+  // client surface area.
+  const { data } = await supabase
+    .from("profiles")
+    .select(`${PUBLIC_PROFILE_COLUMNS},board_prefs,crazy_arena_lab,updated_at`)
+    .eq("id", userId)
+    .maybeSingle();
   return data;
 }
 
 export async function getProfileByUsername(username) {
   if (!supabase) return null;
-  const { data } = await supabase.from("profiles").select("*").eq("username", username).maybeSingle();
+  // Public lookup: only public columns. PublicProfile.jsx never
+  // needs board_prefs or crazy_arena_lab, and exposing them here
+  // would surface owner-only data to any other authenticated user
+  // who knows the username.
+  const { data } = await supabase
+    .from("profiles")
+    .select(PUBLIC_PROFILE_COLUMNS)
+    .eq("username", username)
+    .maybeSingle();
   return data;
 }
 

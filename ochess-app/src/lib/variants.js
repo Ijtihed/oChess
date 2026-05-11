@@ -179,7 +179,7 @@ export const ONLINE_SUPPORTED_VARIANTS = new Set([
   "standard",
   "antichess",
   "kingOfTheHill",
-  "threeCheck", // Check counts reset on refresh - minor degradation, not a blocker.
+  "threeCheck", // Check counts replay via afterMove on loadPgn (hardened).
   "horde",
   "racingKings",
   "fogOfWar",
@@ -226,10 +226,30 @@ export const VARIANT_DEFS = {
 
   threeCheck: {
     name: "Three-Check", startFen: null,
+    // Increment on the MOVE that delivered the check (afterMove)
+    // AND defensively in checkCustomEnd when callers bypass the
+    // wrapper. `lastCheckedPly` makes the increment idempotent
+    // across both paths so polling `checkEnd()` between moves
+    // doesn't double-count, and `loadPgn` rebuilds the counter
+    // correctly via the wrapper's afterMove replay.
+    afterMove: (chess, _move, state) => {
+      if (chess.inCheck()) {
+        const ply = chess.history().length;
+        if (state.lastCheckedPly !== ply) {
+          state.lastCheckedPly = ply;
+          if (chess.turn() === "w") state.checksOnWhite = (state.checksOnWhite || 0) + 1;
+          else state.checksOnBlack = (state.checksOnBlack || 0) + 1;
+        }
+      }
+    },
     checkCustomEnd: (chess, state) => {
       if (chess.inCheck()) {
-        if (chess.turn() === "w") state.checksOnWhite = (state.checksOnWhite || 0) + 1;
-        else state.checksOnBlack = (state.checksOnBlack || 0) + 1;
+        const ply = chess.history().length;
+        if (state.lastCheckedPly !== ply) {
+          state.lastCheckedPly = ply;
+          if (chess.turn() === "w") state.checksOnWhite = (state.checksOnWhite || 0) + 1;
+          else state.checksOnBlack = (state.checksOnBlack || 0) + 1;
+        }
       }
       if ((state.checksOnWhite || 0) >= 3) return { result: "0-1", reason: "Three checks!" };
       if ((state.checksOnBlack || 0) >= 3) return { result: "1-0", reason: "Three checks!" };
@@ -493,7 +513,11 @@ export function createVariantGame(variantId, opts = {}) {
       try { result = chess.move(moveObj); } catch { return null; }
       if (!result) return null;
 
-      if (def.afterMove) def.afterMove(chess, result);
+      // Pass `state` to afterMove so state-tracking variants
+      // (threeCheck etc.) can update their counters on the move
+      // that actually delivered the effect, rather than relying
+      // on `checkCustomEnd` polling.
+      if (def.afterMove) def.afterMove(chess, result, state);
 
       return result;
     },
@@ -574,7 +598,7 @@ export function createVariantGame(variantId, opts = {}) {
         for (const m of moves) {
           try { chess.move({ from: m.from, to: m.to, promotion: m.promotion }); }
           catch { break; }
-          if (def.afterMove) def.afterMove(chess, m);
+          if (def.afterMove) def.afterMove(chess, m, state);
         }
       }
     },

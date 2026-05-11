@@ -1,5 +1,5 @@
 import { useState, useEffect, useId, useRef } from "react";
-import { signUp, signIn, signInWithGoogle, signOut } from "../lib/auth";
+import { signUp, signIn, signInWithGoogle } from "../lib/auth";
 import { isOnline } from "../lib/supabase";
 
 /**
@@ -24,7 +24,7 @@ export function validateUsername(raw) {
   return null;
 }
 
-export default function AuthModal({ open, onClose, onGuest, onLogin }) {
+export default function AuthModal({ open, onClose, onGuest, onLogin, initialError = null }) {
   const [tab, setTab] = useState("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -33,6 +33,16 @@ export default function AuthModal({ open, onClose, onGuest, onLogin }) {
   const [error, setError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [confirmationSentTo, setConfirmationSentTo] = useState(null);
+
+  // Surface OAuth provider error redirects (e.g. ?error_description=...)
+  // as the modal's initial error message so the user knows why
+  // sign-in failed. Plain React text - no innerHTML, no formatting.
+  useEffect(() => {
+    if (open && initialError) {
+      setError(initialError);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialError]);
 
   const usernameId = useId();
   const emailId = useId();

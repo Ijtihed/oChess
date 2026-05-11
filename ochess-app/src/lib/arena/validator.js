@@ -221,9 +221,17 @@ function validateStructure(rules, errors, warnings) {
         errors.push(`${path}.kind = "${prim.kind}" is unknown (must be one of ${[...KNOWN_PRIMITIVE_KINDS].join(", ")})`);
         continue;
       }
+      // Hard caps on piece-move geometry. Without these, a hostile
+      // (or buggy AI) rule can declare e.g. 10_000 leap offsets and
+      // every move-gen call balloons to O(pieces * offsets) work
+      // per ply, freezing the local engine and the random-walk
+      // verifier. Mirrors the cap that target.offsets / target.dirs
+      // already get on the ability path (max 128 each).
       if (prim.kind === "slide" || prim.kind === "step") {
         if (!Array.isArray(prim.dirs) || prim.dirs.length === 0) {
           errors.push(`${path}.dirs must be a non-empty array of [df,dr] tuples`);
+        } else if (prim.dirs.length > 64) {
+          errors.push(`${path}.dirs caps at 64 entries (got ${prim.dirs.length})`);
         } else {
           for (let j = 0; j < prim.dirs.length; j++) {
             const d = prim.dirs[j];
@@ -243,6 +251,8 @@ function validateStructure(rules, errors, warnings) {
       } else if (prim.kind === "leap") {
         if (!Array.isArray(prim.offsets) || prim.offsets.length === 0) {
           errors.push(`${path}.offsets must be a non-empty array of [df,dr] tuples`);
+        } else if (prim.offsets.length > 128) {
+          errors.push(`${path}.offsets caps at 128 entries (got ${prim.offsets.length})`);
         } else {
           for (let j = 0; j < prim.offsets.length; j++) {
             const off = prim.offsets[j];

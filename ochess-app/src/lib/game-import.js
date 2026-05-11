@@ -129,6 +129,15 @@ function pushLichessGame(games, obj) {
   });
 }
 
+// Per-call cap on chess.com archive pages we fetch in one import.
+// A heavy player's account can have 100+ archive months; walking
+// all of them sequentially is slow and impolite to chess.com when
+// the user only wanted (say) their last 200 games. We stop after
+// MAX_ARCHIVE_MONTHS regardless of whether `max` was met. The cap
+// is deliberately generous: ~3 years of monthly archives covers
+// the vast majority of corpora the post-game-loop cares about.
+const MAX_ARCHIVE_MONTHS = 36;
+
 export async function fetchChesscomGames(username, { signal, onProgress, max = MAX_IMPORT_GAMES } = {}) {
   checkImportThrottle("chesscom");
   const archivesRes = await fetch(
@@ -144,10 +153,13 @@ export async function fetchChesscomGames(username, { signal, onProgress, max = M
 
   const games = [];
   let truncated = false;
+  let monthsFetched = 0;
 
   for (let i = archives.length - 1; i >= 0; i--) {
     if (signal?.aborted) break;
     if (games.length >= max) { truncated = true; break; }
+    if (monthsFetched >= MAX_ARCHIVE_MONTHS) { truncated = true; break; }
+    monthsFetched++;
     const res = await fetch(archives[i], { signal });
     if (!res.ok) continue;
     const data = await res.json();

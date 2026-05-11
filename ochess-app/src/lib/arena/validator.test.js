@@ -95,6 +95,39 @@ describe("validateRules - layer 1 structure", () => {
     expect(report.valid).toBe(true);
     expect(report.warnings.some((w) => w.includes('"b"'))).toBe(true);
   });
+
+  // HARDENING regression tests. Without these caps a hostile (or
+  // miswired AI) rule diff could declare thousands of move offsets
+  // and freeze the local engine for hundreds of ms per ply.
+  it("rejects a leap primitive with too many offsets (DOS prevention)", () => {
+    const r = vanillaRules();
+    const offsets = [];
+    for (let i = 0; i < 200; i++) offsets.push([i % 7 - 3, ((i * 17) % 7) - 3]);
+    r.pieces.n.moves = [{ kind: "leap", offsets }];
+    const report = validateRules(r, { skipSimulation: true });
+    expect(report.valid).toBe(false);
+    expect(report.errors.some((e) => e.includes("caps at 128"))).toBe(true);
+  });
+
+  it("rejects a slide primitive with too many dirs (DOS prevention)", () => {
+    const r = vanillaRules();
+    const dirs = [];
+    for (let i = 1; i <= 100; i++) dirs.push([i, 0]);
+    r.pieces.r.moves = [{ kind: "slide", dirs }];
+    const report = validateRules(r, { skipSimulation: true });
+    expect(report.valid).toBe(false);
+    expect(report.errors.some((e) => e.includes("caps at 64"))).toBe(true);
+  });
+
+  it("accepts a leap primitive at exactly the offset cap", () => {
+    const r = vanillaRules();
+    const offsets = [];
+    for (let i = 0; i < 128; i++) offsets.push([i + 1, i + 1]);
+    r.pieces.n.moves = [{ kind: "leap", offsets }];
+    const report = validateRules(r, { skipSimulation: true });
+    // 128 offsets is the ceiling; should pass structurally.
+    expect(report.valid).toBe(true);
+  });
 });
 
 describe("validateRules - layer 2 starting position", () => {

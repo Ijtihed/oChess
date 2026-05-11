@@ -506,9 +506,24 @@ Deno.serve(async (req) => {
     );
   }
 
+  // HARDENING: cap the request body size before parsing. A
+  // logged-in user could otherwise stream a multi-MB JSON body
+  // through this endpoint (the rate limiter blocks the LLM call,
+  // but the parse itself still costs memory). 256 KB is ~ 8x the
+  // largest realistic mistake corpus we'd care to coach on.
+  const MAX_BODY_BYTES = 256 * 1024;
+  const contentLength = Number(req.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return jsonErr("Request body too large", 413);
+  }
+
   let body: CoachRequest;
   try {
-    body = await req.json();
+    const text = await req.text();
+    if (text.length > MAX_BODY_BYTES) {
+      return jsonErr("Request body too large", 413);
+    }
+    body = JSON.parse(text);
   } catch {
     return jsonErr("Invalid JSON body", 400);
   }

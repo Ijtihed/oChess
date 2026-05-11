@@ -2276,7 +2276,15 @@ function RoundPlay({ room, setRoom, role, user, roomId }) {
       // false on the channel but defensive in case it ever
       // changes.
       if (msg.userId && msg.userId === myId) return;
-      setChatMessages((prev) => [...prev, msg]);
+      // HARDENING: realtime broadcasts are not authenticated,
+      // so a third party who knows the room id could push a
+      // message of arbitrary shape. We already moderate
+      // OUTGOING messages via moderateChat; do the same on
+      // INCOMING so banned words / oversized messages get
+      // dropped or clamped before they hit the chat log.
+      const cleaned = moderateChat(msg.text);
+      if (!cleaned) return;
+      setChatMessages((prev) => [...prev, { ...msg, text: cleaned }]);
       playChatNotify();
     });
     chatChannelRef.current = { ch, myId, myDisplayName };

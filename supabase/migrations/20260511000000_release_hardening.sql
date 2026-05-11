@@ -96,10 +96,14 @@ do $$ begin
     alter table profiles add constraint profiles_display_name_len
       check (display_name is null or length(display_name) <= 60);
   end if;
-  if not exists (select 1 from pg_constraint where conname = 'profiles_country_len') then
-    alter table profiles add constraint profiles_country_len
-      check (country is null or length(country) <= 4);
+  -- HARDENING update: the original 4-char cap was meant for ISO
+  -- codes, but the UI persists full country names. Drop+recreate
+  -- to 64 so legitimate saves succeed.
+  if exists (select 1 from pg_constraint where conname = 'profiles_country_len') then
+    alter table profiles drop constraint profiles_country_len;
   end if;
+  alter table profiles add constraint profiles_country_len
+    check (country is null or length(country) <= 64);
   if not exists (select 1 from pg_constraint where conname = 'profiles_lichess_username_len') then
     alter table profiles add constraint profiles_lichess_username_len
       check (lichess_username is null or length(lichess_username) <= 40);
@@ -110,8 +114,24 @@ do $$ begin
   end if;
 end $$;
 
--- ── 3. Ratings: revoke direct UPDATE ──
+-- ── 3. Ratings: revoke direct UPDATE + clamp self-repair INSERT ──
 drop policy if exists "Users can update own ratings" on ratings;
+-- Tighten the self-repair INSERT path so a hostile client cannot
+-- bootstrap a ratings row with rating=9000. The columns must hit
+-- the Glicko-2 starting defaults to land.
+drop policy if exists "Users can insert own ratings" on ratings;
+create policy "Users can insert own ratings" on ratings
+  for insert with check (
+    auth.uid() = user_id
+    and category in ('bullet','blitz','rapid','classical')
+    and rating between 100 and 3000
+    and rd between 50 and 500
+    and volatility between 0.0 and 0.5
+    and games_played = 0
+    and wins = 0
+    and losses = 0
+    and draws = 0
+  );
 
 -- ── 4. Rate-limit RPCs: clamp client params ──
 drop function if exists record_coach_call(int, int);
@@ -607,12 +627,20 @@ end;
 $$;
 
 -- ── 10. challenges: restrict SELECT ──
+-- HARDENING: previous policy `(auth.uid() = creator_id or
+-- status = 'waiting')` evaluated to TRUE for anon callers on
+-- every waiting row (NULL OR TRUE = TRUE), exposing the join
+-- code. Now require authenticated callers; the legitimate
+-- joiner already signs in before accepting.
 drop policy if exists "Anyone can view challenges" on challenges;
 drop policy if exists "Participants can view their challenges" on challenges;
 create policy "Participants can view their challenges" on challenges
   for select using (
-    auth.uid() = creator_id
-    or status = 'waiting'
+    auth.role() = 'authenticated'
+    and (
+      auth.uid() = creator_id
+      or status = 'waiting'
+    )
   );
 
 -- ── 11. ai_settings: restrict SELECT to authenticated ──
@@ -634,6 +662,26 @@ do $$ begin
   if not exists (select 1 from pg_constraint where conname = 'challenges_code_len') then
     alter table challenges add constraint challenges_code_len
       check (length(code) <= 64);
+  end if;
+  -- HARDENING: bound `games.chat` so a patched client can't push
+  -- megabytes of chat into a single row. Client already caps to
+  -- 50 messages; 200 here is a comfortable headroom. The PGN cap
+  -- protects against the same shape of attack on the move log.
+  if not exists (select 1 from pg_constraint where conname = 'games_chat_size') then
+    alter table games add constraint games_chat_size
+      check (chat is null or (
+        jsonb_typeof(chat) = 'array'
+        and jsonb_array_length(chat) <= 200
+        and length(chat::text) <= 65536
+      ));
+  end if;
+  -- Cap PGN at 64KB. Longest plausible game (correspondence,
+  -- 500-move with annotations) sits well under 32KB; 64KB is 2x.
+  -- An attacker who somehow forged a PGN write through RLS
+  -- couldn't bloat the row past this.
+  if not exists (select 1 from pg_constraint where conname = 'games_pgn_size') then
+    alter table games add constraint games_pgn_size
+      check (length(pgn) <= 65536);
   end if;
 end $$;
 

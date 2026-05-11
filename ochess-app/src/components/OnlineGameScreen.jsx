@@ -562,6 +562,12 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
       onChat: ({ userId, text, name }) => {
         if (!validPlayers.has(userId)) return;
         const fromMe = userId === authUserIdRef.current;
+        // HARDENING: also moderate INCOMING chat. Outgoing is
+        // already cleaned via moderateChat; mirror the same
+        // banlist + 200-char clamp on incoming so a peer with a
+        // patched client can't smuggle slurs / oversized text.
+        const cleaned = moderateChat(text);
+        if (!cleaned) return;
         // Use the dedicated "private message" cue (NewPM.mp3) for
         // chat so it sounds like chat - not the GenericNotify ding
         // that previously made it feel game-over-ish.
@@ -575,8 +581,8 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
           // ordered for repeated identical phrases close together,
           // so this is the simplest sufficient guard.
           const last = prev[prev.length - 1];
-          if (last && last.fromId === userId && last.text === text) return prev;
-          return [...prev.slice(-50), { fromId: userId, text, name: name || (fromMe ? "You" : "Opponent") }];
+          if (last && last.fromId === userId && last.text === cleaned) return prev;
+          return [...prev.slice(-50), { fromId: userId, text: cleaned, name: name || (fromMe ? "You" : "Opponent") }];
         });
         setTimeout(() => chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }), 50);
       },
@@ -589,7 +595,28 @@ export default function OnlineGameScreen({ gameData, playerColor }) {
         setRematchIncoming(true);
       },
       onRematchAccept: (newGameData) => {
-        if (newGameData?.id) navigate(`/game/online/${newGameData.id}`);
+        // HARDENING: broadcast payloads on the game channel are
+        // not authenticated — anyone who knows the gameId could
+        // forge a rematch_accept and yank the user to an
+        // attacker-controlled `/game/online/<id>`. Re-verify the
+        // broadcast against the source row before navigating: the
+        // legitimate flow has create_rematch (security definer)
+        // stamp `rematch_game_id` on this exact row, so we know
+        // the claimed id is real if and only if it matches.
+        const claimedId = newGameData?.id;
+        if (!claimedId || typeof claimedId !== "string") return;
+        if (!supabase) return;
+        supabase.from("games")
+          .select("rematch_game_id")
+          .eq("id", gameData.id)
+          .maybeSingle()
+          .then(({ data, error }) => {
+            if (error) return;
+            if (data?.rematch_game_id && data.rematch_game_id === claimedId) {
+              navigate(`/game/online/${claimedId}`);
+            }
+          })
+          .catch(() => {});
       },
       // Opponent declined OUR rematch. Flip the offered flag and
       // surface a transient banner - the silent revert from the

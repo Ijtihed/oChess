@@ -37,7 +37,7 @@ vi.mock("./supabase", () => ({
   },
 }));
 
-import { syncPuzzleProgressFromServer } from "./puzzle-sync";
+import { syncPuzzleProgressFromServer, todayLocalISO } from "./puzzle-sync";
 
 beforeEach(() => {
   localStorage.clear();
@@ -97,5 +97,27 @@ describe("syncPuzzleProgressFromServer", () => {
   it("returns null when userId is falsy", async () => {
     expect(await syncPuzzleProgressFromServer(null)).toBeNull();
     expect(await syncPuzzleProgressFromServer(undefined)).toBeNull();
+  });
+});
+
+describe("todayLocalISO", () => {
+  it("formats a date as YYYY-MM-DD using local zone fields", () => {
+    // Use the date constructor with local-zone values so the
+    // assertion is independent of the machine's timezone.
+    const fake = new Date(2026, 0, 5, 23, 30, 0);
+    expect(todayLocalISO(fake)).toBe("2026-01-05");
+  });
+
+  it("does not roll over at UTC midnight for a same-local-day date", () => {
+    // Construct a date that is 2026-01-05 at 23:00 local time. The
+    // UTC slice would have rolled to 2026-01-06 for most positive
+    // UTC offsets; the local slice should still report 2026-01-05.
+    const fake = new Date(2026, 0, 5, 23, 0, 0);
+    expect(todayLocalISO(fake)).toBe("2026-01-05");
+  });
+
+  it("zero-pads months and days under 10", () => {
+    const fake = new Date(2026, 1, 3, 12, 0, 0);
+    expect(todayLocalISO(fake)).toBe("2026-02-03");
   });
 });

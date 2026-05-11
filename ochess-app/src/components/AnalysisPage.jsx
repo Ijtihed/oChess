@@ -490,15 +490,25 @@ export default function AnalysisPage() {
       setStartFen(START_FEN);
     }
     if (pgn && pgn.trim()) {
+      // Bound runaway PGNs - the move-by-move fallback path is a
+      // tight loop of g.move() calls that can freeze the main
+      // thread on a pasted multi-MB PGN. 2000 plies covers any
+      // realistic game (longest tournament games top out near
+      // ~200 plies); anything past that is either a bug or
+      // weaponized.
+      const MAX_PLIES = 2000;
       try {
         g.loadPgn(pgn);
       } catch (err) {
         console.warn("loadPgn failed, trying move-by-move:", err);
         try {
           const movesOnly = pgn.replace(/\[.*?\]\s*/g, "").replace(/1-0|0-1|1\/2-1\/2|\*/g, "").trim();
+          let playedPlies = 0;
           for (const tok of movesOnly.split(/\s+/)) {
             if (/^\d+\./.test(tok) || !tok) continue;
+            if (playedPlies >= MAX_PLIES) break;
             g.move(tok);
+            playedPlies++;
           }
         } catch {
           return false;

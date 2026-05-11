@@ -133,6 +133,26 @@ alter table games add column if not exists arena_round text;
 -- Backfill created_at from started_at for any rows that pre-date the column.
 update games set created_at = started_at where created_at is null;
 
+-- HARDENING: bound the `chat` JSONB and `pgn` text so a patched
+-- client can't push megabytes into a row. The client already caps
+-- chat to 50 messages and PGN length is bounded by a finite game,
+-- but a hostile client could in principle bypass the UI. 200 chat
+-- entries / 64KB chat / 64KB pgn are all 2-4x normal game ceilings.
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'games_chat_size') then
+    alter table games add constraint games_chat_size
+      check (chat is null or (
+        jsonb_typeof(chat) = 'array'
+        and jsonb_array_length(chat) <= 200
+        and length(chat::text) <= 65536
+      ));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'games_pgn_size') then
+    alter table games add constraint games_pgn_size
+      check (length(pgn) <= 65536);
+  end if;
+end $$;
+
 -- ── seeks (matchmaking queue) ──
 create table if not exists seeks (
   id uuid primary key default gen_random_uuid(),
@@ -536,7 +556,14 @@ $$;
 revoke all on function grant_crazy_arena_lab(uuid, boolean) from public, anon, authenticated;
 grant execute on function grant_crazy_arena_lab(uuid, boolean) to service_role;
 
--- Length / format caps on free-text profile columns.
+-- Length / format caps on free-text profile columns. The country
+-- cap is generous (64 chars) so the existing client, which stores
+-- full country names like "United Kingdom" / "Federated States of
+-- Micronesia", round-trips without DB-level rejection. A future
+-- migration can tighten this to an ISO-3166 alpha-2 code if we
+-- decide to store the code instead of the display name; until
+-- then "64 chars" matches the longest country display string and
+-- leaves room for the occasional unicode flag/region tag.
 do $$ begin
   if not exists (select 1 from pg_constraint where conname = 'profiles_bio_len') then
     alter table profiles add constraint profiles_bio_len
@@ -546,10 +573,15 @@ do $$ begin
     alter table profiles add constraint profiles_display_name_len
       check (display_name is null or length(display_name) <= 60);
   end if;
-  if not exists (select 1 from pg_constraint where conname = 'profiles_country_len') then
-    alter table profiles add constraint profiles_country_len
-      check (country is null or length(country) <= 4);
+  -- HARDENING: a previous revision capped this at 4 chars (intended
+  -- for ISO codes), but the client persists full names like
+  -- "United Kingdom" — saves were rejected at the DB. Loosen here
+  -- so the UI works; tighten when we move to ISO codes.
+  if exists (select 1 from pg_constraint where conname = 'profiles_country_len') then
+    alter table profiles drop constraint profiles_country_len;
   end if;
+  alter table profiles add constraint profiles_country_len
+    check (country is null or length(country) <= 64);
   if not exists (select 1 from pg_constraint where conname = 'profiles_lichess_username_len') then
     alter table profiles add constraint profiles_lichess_username_len
       check (lichess_username is null or length(lichess_username) <= 40);
@@ -573,8 +605,23 @@ drop policy if exists "Users can update own ratings" on ratings;
 drop policy if exists "Users can insert own ratings" on ratings;
 create policy "Ratings are viewable by everyone" on ratings
   for select using (true);
+-- INSERT is a self-repair path for users whose rating row didn't
+-- get created by the handle_new_user trigger (rare DB hiccup). The
+-- column defaults (1500 / 350 / 0.06) are the Glicko-2 standard
+-- starting values; the value clamps below ensure a hostile client
+-- can't insert a row with rating=9000 while pretending to bootstrap.
 create policy "Users can insert own ratings" on ratings
-  for insert with check (auth.uid() = user_id);
+  for insert with check (
+    auth.uid() = user_id
+    and category in ('bullet','blitz','rapid','classical')
+    and rating between 100 and 3000
+    and rd between 50 and 500
+    and volatility between 0.0 and 0.5
+    and games_played = 0
+    and wins = 0
+    and losses = 0
+    and draws = 0
+  );
 -- NOTE: no UPDATE policy. glicko2_update (security definer) is
 -- the only sanctioned write path.
 
@@ -638,16 +685,26 @@ drop policy if exists "Creator can update own challenge" on challenges;
 drop policy if exists "Auth users can mark expired challenges" on challenges;
 drop policy if exists "Creator can delete challenges" on challenges;
 drop policy if exists "Creator can delete own challenge" on challenges;
--- SELECT is restricted to creator + anyone targeting a 'waiting'
--- row by code (the unguessable code itself is the join secret).
--- Once a challenge is accepted/expired/cancelled, only the
--- creator can see it. The legacy "Anyone can view challenges"
--- policy let any anon enumerate every challenge row; we no
--- longer ship that.
+-- SELECT requires authentication. The challenge `code` is the
+-- join secret, but with the previous `(auth.uid() = creator_id
+-- or status = 'waiting')` policy an unauthenticated anon client
+-- could enumerate every waiting row (NULL OR TRUE = TRUE under
+-- Postgres' three-valued logic for `auth.uid()`), reading the
+-- `code` for every open challenge. Acceptance still requires
+-- `auth.uid()`, so guests had to sign in before accepting
+-- anyway; restricting SELECT to authenticated users only
+-- removes the enumeration channel without changing the
+-- legitimate joiner flow (the sign-in handoff was already
+-- there). Once a challenge is accepted/expired/cancelled, the
+-- creator-only path keeps it readable for the original creator
+-- to audit history.
 create policy "Participants can view their challenges" on challenges
   for select using (
-    auth.uid() = creator_id
-    or status = 'waiting'
+    auth.role() = 'authenticated'
+    and (
+      auth.uid() = creator_id
+      or status = 'waiting'
+    )
   );
 create policy "Auth users can create own challenges" on challenges
   for insert with check (auth.uid() = creator_id);

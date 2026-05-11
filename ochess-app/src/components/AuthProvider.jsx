@@ -41,6 +41,12 @@ export default function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const mountedRef = useRef(true);
+  // Mirror of `user.id` so the listener inside useEffect([]) can
+  // compare against the LATEST id rather than the closure's stale
+  // initial value. Without this the TOKEN_REFRESHED early-return
+  // never triggers (it always compares against null), and we
+  // rehydrate the profile on every token refresh.
+  const currentUserIdRef = useRef(null);
 
   const refreshProfile = useCallback(async (userId) => {
     if (!userId || !supabase) return;
@@ -92,6 +98,7 @@ export default function AuthProvider({ children }) {
         if (u) {
           alog("bootstrap: session restored for", u.id);
           setUser(u);
+          currentUserIdRef.current = u.id;
           // Profile + puzzle sync happen in the background; we don't
           // hold up the loading gate for them.
           hydrateProfile(u.id);
@@ -120,13 +127,16 @@ export default function AuthProvider({ children }) {
 
         // Ignore TOKEN_REFRESHED with the same user id - it doesn't
         // change anything the UI cares about and re-fetching the
-        // profile every refresh is wasteful.
-        if (event === "TOKEN_REFRESHED" && u?.id === user?.id) {
+        // profile every refresh is wasteful. Compare against the
+        // ref so the check uses the LATEST id, not the closure's
+        // stale snapshot.
+        if (event === "TOKEN_REFRESHED" && u?.id && u.id === currentUserIdRef.current) {
           done();
           return;
         }
 
         setUser(u);
+        currentUserIdRef.current = u?.id || null;
 
         if ((event === "INITIAL_SESSION" || event === "SIGNED_IN") && u) {
           hydrateProfile(u.id);

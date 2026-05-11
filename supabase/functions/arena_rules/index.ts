@@ -1595,6 +1595,8 @@ function validatePieceSpec(path: string, spec: unknown, errors: string[], labMod
         if (prim.kind === "slide" || prim.kind === "step") {
           if (!Array.isArray(prim.dirs) || (prim.dirs as unknown[]).length === 0) {
             errors.push(`${subPath}.dirs must be a non-empty array of [df,dr] tuples`);
+          } else if ((prim.dirs as unknown[]).length > 64) {
+            errors.push(`${subPath}.dirs caps at 64 entries`);
           } else {
             for (let j = 0; j < (prim.dirs as unknown[]).length; j++) {
               const d = (prim.dirs as unknown[])[j];
@@ -1614,6 +1616,8 @@ function validatePieceSpec(path: string, spec: unknown, errors: string[], labMod
         } else if (prim.kind === "leap") {
           if (!Array.isArray(prim.offsets) || (prim.offsets as unknown[]).length === 0) {
             errors.push(`${subPath}.offsets must be a non-empty array of [df,dr] tuples`);
+          } else if ((prim.offsets as unknown[]).length > 128) {
+            errors.push(`${subPath}.offsets caps at 128 entries`);
           } else {
             for (let j = 0; j < (prim.offsets as unknown[]).length; j++) {
               const off = (prim.offsets as unknown[])[j];
@@ -1986,9 +1990,31 @@ Deno.serve(async (req) => {
     });
   }
 
+  // HARDENING: cap the request body size BEFORE parsing. A
+  // logged-in caller could otherwise stream a multi-MB JSON body
+  // through; even though the rate limiter gates the LLM call,
+  // the parse itself costs memory. 32 KB easily covers the
+  // 2000-char prompt + retry-hint envelope; anything bigger is a
+  // misconfigured client.
+  const MAX_BODY_BYTES = 32 * 1024;
+  const contentLength = Number(req.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return new Response(JSON.stringify({ ok: false, error: "Request body too large" }), {
+      status: 413,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
+  }
+
   let body: ArenaRulesRequest;
   try {
-    body = await req.json();
+    const text = await req.text();
+    if (text.length > MAX_BODY_BYTES) {
+      return new Response(JSON.stringify({ ok: false, error: "Request body too large" }), {
+        status: 413,
+        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+      });
+    }
+    body = JSON.parse(text);
   } catch {
     return new Response(JSON.stringify({ ok: false, error: "Body must be JSON" }), {
       status: 400,

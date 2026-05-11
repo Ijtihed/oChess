@@ -58,6 +58,12 @@ const GUEST_KEY = "ochess_guest_session";
 
 function AppShell() {
   const [authOpen, setAuthOpen] = useState(false);
+  // OAuth providers (Google etc.) bounce back via the redirect URL
+  // with `?error_description=...` when sign-in fails. We surface
+  // it inside the AuthModal as plain text so the user knows what
+  // went wrong instead of silently re-opening the modal with no
+  // message.
+  const [authInitialError, setAuthInitialError] = useState(null);
   const [guest, setGuest] = useState(() => {
     try { return localStorage.getItem(GUEST_KEY) === "1"; } catch { return false; }
   });
@@ -126,6 +132,13 @@ function AppShell() {
     const params = new URLSearchParams(window.location.search);
     const errDesc = params.get("error_description");
     if (errDesc) {
+      // Sanitize: keep only printable ASCII + spaces so a hostile
+      // redirect URL can't smuggle exotic characters into the
+      // error banner. The UI renders this as plain React text
+      // (no innerHTML), but trimming early keeps the banner
+      // readable on every browser.
+      const cleaned = errDesc.replace(/[^\x20-\x7E]/g, "").slice(0, 240);
+      setAuthInitialError(cleaned || "Sign-in failed. Please try again.");
       setAuthOpen(true);
       window.history.replaceState(null, "", window.location.pathname);
     }
@@ -179,9 +192,10 @@ function AppShell() {
       )}
       <AuthModal
         open={authOpen && !isGameScreen}
-        onClose={() => setAuthOpen(false)}
+        onClose={() => { setAuthOpen(false); setAuthInitialError(null); }}
         onGuest={handleGuest}
         onLogin={handleLogin}
+        initialError={authInitialError}
       />
 
       <main id="main" className={isGameScreen || isPresentation ? "" : "pt-16"}>

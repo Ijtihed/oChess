@@ -5,6 +5,7 @@ import { Chess } from "chess.js";
 import LivePulse from "./LivePulse";
 import SocialPanel from "./SocialPanel";
 import { loadPuzzleRating, loadPuzzles, getAdaptivePuzzle } from "../lib/puzzles";
+import { todayLocalISO } from "../lib/puzzle-sync";
 import { load as loadPrefs, getTheme } from "../lib/board-prefs";
 
 const HISTORY_KEY = "ochess_puzzle_history";
@@ -20,7 +21,9 @@ function getStreak() {
 
 function getDailyPuzzle(puzzles) {
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    // Local-zone date so the puzzle rolls over at the user's
+    // midnight, matching what every other daily UX does.
+    const today = todayLocalISO();
     const saved = JSON.parse(localStorage.getItem(DAILY_KEY) || "{}");
     if (saved.date === today && saved.puzzle) return saved.puzzle;
     const pool = puzzles.filter((p) => p.rating >= 2000).sort((a, b) => (a.id || "").localeCompare(b.id || ""));

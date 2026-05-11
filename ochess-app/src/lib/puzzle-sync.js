@@ -9,6 +9,22 @@ const RATING_KEY = "ochess_puzzle_rating";
 const STREAK_KEY = "ochess_puzzle_streak";
 const HISTORY_KEY = "ochess_puzzle_history";
 
+/**
+ * Local YYYY-MM-DD for "today". Used for the daily-puzzle gate so
+ * a player in UTC-08 doesn't see the daily roll over at 4pm. The
+ * UTC-slice idiom was rolling over at 00:00 UTC, which is mid-
+ * afternoon in the Americas; switching to local-zone date matches
+ * what every other "daily" surface (Wordle, etc.) does.
+ *
+ * Exported because PuzzlesPage / Dashboard also need it.
+ */
+export function todayLocalISO(now = new Date()) {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 export async function savePuzzleAttempt(userId, puzzleId, puzzleRating, result, timeSpentMs) {
   if (!supabase || !userId) return;
   try {
@@ -102,7 +118,7 @@ export async function markDailyPuzzleSolved(userId, date) {
 export async function isDailyPuzzleSolved(userId) {
   if (!supabase || !userId) return false;
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayLocalISO();
     const { data } = await supabase.from("puzzle_progress").select("daily_puzzle_date,daily_puzzle_solved").eq("user_id", userId).maybeSingle();
     return data?.daily_puzzle_date === today && data?.daily_puzzle_solved === true;
   } catch { return false; }

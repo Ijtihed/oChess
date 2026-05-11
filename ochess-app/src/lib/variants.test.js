@@ -190,6 +190,37 @@ describe("Three-Check", () => {
     expect(end).not.toBeNull();
     expect(end.result).toBe("1-0");
   });
+
+  // HARDENING regression: previously loadPgn lost check counters
+  // because threeCheck had no `afterMove` hook; the counts only
+  // got rebuilt by `checkCustomEnd` polls which a re-hydrated
+  // session may never fire. After the fix, afterMove replays
+  // through every history move and rebuilds the counter.
+  it("rebuilds check counters after loadPgn replay", () => {
+    const vg = createVariantGame("threeCheck");
+    // Build a short game where black gets checked twice. Each
+    // `vg.move(...)` runs the wrapper's afterMove and bumps the
+    // counter once per checked ply.
+    vg.move({ from: "e2", to: "e4" });
+    vg.move({ from: "e7", to: "e5" });
+    vg.move({ from: "f1", to: "c4" });
+    vg.move({ from: "b8", to: "c6" });
+    vg.move({ from: "d1", to: "h5" });
+    vg.move({ from: "g8", to: "f6" });
+    vg.move({ from: "h5", to: "f7" }); // Qxf7+, check #1
+    vg.move({ from: "e8", to: "f7" });
+    vg.move({ from: "c4", to: "f7" }); // Bxf7+? actually +
+    // Snapshot the count and PGN.
+    const before = vg.getCheckCounts();
+    const pgn = vg.pgn();
+    // Fresh wrapper that loads the PGN. Without the afterMove fix
+    // the counters would be 0 after this; with the fix they
+    // should match `before`.
+    const replay = createVariantGame("threeCheck");
+    replay.loadPgn(pgn);
+    expect(replay.getCheckCounts().black).toBe(before.black);
+    expect(replay.getCheckCounts().white).toBe(before.white);
+  });
 });
 
 describe("No Castling", () => {

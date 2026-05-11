@@ -378,8 +378,10 @@ function PuzzleSession({ puzzles, directPuzzle, autoAdvance, setAutoAdvance, tim
         const isRetry = wasPuzzleAttempted(puzzle.id);
         savePuzzleResult(puzzle.id, "solved", puzzle.rating, authUser?.id); playVictory();
         if (authUser?.id && directPuzzle && directPuzzle.id === puzzle.id) {
-          import("../lib/puzzle-sync").then(({ markDailyPuzzleSolved }) => {
-            markDailyPuzzleSolved(authUser.id, new Date().toISOString().slice(0, 10));
+          // Local-zone date so a US-Eastern player solving at 8 PM
+          // doesn't see tomorrow's daily already unlocked.
+          import("../lib/puzzle-sync").then(({ markDailyPuzzleSolved, todayLocalISO }) => {
+            markDailyPuzzleSolved(authUser.id, todayLocalISO());
           }).catch(() => {});
         }
         if (!isRetry) {

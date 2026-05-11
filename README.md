@@ -20,7 +20,7 @@
   <img src="https://img.shields.io/badge/Vite-8-1a1a1a?style=flat&logo=vite&logoColor=646cff&labelColor=0d0d0d" alt="Vite 8">
   <img src="https://img.shields.io/badge/Tailwind-4-1a1a1a?style=flat&logo=tailwindcss&logoColor=38bdf8&labelColor=0d0d0d" alt="Tailwind 4">
   <img src="https://img.shields.io/badge/Stockfish-18-1a1a1a?style=flat&labelColor=0d0d0d" alt="Stockfish 18">
-  <img src="https://img.shields.io/badge/Tests-959%20passing-1a1a1a?style=flat&logo=vitest&logoColor=6da13f&labelColor=0d0d0d" alt="Tests">
+  <img src="https://img.shields.io/badge/Tests-971%20passing-1a1a1a?style=flat&logo=vitest&logoColor=6da13f&labelColor=0d0d0d" alt="Tests">
 </p>
 
 <p align="center">

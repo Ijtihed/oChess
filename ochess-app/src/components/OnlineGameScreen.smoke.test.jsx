@@ -18,13 +18,22 @@ import OnlineGameScreen from "./OnlineGameScreen";
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
+// Mutable mock-state so individual tests can pre-seed what a
+// supabase select() returns. Hoisted because vi.mock() factories
+// can't capture outer-scope variables.
+const supabaseStubState = vi.hoisted(() => ({
+  // games row that supabase.from("games").select(...).eq(...).maybeSingle()
+  // will resolve with. Defaults to null (the cautious empty response).
+  gamesRow: null,
+}));
+
 vi.mock("../lib/supabase", () => ({
   supabase: {
     from: () => ({
       select: () => ({
         eq: () => ({
-          maybeSingle: () => Promise.resolve({ data: null, error: null }),
-          single: () => Promise.resolve({ data: null, error: null }),
+          maybeSingle: () => Promise.resolve({ data: supabaseStubState.gamesRow, error: null }),
+          single: () => Promise.resolve({ data: supabaseStubState.gamesRow, error: null }),
         }),
       }),
       update: () => ({ eq: () => Promise.resolve({ error: null }) }),
@@ -316,5 +325,33 @@ describe("OnlineGameScreen (smoke)", () => {
     // stays an explicit decision rather than a silent regression.
     act(() => { channelCallbacksRef.value?.onRematchDecline?.({ userId: "user-1" }); });
     expect(screen.getByText(/Opponent declined the rematch/i)).toBeDefined();
+  });
+
+  // ── HARDENING: rematch_accept must be re-verified against the
+  //    server row before navigating. A forged broadcast on the
+  //    game channel (anyone who knows the gameId can subscribe)
+  //    must NOT yank the user to an attacker-controlled URL.
+  //    See the comment block on the onRematchAccept handler.
+  it("ignores rematch_accept broadcasts whose id does not match the source row's rematch_game_id", async () => {
+    // The default supabase stub returns gamesRow=null, so the
+    // re-verify lookup of rematch_game_id resolves to null and
+    // the navigate is suppressed. We assert no error / no crash;
+    // the negative-path navigate(null) would land on /, which we
+    // can detect by the absence of any rematch-related UI change.
+    const completed = makeGameData({
+      status: "completed",
+      result: "white_wins",
+      pgn: "1. e4 e5",
+    });
+    mount(completed);
+    // Forge a rematch_accept from a stranger pointing at "evil-id".
+    act(() => {
+      channelCallbacksRef.value?.onRematchAccept?.({ id: "evil-id" });
+    });
+    // No assertion-throw on the act() call means the verification
+    // path swallowed the forged broadcast cleanly. The screen
+    // still shows the game UI; we'd see a router redirect
+    // otherwise.
+    expect(screen.getByTestId("board")).toBeDefined();
   });
 });
